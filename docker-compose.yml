@@ -1,0 +1,84 @@
+services:
+  otel-lgtm:
+    image: grafana/otel-lgtm:latest
+    ports:
+      - "3000:3000"    # Grafana UI
+      - "4317:4317"    # OTLP gRPC receiver
+      - "4318:4318"    # OTLP HTTP receiver
+    volumes:
+      - lgtm-data:/data
+      - ./observability/grafana/dashboards/pii-shield.json:/otel-lgtm/grafana/conf/provisioning/dashboards/custom/pii-shield.json:ro
+      - ./observability/grafana/dashboards/pii-shield-by-app.json:/otel-lgtm/grafana/conf/provisioning/dashboards/custom/pii-shield-by-app.json:ro
+      - ./observability/grafana/dashboards/pii-shield-errors.json:/otel-lgtm/grafana/conf/provisioning/dashboards/custom/pii-shield-errors.json:ro
+      - ./observability/grafana/dashboards-provisioning.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/custom.yaml:ro
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      args:
+        NLP_ENGINE: ${NLP_ENGINE:-spacy}
+        TRANSFORMERS_MODEL: ${TRANSFORMERS_MODEL:-dslim/bert-base-NER}
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - OTEL_SERVICE_NAME=pii-shield
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-lgtm:4317
+      - PII_SHIELD_ENCRYPTION_KEY=${PII_SHIELD_ENCRYPTION_KEY:-}
+      - NLP_ENGINE=${NLP_ENGINE:-spacy}
+      - TRANSFORMERS_MODEL=${TRANSFORMERS_MODEL:-dslim/bert-base-NER}
+      - TRANSFORMERS_SPACY_MODEL=${TRANSFORMERS_SPACY_MODEL:-en_core_web_sm}
+      - SESSION_TTL_SECONDS=${SESSION_TTL_SECONDS:-86400}
+      - DISABLED_RECOGNIZERS=${DISABLED_RECOGNIZERS:-CreditCardRecognizer,InAadhaarRecognizer,NhsRecognizer,UsBankRecognizer,SgFinRecognizer,AuAbnRecognizer,AuAcnRecognizer,AuTfnRecognizer,AuMedicareRecognizer,MedicalLicenseRecognizer}
+      - CONTEXT_SIMILARITY_FACTOR=${CONTEXT_SIMILARITY_FACTOR:-0.45}
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  playground:
+    image: pii-shield-playground
+    build:
+      context: .
+      args:
+        NLP_ENGINE: ${NLP_ENGINE:-spacy}
+        TRANSFORMERS_MODEL: ${TRANSFORMERS_MODEL:-dslim/bert-base-NER}
+    command: streamlit run app/streamlit_app.py --server.port 7860 --server.address 0.0.0.0 --server.headless true --client.toolbarMode minimal
+    ports:
+      - "7860:7860"
+    environment:
+      - API_BASE=http://app:8000
+    depends_on:
+      - app
+
+  admin:
+    image: pii-shield-admin
+    build:
+      context: .
+      args:
+        NLP_ENGINE: ${NLP_ENGINE:-spacy}
+        TRANSFORMERS_MODEL: ${TRANSFORMERS_MODEL:-dslim/bert-base-NER}
+    command: streamlit run app/streamlit_admin.py --server.port 7861 --server.address 0.0.0.0 --server.headless true --client.toolbarMode minimal
+    ports:
+      - "7861:7861"
+    environment:
+      - API_BASE=http://app:8000
+    depends_on:
+      - app
+
+volumes:
+  redis-data:
+  lgtm-data:

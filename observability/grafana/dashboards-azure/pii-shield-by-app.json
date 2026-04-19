@@ -1,0 +1,1042 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "PII Shield metrics aggregated by Application. Shows request volumes, entity detection, and strategy breakdown per registered application.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "description": "Total anonymization requests by selected app(s)",
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 10
+              },
+              {
+                "color": "yellow",
+                "value": 100
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "let _selectedApp = ${app_name};\ncustomMetrics\n| where name == \"pii.anonymize.requests\"\n| where $__timeFilter(timestamp)\n| where _selectedApp == \"All\" or tostring(customDimensions.app_name) == _selectedApp\n| summarize total=sum(value)",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "title": "Anonymization Requests",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "description": "Total deanonymization requests by selected app(s)",
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 10
+              },
+              {
+                "color": "yellow",
+                "value": 100
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "let _selectedApp = ${app_name};\ncustomMetrics\n| where name == \"pii.deanonymize.requests\"\n| where $__timeFilter(timestamp)\n| where _selectedApp == \"All\" or tostring(customDimensions.app_name) == _selectedApp\n| summarize total=sum(value)",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "title": "Deanonymization Requests",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "description": "Total PII entities detected for selected app(s)",
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "purple",
+                "value": 0
+              },
+              {
+                "color": "orange",
+                "value": 50
+              },
+              {
+                "color": "red",
+                "value": 200
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "let _selectedApp = ${app_name};\ncustomMetrics\n| where name == \"pii.entities.detected\"\n| where $__timeFilter(timestamp)\n| where _selectedApp == \"All\" or tostring(customDimensions.app_name) == _selectedApp\n| summarize total=sum(value)",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "title": "PII Entities Detected",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "description": "Number of currently registered applications (latest gauge value)",
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 3,
+        "x": 18,
+        "y": 0
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "customMetrics\n| where name == \"pii.registered.apps\"\n| where $__timeFilter(timestamp)\n| summarize total=max(value)",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "title": "Registered Applications",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "description": "Total distinct applications that have ever sent requests (includes deleted)",
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "semi-dark-blue",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 3,
+        "x": 21,
+        "y": 0
+      },
+      "id": 12,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "customMetrics\n| where name == \"pii.anonymize.requests\"\n| where $__timeFilter(timestamp)\n| extend app_id = tostring(customDimensions.app_id)\n| where app_id != \"\"\n| summarize total=dcount(app_id)",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "title": "Historical Applications",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "description": "Anonymize vs deanonymize request counts per application",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 1,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "id": 5,
+      "options": {
+        "barRadius": 0,
+        "barWidth": 0.8,
+        "fullHighlight": true,
+        "groupWidth": 0.7,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "orientation": "horizontal",
+        "showValue": "always",
+        "stacking": "none",
+        "text": {
+          "valueSize": 12
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "let _selectedApp = ${app_name};\ncustomMetrics\n| where name == \"pii.anonymize.requests\"\n| where $__timeFilter(timestamp)\n| where _selectedApp == \"All\" or tostring(customDimensions.app_name) == _selectedApp\n| extend app_name = tostring(customDimensions.app_name)\n| where app_name != \"\"\n| summarize Anonymize=sum(value) by app_name\n| top 10 by Anonymize desc",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        },
+        {
+          "refId": "B",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "let _selectedApp = ${app_name};\ncustomMetrics\n| where name == \"pii.deanonymize.requests\"\n| where $__timeFilter(timestamp)\n| where _selectedApp == \"All\" or tostring(customDimensions.app_name) == _selectedApp\n| extend app_name = tostring(customDimensions.app_name)\n| where app_name != \"\"\n| summarize Deanonymize=sum(value) by app_name\n| top 10 by Deanonymize desc",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "title": "Requests by Application",
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "app_name": "Application"
+            }
+          }
+        }
+      ],
+      "type": "barchart"
+    },
+    {
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "description": "Share of PII entities detected per application",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "legendPlacement": "right",
+        "pieType": "donut",
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "/^total$/",
+          "values": true
+        },
+        "sort": "desc",
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "let _selectedApp = ${app_name};\ncustomMetrics\n| where name == \"pii.entities.detected\"\n| where $__timeFilter(timestamp)\n| where _selectedApp == \"All\" or tostring(customDimensions.app_name) == _selectedApp\n| extend app_name = tostring(customDimensions.app_name)\n| where app_name != \"\"\n| summarize total=sum(value) by app_name\n| order by total desc\n| take 10",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "title": "PII Entities by Application",
+      "type": "piechart"
+    },
+    {
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "description": "Requests per second, broken down by application",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 13
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "let _selectedApp = ${app_name};\ncustomMetrics\n| where name == \"pii.anonymize.requests\"\n| where $__timeFilter(timestamp)\n| where _selectedApp == \"All\" or tostring(customDimensions.app_name) == _selectedApp\n| extend app_name = tostring(customDimensions.app_name)\n| summarize total=sum(value) by bin(timestamp, $__interval), app_name",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "time_series"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "title": "Anonymization Request Rate by Application",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "description": "Entity detection rate per application",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 13
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "let _selectedApp = ${app_name};\ncustomMetrics\n| where name == \"pii.entities.detected\"\n| where $__timeFilter(timestamp)\n| where _selectedApp == \"All\" or tostring(customDimensions.app_name) == _selectedApp\n| extend app_name = tostring(customDimensions.app_name)\n| summarize total=sum(value) by bin(timestamp, $__interval), app_name",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "time_series"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "title": "PII Entities Detected Over Time by Application",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "description": "Per-application summary: request counts and entity totals",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "footer": {
+              "reducers": []
+            },
+            "inspect": false
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
+      "id": 9,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "let _selectedApp = ${app_name};\nlet anon = customMetrics\n| where name == \"pii.anonymize.requests\"\n| where $__timeFilter(timestamp)\n| where _selectedApp == \"All\" or tostring(customDimensions.app_name) == _selectedApp\n| extend app_name = tostring(customDimensions.app_name)\n| where app_name != \"\"\n| summarize ['Anonymize Requests']=sum(value) by app_name;\nlet deanon = customMetrics\n| where name == \"pii.deanonymize.requests\"\n| where $__timeFilter(timestamp)\n| where _selectedApp == \"All\" or tostring(customDimensions.app_name) == _selectedApp\n| extend app_name = tostring(customDimensions.app_name)\n| where app_name != \"\"\n| summarize ['Deanonymize Requests']=sum(value) by app_name;\nlet entities = customMetrics\n| where name == \"pii.entities.detected\"\n| where $__timeFilter(timestamp)\n| where _selectedApp == \"All\" or tostring(customDimensions.app_name) == _selectedApp\n| extend app_name = tostring(customDimensions.app_name)\n| where app_name != \"\"\n| summarize ['Entities Detected']=sum(value) by app_name;\nanon\n| join kind=fullouter deanon on app_name\n| join kind=fullouter entities on app_name\n| project Application=coalesce(app_name, app_name1, app_name2), ['Anonymize Requests']=coalesce(['Anonymize Requests'], 0.0), ['Deanonymize Requests']=coalesce(['Deanonymize Requests'], 0.0), ['Entities Detected']=coalesce(['Entities Detected'], 0.0)\n| order by ['Anonymize Requests'] desc",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "title": "Application Breakdown",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "description": "Breakdown of PII entity types detected for selected app(s)",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 29
+      },
+      "id": 10,
+      "options": {
+        "legendPlacement": "right",
+        "pieType": "donut",
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "/^total$/",
+          "values": true
+        },
+        "legend": {
+          "placement": "right",
+          "displayMode": "table",
+          "showLegend": true,
+          "values": [
+            "value",
+            "percent"
+          ]
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "let _selectedApp = ${app_name};\ncustomMetrics\n| where name == \"pii.entities.detected\"\n| where $__timeFilter(timestamp)\n| where _selectedApp == \"All\" or tostring(customDimensions.app_name) == _selectedApp\n| extend entity_type = tostring(customDimensions.entity_type)\n| summarize total=sum(value) by entity_type\n| order by total desc\n| take 15",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "title": "Entity Types by Application",
+      "type": "piechart"
+    },
+    {
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "description": "Entity type counts broken down by application",
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "unit": "none"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Count"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "mode": "gradient",
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-BlPu"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 29
+      },
+      "id": 11,
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "let _selectedApp = ${app_name};\ncustomMetrics\n| where name == \"pii.entities.detected\"\n| where $__timeFilter(timestamp)\n| where _selectedApp == \"All\" or tostring(customDimensions.app_name) == _selectedApp\n| extend app_name = tostring(customDimensions.app_name), entity_type = tostring(customDimensions.entity_type)\n| where app_name != \"\"\n| summarize Count=sum(value) by app_name, entity_type\n| order by Count desc\n| project Application=app_name, ['Entity Type']=entity_type, Count",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "title": "Entity Types per Application",
+      "type": "table"
+    }
+  ],
+  "preload": false,
+  "refresh": "10s",
+  "schemaVersion": 42,
+  "tags": [],
+  "templating": {
+    "list": [
+      {
+        "name": "app_name",
+        "type": "query",
+        "label": "Application",
+        "hide": 0,
+        "datasource": {
+          "type": "grafana-azure-monitor-datasource",
+          "uid": "azure-monitor-oob"
+        },
+        "definition": "customMetrics | where name startswith 'pii.' | extend app_name = tostring(customDimensions.app_name) | where app_name != '' | distinct app_name | order by app_name asc",
+        "query": {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "customMetrics\n| where name startswith 'pii.'\n| extend app_name = tostring(customDimensions.app_name)\n| where app_name != ''\n| distinct app_name\n| order by app_name asc",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          }
+        },
+        "regex": "",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": "\"All\"",
+        "current": {
+          "text": "All",
+          "value": "$__all",
+          "selected": true
+        },
+        "multi": false,
+        "sort": 1
+      }
+    ]
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "PII Shield \u2014 By Application (Azure)",
+  "uid": "pii-shield-by-app",
+  "version": 6,
+  "weekStart": ""
+}

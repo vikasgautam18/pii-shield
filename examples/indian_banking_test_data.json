@@ -1,0 +1,737 @@
+[
+  {
+    "id": "kyc-verification",
+    "scenario": "KYC Verification — Account Opening",
+    "text": "Customer Rajesh Kumar Sharma visited the Contoso Bank Koramangala branch on 15th March 2025 for account opening. KYC documents submitted: Driving License MH 14 2019 0012345, PAN card ABCPS7234F, and Aadhaar 9876 5432 1098. Contact: rajesh.sharma@gmail.com, mobile +91 9845012345. Residential address: Flat 302, Prestige Towers, Indiranagar, Bangalore 560038.",
+    "expected_pii_types": [
+      "ADDRESS",
+      "DATE_TIME",
+      "EMAIL_ADDRESS",
+      "IN_AADHAAR",
+      "IN_DRIVING_LICENSE",
+      "IN_PAN",
+      "ORGANIZATION",
+      "PERSON",
+      "PHONE_NUMBER"
+    ]
+  },
+  {
+    "id": "loan-application",
+    "scenario": "Home Loan Application",
+    "text": "Loan application received from Priya Menon, DOB 12/08/1985, for a home loan of INR 75,00,000. Employment: private IT company, Hinjewadi, Pune. Monthly salary credited to account 917020048230123 at Contoso Bank, IFSC CONT0001234. Co-applicant: Arun Menon, contact arun.menon@outlook.com, phone 022-24561789. Property address: Villa 15, Green Meadows, Whitefield, Bengaluru 560066. DL number: KA 01 2017 0098765.",
+    "expected_pii_types": [
+      "PERSON",
+      "DATE_TIME",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "IN_DRIVING_LICENSE",
+      "ADDRESS",
+      "IN_BANK_ACCOUNT",
+      "ORGANIZATION",
+      "IN_IFSC"
+    ]
+  },
+  {
+    "id": "credit-card-dispute",
+    "scenario": "Credit Card Transaction Dispute",
+    "text": "Dispute raised by cardholder Ananya Iyer on credit card 4532-0150-1234-5671 for an unauthorized transaction of INR 15,420 on 03/01/2025 at an online merchant. Cardholder contacted us at ananya.iyer@yahoo.co.in and confirmed she was at her residence 12 MG Road, Kochi, Kerala 682011 at the time. Transaction IP logged: 192.168.45.12. Callback requested on +91 484 2345678.",
+    "expected_pii_types": [
+      "PERSON",
+      "CREDIT_CARD",
+      "DATE_TIME",
+      "EMAIL_ADDRESS",
+      "IP_ADDRESS",
+      "PHONE_NUMBER",
+      "ADDRESS"
+    ]
+  },
+  {
+    "id": "fund-transfer",
+    "scenario": "Fund Transfer Request",
+    "text": "Fund transfer request from Suresh Babu, account holder at Contoso Bank, Anna Nagar branch, Chennai. Transfer INR 2,50,000 to beneficiary Deepa Krishnan, Contoso Bank account 921020098765432, IFSC CONT0004567. Suresh's contact: sureshbabu1978@rediffmail.com, mobile 9443256789. Transfer initiated on 22nd February 2025.",
+    "expected_pii_types": [
+      "DATE_TIME",
+      "EMAIL_ADDRESS",
+      "IN_BANK_ACCOUNT",
+      "IN_IFSC",
+      "PERSON",
+      "PHONE_NUMBER"
+    ]
+  },
+  {
+    "id": "customer-complaint",
+    "scenario": "Branch Service Complaint",
+    "text": "Complaint ID: SR2025031456. Customer Meera Joshi (Account No: 917020043567890, IFSC CONT0005678) has filed a complaint regarding delayed cheque clearance. Customer visited the Contoso Bank Saket branch, New Delhi on 10 March 2025. She can be reached at meera.joshi@hotmail.com or on her mobile 011-26851234. Residence: B-45, Safdarjung Enclave, New Delhi 110029.",
+    "expected_pii_types": [
+      "ADDRESS",
+      "DATE_TIME",
+      "EMAIL_ADDRESS",
+      "IN_BANK_ACCOUNT",
+      "IN_IFSC",
+      "PERSON",
+      "PHONE_NUMBER"
+    ]
+  },
+  {
+    "id": "digital-banking-fraud",
+    "scenario": "UPI Fraud Investigation",
+    "text": "Fraud alert triggered for UPI ID vikramsingh@ybl linked to customer Vikram Singh, account 920020012345678 at Contoso Bank Connaught Place, Delhi. Suspicious transactions detected from IP 103.21.58.44 and device MAC address 00:1B:44:11:3A:B7. Customer's registered email vikram.singh92@gmail.com and phone +91 9811023456. Last known login from URL https://www.contoso.com/personal-banking on 5th March 2025.",
+    "expected_pii_types": [
+      "DATE_TIME",
+      "EMAIL_ADDRESS",
+      "IN_BANK_ACCOUNT",
+      "IN_UPI_ID",
+      "IP_ADDRESS",
+      "ORGANIZATION",
+      "PERSON",
+      "PHONE_NUMBER",
+      "URL"
+    ]
+  },
+  {
+    "id": "insurance-claim",
+    "scenario": "Vehicle Insurance Claim",
+    "text": "Insurance claim filed by Lakshmi Narayanan for vehicle KA 05 MJ 1234. Driving license: TN 09 2015 0054321. Accident occurred on 28th January 2025 at Hosur Road, Bangalore. Policy number INS2024VH789012. Contact: lakshmi.n@protonmail.com, mobile 9600123456. Hospital admission at a private hospital in Jayanagar. Claim amount: INR 3,45,000.",
+    "expected_pii_types": [
+      "DATE_TIME",
+      "EMAIL_ADDRESS",
+      "IN_DRIVING_LICENSE",
+      "LOCATION",
+      "PERSON",
+      "PHONE_NUMBER"
+    ]
+  },
+  {
+    "id": "salary-account",
+    "scenario": "Corporate Salary Account Opening",
+    "text": "Batch salary account opening for a corporate client at Contoso Bank. Employee details: 1) Arjun Reddy, DOB 04/07/1990, email arjun.reddy@gmail.com, phone 9848012345, DL TS 12 2018 0067890. 2) Fatima Begum, DOB 19/11/1988, email fatima.begum@gmail.com, phone 9849098765, PAN BMPPB4567K. 3) Rohan Das, DOB 25/03/1992, email rohan.das@gmail.com, phone 9550345678. Office address: Deccan Park, Madhapur, Hyderabad 500081.",
+    "expected_pii_types": [
+      "ADDRESS",
+      "DATE_TIME",
+      "EMAIL_ADDRESS",
+      "IN_DRIVING_LICENSE",
+      "ORGANIZATION",
+      "PERSON",
+      "PHONE_NUMBER"
+    ]
+  },
+  {
+    "id": "fixed-deposit",
+    "scenario": "Fixed Deposit Advisory",
+    "text": "Advisory note for client Kavitha Subramaniam regarding FD maturity on 15/04/2025. Current FD of INR 25,00,000 at 7.1% in Contoso Bank Adyar branch, Chennai (account 917020087654321). Nominee: Subramaniam Iyer (husband). Client prefers communication via email kavitha.subra@gmail.com. Alternate contact: daughter Revathi at +91 44 24913456. Residential address: 23, Luz Church Road, Mylapore, Chennai 600004.",
+    "expected_pii_types": [
+      "PERSON",
+      "DATE_TIME",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "ADDRESS",
+      "ORGANIZATION"
+    ]
+  },
+  {
+    "id": "aml-investigation",
+    "scenario": "Anti-Money Laundering Investigation",
+    "text": "STR filed for account holder Mohammed Faisal Khan, DOB 30/06/1975, holding savings account 920020010987654 at Contoso Bank, Camp branch, Pune. Multiple high-value cash deposits totaling INR 48,50,000 between 01/01/2025 and 28/02/2025. Customer's registered address: 78, Koregaon Park, Pune 411001. KYC docs: DL MH 12 2010 0023456, PAN AENPK8901F. Email: faisal.khan75@gmail.com, phone +91 20 26880123. Transactions flagged from IP 49.36.128.77.",
+    "expected_pii_types": [
+      "PERSON",
+      "DATE_TIME",
+      "IN_DRIVING_LICENSE",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "IP_ADDRESS",
+      "ADDRESS",
+      "IN_BANK_ACCOUNT",
+      "IN_PAN",
+      "ORGANIZATION"
+    ]
+  },
+  {
+    "id": "demat-account",
+    "scenario": "Demat Account Linking",
+    "text": "Request to link demat account DP ID IN302201 with trading account for client Sneha Patil. Client's bank account 917020056789012 at Contoso Bank, FC Road, Pune. PAN: AEPPP5678Q. Contact details: sneha.patil@gmail.com, mobile 9823567890. Client DOB: 16/09/1993. Address: Flat 501, Kumar Pinnacle, Baner, Pune 411045.",
+    "expected_pii_types": [
+      "PERSON",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "DATE_TIME",
+      "ADDRESS",
+      "IN_PAN",
+      "IN_BANK_ACCOUNT",
+      "ORGANIZATION"
+    ]
+  },
+  {
+    "id": "nri-account",
+    "scenario": "NRI Account Enquiry",
+    "text": "NRI customer Amit Patel, currently residing at 45 Orchard Road, Singapore 238879, has enquired about converting his NRE account 921020012345678 at Contoso Bank, Ahmedabad to an NRO account. Indian address: 12, Satellite Road, Ahmedabad, Gujarat 380015. Passport number J8765432, DL GJ 01 2012 0034567. Email: amit.patel@protonmail.com, Singapore mobile +65 91234567, India mobile +91 79 26543210. Request received on 8th March 2025.",
+    "expected_pii_types": [
+      "PERSON",
+      "LOCATION",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "IN_DRIVING_LICENSE",
+      "DATE_TIME",
+      "ADDRESS",
+      "IN_BANK_ACCOUNT",
+      "IN_PASSPORT",
+      "NRP"
+    ]
+  },
+  {
+    "id": "json-kyc-payload",
+    "scenario": "JSON Payload — KYC Submission via API",
+    "text": "{\"request_id\": \"KYC-2025-78432\", \"customer\": {\"full_name\": \"Neha Kapoor\", \"dob\": \"22/05/1991\", \"gender\": \"F\", \"pan\": \"BQNPK4321L\", \"aadhaar\": \"7654 3210 9876\", \"driving_license\": \"DL 05 2016 0045678\", \"email\": \"neha.kapoor91@gmail.com\", \"mobile\": \"+91 9876501234\"}, \"address\": {\"line1\": \"Flat 204, Royal Enclave\", \"line2\": \"Sector 15, Gurugram\", \"state\": \"Haryana\", \"pin\": \"122001\"}, \"branch\": \"Contoso Bank, Cyber City, Gurugram\", \"submitted_on\": \"12th March 2025\"}",
+    "expected_pii_types": [
+      "ADDRESS",
+      "DATE_TIME",
+      "EMAIL_ADDRESS",
+      "IN_AADHAAR",
+      "IN_DRIVING_LICENSE",
+      "IN_PAN",
+      "IN_PIN_CODE",
+      "LOCATION",
+      "ORGANIZATION",
+      "PERSON",
+      "PHONE_NUMBER"
+    ]
+  },
+  {
+    "id": "json-txn-alert",
+    "scenario": "JSON Payload — Transaction Alert Webhook",
+    "text": "{\"alert_id\": \"TXN-HV-90812\", \"timestamp\": \"2025-03-10 14:32:00\", \"account_holder\": \"Sanjay Gupta\", \"ifsc\": \"CONT0006789\", \"beneficiary\": {\"name\": \"Pooja Sharma\", \"bank\": \"Contoso Bank\"}, \"customer_ip\": \"182.73.45.201\", \"customer_email\": \"sanjay.gupta@yahoo.co.in\", \"customer_phone\": \"+91 9811034567\", \"branch\": \"Contoso Bank, Chandni Chowk, Delhi\"}",
+    "expected_pii_types": [
+      "DATE_TIME",
+      "EMAIL_ADDRESS",
+      "IN_IFSC",
+      "IP_ADDRESS",
+      "PERSON",
+      "PHONE_NUMBER"
+    ]
+  },
+  {
+    "id": "json-loan-api",
+    "scenario": "JSON Payload — Loan Eligibility API Request",
+    "text": "{\"application\": {\"type\": \"PERSONAL_LOAN\", \"tenure_months\": 36}, \"applicant\": {\"name\": \"Divya Menon\", \"dob\": \"1988-07-14\", \"pan\": \"AEMPM6543R\", \"employer\": \"TechCorp India Pvt Ltd\", \"work_address\": \"Tower B, Manyata Tech Park, Hebbal, Bangalore\", \"email\": \"divya.menon@techcorp.com\", \"phone\": \"+91 9845678901\", \"driving_license\": \"KA 03 2014 0078901\"}, \"co_applicant\": {\"name\": \"Rahul Menon\", \"phone\": \"+91 9880256789\", \"email\": \"rahul.menon@gmail.com\"}, \"submitted_at\": \"2025-02-28T09:15:00Z\"}",
+    "expected_pii_types": [
+      "ADDRESS",
+      "DATE_TIME",
+      "EMAIL_ADDRESS",
+      "IN_DRIVING_LICENSE",
+      "IN_PAN",
+      "ORGANIZATION",
+      "PERSON",
+      "PHONE_NUMBER"
+    ]
+  },
+  {
+    "id": "branch-callback",
+    "scenario": "Multi-Branch Callback Directory",
+    "text": "Customer callback list for 14th March 2025: 1) Ravi Shankar, Contoso Bank Andheri branch, Mumbai — landline 022-26341234, mobile 09820456789, email ravi.shankar@gmail.com. 2) Padma Lakshmi, Contoso Bank T Nagar branch, Chennai — landline 044-24341234, mobile +91 9443012345, email padma.l@outlook.com. 3) Nitin Gadkari, Contoso Bank MG Road branch, Bangalore — landline 080-25678901, mobile 9845601234, email nitin.g@yahoo.co.in. 4) Sunita Verma, Contoso Bank Rajouri Garden branch, New Delhi 110027 — landline 011-25432109, mobile +91 9811098765, email sunita.verma@hotmail.com.",
+    "expected_pii_types": [
+      "PERSON",
+      "DATE_TIME",
+      "LOCATION",
+      "PHONE_NUMBER",
+      "EMAIL_ADDRESS",
+      "ADDRESS",
+      "ORGANIZATION"
+    ]
+  },
+  {
+    "id": "rural-banking",
+    "scenario": "Rural Branch — Agricultural Loan",
+    "text": "Agricultural loan application from Govind Rao, village Malkhed, Taluka Sholapur, Maharashtra 413005. Landholding: 8 acres. Contact phone 02186-234567. Co-applicant spouse Anita Rao, phone 09823456701. Aadhaar: 5432 1098 7654. Guarantor: Sarpanch Balasaheb Patil, phone 02183-212345. Branch: Contoso Bank, Barshi Road, Sholapur. Application date: 20th February 2025. DL number: MH 13 2011 0098765.",
+    "expected_pii_types": [
+      "PERSON",
+      "PHONE_NUMBER",
+      "DATE_TIME",
+      "IN_AADHAAR",
+      "IN_DRIVING_LICENSE",
+      "ADDRESS",
+      "ORGANIZATION"
+    ]
+  },
+  {
+    "id": "json-customer-onboard",
+    "scenario": "JSON Payload — Customer Onboarding with Phone Numbers",
+    "text": "{\"onboarding_id\": \"ONB-2025-54321\", \"primary_applicant\": {\"name\": \"Karthik Subramanian\", \"dob\": \"1990-03-25\", \"pan\": \"ASEPS6789K\", \"email\": \"karthik.s@gmail.com\", \"mobile\": \"+91 9944012345\", \"landline\": \"044-25678901\", \"aadhaar\": \"3210 9876 5432\"}, \"emergency_contact\": {\"name\": \"Lakshmi Subramanian\", \"phone\": \"044-25671234\", \"mobile\": \"+91 9443056789\"}, \"address\": {\"line1\": \"12, Anna Salai\", \"city\": \"Chennai\", \"pin\": \"600002\"}, \"branch\": \"Contoso Bank, Mylapore, Chennai\", \"created_at\": \"2025-03-15T10:30:00+05:30\"}",
+    "expected_pii_types": [
+      "ADDRESS",
+      "DATE_TIME",
+      "EMAIL_ADDRESS",
+      "IN_AADHAAR",
+      "IN_PAN",
+      "IN_PIN_CODE",
+      "LOCATION",
+      "PERSON",
+      "PHONE_NUMBER"
+    ]
+  },
+  {
+    "id": "upi-merchant-payment",
+    "scenario": "UPI Merchant Payment Dispute",
+    "text": "Customer Priya Menon (UPI ID priya.menon@oksbi) raised a dispute for a failed payment of Rs 4,500 to merchant shop.grocery@paytm on 12th March 2025. The transaction was debited from her SBI account linked to UPI but not credited to the merchant. Customer contact: priya.menon@gmail.com, phone +91 9876012345. Merchant address: 45, MG Road, Kochi 682016.",
+    "expected_pii_types": [
+      "PERSON",
+      "IN_UPI_ID",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "DATE_TIME",
+      "ADDRESS",
+      "ORGANIZATION"
+    ]
+  },
+  {
+    "id": "upi-p2p-transfer",
+    "scenario": "UPI Peer-to-Peer Transfer Investigation",
+    "text": "Investigation report: Multiple P2P transfers detected between UPI IDs ravi.kumar88@ybl and suresh.patel@okicici totalling Rs 2,50,000 over 7 days ending 18th March 2025. Sender Ravi Kumar (Aadhaar 4567 8901 2345, mobile +91 9443012345) transferred to Suresh Patel (Aadhaar 6789 0123 4567, mobile +91 9811098765) via PhonePe and Google Pay apps. Both accounts flagged for review at Contoso Bank, Anna Nagar, Chennai 600040.",
+    "expected_pii_types": [
+      "DATE_TIME",
+      "IN_AADHAAR",
+      "IN_UPI_ID",
+      "ORGANIZATION",
+      "PERSON",
+      "PHONE_NUMBER"
+    ]
+  },
+  {
+    "id": "upi-collect-fraud",
+    "scenario": "UPI Collect Request Fraud Alert",
+    "text": "Fraud alert: Customer Anita Desai reported an unauthorized UPI collect request from unknown VPA fraudster99@axl for Rs 15,000 on 10th March 2025. The customer's UPI ID anita.desai@hdfcbank was targeted. Customer details: Driving License KA 05 2020 0098765, email anita.d@yahoo.com, mobile +91 9845098765. Reported at Contoso Bank, JP Nagar, Bangalore 560078.",
+    "expected_pii_types": [
+      "PERSON",
+      "IN_UPI_ID",
+      "IN_DRIVING_LICENSE",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "DATE_TIME",
+      "ADDRESS",
+      "ORGANIZATION"
+    ]
+  },
+  {
+    "id": "json-upi-webhook",
+    "scenario": "JSON Payload — UPI Transaction Webhook",
+    "text": "{\"event\": \"upi.payment.completed\", \"payload\": {\"transaction_id\": \"TXN20250315001234\", \"payer\": {\"name\": \"Deepak Verma\", \"vpa\": \"deepak.verma@oksbi\", \"mobile\": \"+91 9876543210\"}, \"payee\": {\"name\": \"Sunrise Traders\", \"vpa\": \"sunrise.traders@icici\", \"mobile\": \"+91 9811034567\"}, \"amount\": 8500, \"timestamp\": \"2025-03-15 14:22:00\", \"payer_email\": \"deepak.v@gmail.com\", \"ip_address\": \"182.73.45.89\"}}",
+    "expected_pii_types": [
+      "PERSON",
+      "IN_UPI_ID",
+      "PHONE_NUMBER",
+      "EMAIL_ADDRESS",
+      "DATE_TIME",
+      "IP_ADDRESS"
+    ]
+  },
+  {
+    "id": "json-nri-wire-transfer",
+    "scenario": "JSON Payload — NRI Wire Transfer with US SSN",
+    "text": "{\"transfer_id\": \"WIRE-2025-04891\", \"sender\": {\"name\": \"Rajesh Patel\", \"ssn\": \"287-14-5633\", \"email\": \"rajesh.patel@outlook.com\", \"phone\": \"+1 408-555-1234\"}, \"beneficiary\": {\"name\": \"Meera Patel\", \"account\": \"50100236789012\", \"ifsc\": \"HDFC0002345\", \"bank\": \"HDFC Bank\"}, \"amount_usd\": 15000, \"purpose\": \"Family maintenance\", \"timestamp\": \"2025-04-10 09:15:00\"}",
+    "expected_pii_types": [
+      "PERSON",
+      "US_SSN",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "IN_IFSC",
+      "DATE_TIME"
+    ]
+  },
+  {
+    "id": "json-nri-tax-filing",
+    "scenario": "JSON Payload — NRI Tax Filing with ITIN",
+    "text": "{\"filing_id\": \"1040NR-2025-00567\", \"taxpayer\": {\"name\": \"Anita Krishnan\", \"itin\": \"988-71-5432\", \"email\": \"anita.k@gmail.com\", \"us_address\": \"4521 Elm Street, San Jose, CA 95112\"}, \"income_sources\": [{\"type\": \"rental\", \"pan\": \"BKRPK4567L\", \"amount_inr\": 840000}], \"tax_year\": 2024, \"filed_date\": \"2025-04-01 11:30:00\"}",
+    "expected_pii_types": [
+      "PERSON",
+      "US_ITIN",
+      "EMAIL_ADDRESS",
+      "IN_PAN",
+      "DATE_TIME",
+      "ADDRESS"
+    ]
+  },
+  {
+    "id": "json-nri-kyc-passport",
+    "scenario": "JSON Payload — NRI Account KYC with US Passport",
+    "text": "{\"kyc_request_id\": \"KYC-NRI-20250312\", \"applicant\": {\"name\": \"Vikram Sharma\", \"passport\": \"C12345678\", \"pan\": \"ABCPS1234K\", \"email\": \"vikram.sharma@yahoo.com\", \"phone\": \"+91 9823567890\"}, \"account_type\": \"NRE Savings\", \"branch\": \"Contoso Bank, Bandra West, Mumbai\", \"submitted_date\": \"2025-03-12 10:00:00\"}",
+    "expected_pii_types": [
+      "PERSON",
+      "US_PASSPORT",
+      "IN_PAN",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "DATE_TIME"
+    ]
+  },
+  {
+    "id": "json-nri-combined-us-india",
+    "scenario": "JSON Payload — NRI Profile with SSN + Aadhaar + ITIN",
+    "text": "{\"profile_id\": \"NRI-PROF-78901\", \"personal\": {\"name\": \"Priya Menon\", \"ssn\": \"321-54-9876\", \"aadhaar\": \"5678 9012 3456\", \"pan\": \"CDEPM7890J\", \"email\": \"priya.menon@hotmail.com\", \"us_phone\": \"+1 650-555-7890\", \"india_phone\": \"+91 9876012345\"}, \"accounts\": {\"nre_account\": \"50100198765432\", \"us_bank_routing\": \"021000021\"}, \"tax_info\": {\"itin\": \"912-70-1234\", \"filing_status\": \"non-resident\"}, \"last_updated\": \"2025-04-08 16:45:00\"}",
+    "expected_pii_types": [
+      "PERSON",
+      "US_SSN",
+      "US_ITIN",
+      "IN_AADHAAR",
+      "IN_PAN",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "DATE_TIME"
+    ]
+  },
+  {
+    "id": "bank-account-neft",
+    "scenario": "NEFT Transfer with Indian Bank Account",
+    "text": "Process NEFT transfer of ₹1,50,000 from Amit Verma, SBI savings account 38748392045 (IFSC: SBIN0001234) to beneficiary Kavita Sharma, HDFC Bank account 50100236789012 (IFSC: HDFC0002345). Amit's contact: amit.verma@gmail.com, mobile 9876012345. Transfer date: 25th March 2025.",
+    "expected_pii_types": [
+      "PERSON",
+      "IN_BANK_ACCOUNT",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "DATE_TIME",
+      "ORGANIZATION",
+      "IN_IFSC"
+    ]
+  },
+  {
+    "id": "bank-account-rtgs",
+    "scenario": "RTGS High-Value Transfer",
+    "text": "RTGS payment of ₹25,00,000 initiated by Narayan Pillai from ICICI Bank current account 125205001234567 to Laxmi Enterprises, Kotak Mahindra Bank account 74110123456789, IFSC KKBK0000123. Contact narayan.pillai@company.in, phone 044-28901234. Initiated on 18 February 2025 from IP 10.200.45.67.",
+    "expected_pii_types": [
+      "PERSON",
+      "IN_BANK_ACCOUNT",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "DATE_TIME",
+      "IP_ADDRESS",
+      "ORGANIZATION",
+      "IN_IFSC"
+    ]
+  },
+  {
+    "id": "bank-account-mixed-context",
+    "scenario": "Mixed Indian and US Bank Accounts",
+    "text": "Customer Sanjay Mehta holds an SBI savings account 39876543210 (IFSC SBIN0005678) and a US bank account 123456789012 at Wells Fargo for his international payments. PAN: ABCPM1234F. Contact: sanjay.mehta@outlook.com, mobile +91 9820123456. Address: 45 Marine Drive, Mumbai 400020.",
+    "expected_pii_types": [
+      "PERSON",
+      "IN_BANK_ACCOUNT",
+      "IN_PAN",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "ADDRESS",
+      "US_BANK_NUMBER",
+      "ORGANIZATION",
+      "IN_IFSC"
+    ]
+  },
+  {
+    "id": "bank-account-passbook",
+    "scenario": "Passbook Update Request",
+    "text": "Passbook update request from Geeta Devi for PNB savings account 6842000100123456, branch Lajpat Nagar, New Delhi. Aadhaar linked: 5678 9012 3456. Contact mobile 9711023456. Last entry date: 01/12/2024.",
+    "expected_pii_types": [
+      "DATE_TIME",
+      "IN_AADHAAR",
+      "IN_BANK_ACCOUNT",
+      "ORGANIZATION",
+      "PERSON",
+      "PHONE_NUMBER"
+    ]
+  },
+  {
+    "id": "bank-account-cheque",
+    "scenario": "Cheque Book Request with A/C Context",
+    "text": "Cheque book request: Customer Ravi Shankar, A/C 917020098712345 at Axis Bank, Jayanagar branch, Bangalore. PAN ABCPS4567K. Email ravi.shankar@yahoo.com, phone 080-41234567. Request date: 5th January 2025.",
+    "expected_pii_types": [
+      "PERSON",
+      "IN_BANK_ACCOUNT",
+      "IN_PAN",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "DATE_TIME",
+      "ORGANIZATION"
+    ]
+  },
+  {
+    "id": "bank-account-nach",
+    "scenario": "NACH / ECS Mandate Registration",
+    "text": "NACH debit mandate registration for EMI auto-debit. Borrower: Pradeep Kumar, IndusInd Bank account 201001234567890, IFSC INDB0000123. Loan ID LN2025031234. EMI amount ₹18,500 debit on 5th of every month. Borrower email: pradeep.k@gmail.com, mobile 8800123456.",
+    "expected_pii_types": [
+      "PERSON",
+      "IN_BANK_ACCOUNT",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "ORGANIZATION",
+      "IN_IFSC"
+    ]
+  },
+  {
+    "id": "bank-account-json-transfer",
+    "scenario": "JSON Fund Transfer Payload with Bank Accounts",
+    "text": "{\"transfer_type\": \"IMPS\", \"sender\": {\"name\": \"Anita Deshmukh\", \"account\": \"917020065432198\", \"ifsc\": \"SBIN0003456\", \"phone\": \"+919876543210\", \"email\": \"anita.d@gmail.com\"}, \"receiver\": {\"name\": \"Sunil Joshi\", \"account\": \"50100198765432\", \"ifsc\": \"HDFC0007890\", \"bank\": \"HDFC Bank\"}, \"amount\": 75000, \"date\": \"2025-03-20\", \"remarks\": \"Rent payment March 2025\"}",
+    "expected_pii_types": [
+      "PERSON",
+      "IN_BANK_ACCOUNT",
+      "PHONE_NUMBER",
+      "EMAIL_ADDRESS",
+      "DATE_TIME",
+      "ORGANIZATION",
+      "IN_IFSC"
+    ]
+  },
+  {
+    "id": "bank-account-us-bofa",
+    "scenario": "International Transfer to Bank of America",
+    "text": "International wire transfer request from Deepak Gupta, ICICI Bank account 125205009876543 (IFSC ICIC0001234) to his NRE beneficiary account 0198765432101 at Bank of America, routing number 026009593. Amount: USD 5,000. Deepak's PAN: ABCPG5678K. Email: deepak.gupta@company.com, mobile +91 9845098450. Transfer date: 10th March 2025.",
+    "expected_pii_types": [
+      "PERSON",
+      "IN_BANK_ACCOUNT",
+      "US_BANK_NUMBER",
+      "IN_PAN",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "DATE_TIME",
+      "ORGANIZATION",
+      "IN_IFSC"
+    ]
+  },
+  {
+    "id": "gstin-vendor",
+    "scenario": "Vendor GST Invoice",
+    "text": "Received invoice from Reliable Traders Pvt Ltd, GSTIN 27AABCU9603R1ZM, for office supplies to Contoso Bank, Mumbai. Contact person Suresh Patel at suresh.patel@reliabletraders.com, mobile 9876501234. PAN: AABCU9603R. Invoice amount ₹1,25,000 dated 15th March 2025.",
+    "expected_pii_types": [
+      "PERSON",
+      "IN_GSTIN",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "IN_PAN",
+      "DATE_TIME",
+      "ORGANIZATION"
+    ]
+  },
+  {
+    "id": "passport-kyc",
+    "scenario": "KYC with Indian Passport",
+    "text": "KYC verification for NRE account opening. Customer Priya Sharma presented Indian passport number T1234567, issued by Passport Seva Kendra, Hyderabad. Date of birth: 22nd February 1990. PAN: ABCPS1234K. Email: priya.sharma@email.com. Mobile: +91 9845056789.",
+    "expected_pii_types": [
+      "PERSON",
+      "IN_PASSPORT",
+      "DATE_TIME",
+      "IN_PAN",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "LOCATION"
+    ]
+  },
+  {
+    "id": "vehicle-loan",
+    "scenario": "Vehicle Loan Application",
+    "text": "Vehicle loan application from Amit Verma for car with registration number MH02AB1234, purchased from ABC Motors, Pune. Loan amount ₹8,50,000. Applicant Aadhaar: 5678 1234 9012. PAN: ABCPV5678L. Residence: Flat 201, Kiran Towers, Kothrud, Pune 411038. Email: amit.verma@mail.com, contact 9812345678.",
+    "expected_pii_types": [
+      "PERSON",
+      "IN_VEHICLE_REGISTRATION",
+      "IN_AADHAAR",
+      "IN_PAN",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "LOCATION"
+    ]
+  },
+  {
+    "id": "voter-id-kyc",
+    "scenario": "KYC with Voter ID",
+    "text": "KYC document submission by Meena Kumari. Voter ID (EPIC number): XYZ1234567. PAN: ABCPK9876M. Correspondence address: 45, Gandhi Nagar, Jaipur 302015. Email: meena.kumari@example.com. Phone: 9443256789.",
+    "expected_pii_types": [
+      "PERSON",
+      "IN_VOTER",
+      "IN_PAN",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "ADDRESS"
+    ]
+  },
+  {
+    "id": "nrp-nationality",
+    "scenario": "NRE Account for Indian National",
+    "text": "NRE account opening for Indian national Amit Sharma, residing in Singapore. Passport: J8765432. PAN: ABCPS5678K. Email: amit.sharma@email.com. Mobile: +91 9845067890.",
+    "expected_pii_types": [
+      "NRP",
+      "PERSON",
+      "IN_PASSPORT",
+      "IN_PAN",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER",
+      "LOCATION"
+    ]
+  },
+  {
+    "id": "nrp-religion",
+    "scenario": "Community Banking Complaint",
+    "text": "Complaint registered by Hindu customer Priya Patel regarding unauthorized debit of ₹15,000 from savings account 1234567890123 at Contoso Bank, Jaipur branch. Contact: priya.patel@gmail.com, mobile 9876512345.",
+    "expected_pii_types": [
+      "EMAIL_ADDRESS",
+      "IN_BANK_ACCOUNT",
+      "LOCATION",
+      "NRP",
+      "ORGANIZATION",
+      "PERSON",
+      "PHONE_NUMBER"
+    ]
+  },
+  {
+    "id": "us-ssn-transfer",
+    "scenario": "International Transfer with US SSN",
+    "text": "International wire transfer from NRI customer Vikram Mehta (SSN: 219-09-9999, PAN: ABCPM5678K) to beneficiary account at Contoso Bank, Mumbai. Contact: vikram.mehta@email.com, mobile +91 9845078901.",
+    "expected_pii_types": [
+      "EMAIL_ADDRESS",
+      "IN_PAN",
+      "LOCATION",
+      "ORGANIZATION",
+      "PERSON",
+      "PHONE_NUMBER",
+      "US_SSN"
+    ]
+  },
+  {
+    "id": "us-itin-nre",
+    "scenario": "NRE Account with US ITIN",
+    "text": "NRE account application from Priya Sharma, US taxpayer identification number (ITIN): 955-70-1234. Indian Aadhaar: 6789 0123 4567. Email: priya.sharma@outlook.com. Contact: +91 9812345678.",
+    "expected_pii_types": [
+      "PERSON",
+      "US_ITIN",
+      "IN_AADHAAR",
+      "EMAIL_ADDRESS",
+      "PHONE_NUMBER"
+    ]
+  },
+  {
+    "id": "us-passport-kyc",
+    "scenario": "KYC with US Passport",
+    "text": "KYC verification for NRI Amit Verma using US passport C12345678 and Indian PAN ABCPV5678L. Correspondence address: 42 MG Road, Bangalore 560001. Email: amit.verma@gmail.com.",
+    "expected_pii_types": [
+      "ADDRESS",
+      "EMAIL_ADDRESS",
+      "IN_PAN",
+      "NRP",
+      "PERSON",
+      "US_PASSPORT"
+    ]
+  },
+  {
+    "id": "ckyc-verification",
+    "scenario": "CKYC number in financial verification",
+    "text": "As per CERSAI records, the customer's CKYC number 10002345678901 has been verified. Please update the central KYC registry accordingly.",
+    "expected_pii_types": [
+      "IN_CKYC"
+    ]
+  },
+  {
+    "id": "ckyc-prefixed",
+    "scenario": "Prefixed CKYC for simplified account",
+    "text": "Simplified measures CKYC account L50098765432101 has been registered under central KYC compliance for the new savings account holder.",
+    "expected_pii_types": [
+      "IN_CKYC"
+    ]
+  },
+  {
+    "id": "ckyc-with-other-pii",
+    "scenario": "CKYC alongside Aadhaar and PAN",
+    "text": "Customer Rajesh Kumar with Aadhaar 9876 5432 1098 and PAN ABCPK1234L has CKYC identifier 20001234567890 registered with CERSAI.",
+    "expected_pii_types": [
+      "IN_AADHAAR",
+      "IN_CKYC",
+      "IN_PAN",
+      "PERSON"
+    ]
+  },
+  {
+    "id": "pran-nps-statement",
+    "scenario": "PRAN in NPS account statement",
+    "text": "NPS subscriber with PRAN 110034567890 has accumulated corpus in Tier I pension fund managed by PFRDA. Annual contribution statement enclosed.",
+    "expected_pii_types": [
+      "IN_PRAN"
+    ]
+  },
+  {
+    "id": "pran-retirement-planning",
+    "scenario": "PRAN in retirement planning context",
+    "text": "Employee Suresh Menon has PRAN 098765432101 linked to the National Pension System. His retirement annuity will be processed by the CRA.",
+    "expected_pii_types": [
+      "IN_PRAN",
+      "PERSON"
+    ]
+  },
+  {
+    "id": "apaar-student-enrollment",
+    "scenario": "APAAR ID in student enrollment",
+    "text": "Student APAAR ID 234567890123 has been registered in the Academic Bank of Credits via DigiLocker for the upcoming academic session.",
+    "expected_pii_types": [
+      "IN_APAAR"
+    ]
+  },
+  {
+    "id": "apaar-education-portal",
+    "scenario": "APAAR in education portal context",
+    "text": "The student with APAAR enrollment number 045678901234 has been linked to the university education portal and DigiLocker account.",
+    "expected_pii_types": [
+      "IN_APAAR"
+    ]
+  },
+  {
+    "id": "customer-id-net-banking",
+    "scenario": "Customer ID — Net Banking Login",
+    "text": "Please log in to net banking using your Customer ID 103841234 and the OTP sent to your registered mobile.",
+    "expected_pii_types": [
+      "CUSTOMER_ID"
+    ]
+  },
+  {
+    "id": "customer-id-welcome-kit",
+    "scenario": "Customer ID — Welcome Kit with Account",
+    "text": "Welcome kit for Customer ID 617823490: Your new savings account 917020048230123 is now active.",
+    "expected_pii_types": [
+      "CUSTOMER_ID",
+      "IN_BANK_ACCOUNT"
+    ]
+  },
+  {
+    "id": "customer-id-complaint",
+    "scenario": "Customer ID — Complaint Registration",
+    "text": "Complaint #CR-2025-04567 registered for Customer ID 102345678 regarding unauthorized debit of INR 12,500.",
+    "expected_pii_types": [
+      "CUSTOMER_ID"
+    ]
+  },
+  {
+    "id": "customer-id-cif-review",
+    "scenario": "Customer ID — CIF Annual Review",
+    "text": "CIF 313456790 flagged for annual review — all accounts under this Customer ID require re-verification by 30-Jun-2025.",
+    "expected_pii_types": [
+      "CUSTOMER_ID",
+      "DATE_TIME"
+    ]
+  },
+  {
+    "id": "customer-id-fraud-alert",
+    "scenario": "Customer ID — Suspicious Login Alert",
+    "text": "Suspicious login detected on Customer ID 191234578 from IP 103.45.67.89 at 02:30 AM IST on 12-Apr-2025.",
+    "expected_pii_types": [
+      "CUSTOMER_ID",
+      "IP_ADDRESS",
+      "DATE_TIME"
+    ]
+  },
+  {
+    "id": "customer-id-password-reset",
+    "scenario": "Customer ID — Mobile Banking Password Reset",
+    "text": "To reset your mobile banking password, enter your Customer ID 412309876 and date of birth.",
+    "expected_pii_types": [
+      "CUSTOMER_ID"
+    ]
+  },
+  {
+    "id": "customer-id-emi-debit",
+    "scenario": "Customer ID — Loan EMI Processing",
+    "text": "Home loan EMI auto-debit of INR 42,500 processed for Customer ID 768901245 on 05-Apr-2025.",
+    "expected_pii_types": [
+      "CUSTOMER_ID",
+      "DATE_TIME"
+    ]
+  }
+]

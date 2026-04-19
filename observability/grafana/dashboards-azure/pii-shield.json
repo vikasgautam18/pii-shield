@@ -1,0 +1,451 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "title": "PII Shield Analytics (Azure)",
+  "uid": "pii-shield-analytics",
+  "version": 1,
+  "editable": true,
+  "description": "Application-level metrics for PII Shield: anonymization/deanonymization requests, PII entities detected by category, and HTTP request performance.",
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Anonymization Requests",
+      "description": "Total anonymization requests (/anonymize_unique)",
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "customMetrics\n| where name == \"pii.anonymize.requests\"\n| where $__timeFilter(timestamp)\n| summarize total=sum(value)",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 10
+              },
+              {
+                "color": "yellow",
+                "value": 100
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "graphMode": "none",
+        "colorMode": "value",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Deanonymization Requests",
+      "description": "Total deanonymization requests (/deanonymize)",
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 8,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "customMetrics\n| where name == \"pii.deanonymize.requests\"\n| where $__timeFilter(timestamp)\n| summarize total=sum(value)",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "purple",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 10
+              },
+              {
+                "color": "yellow",
+                "value": 100
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "graphMode": "none",
+        "colorMode": "value",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "PII Entities Detected",
+      "description": "Total PII entities detected across all requests",
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "customMetrics\n| where name == \"pii.entities.detected\"\n| where $__timeFilter(timestamp)\n| summarize total=sum(value)",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "orange",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 10
+              },
+              {
+                "color": "red",
+                "value": 500
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "graphMode": "none",
+        "colorMode": "value",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Combined Request Rate",
+      "description": "Combined rate of all anonymization and deanonymization requests over time",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "customMetrics\n| where name in (\"pii.anonymize.requests\", \"pii.deanonymize.requests\")\n| where $__timeFilter(timestamp)\n| summarize total=sum(value) by bin(timestamp, $__interval)",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "time_series"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "pointSize": 5,
+            "showPoints": "auto"
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "piechart",
+      "title": "PII Entities by Category",
+      "description": "Distribution of detected PII entities by type (e.g., PERSON, EMAIL_ADDRESS, PHONE_NUMBER)",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "customMetrics\n| where name == \"pii.entities.detected\"\n| where $__timeFilter(timestamp)\n| extend entity_type = tostring(customDimensions.entity_type)\n| summarize total=sum(value) by entity_type\n| order by total desc\n| take 15",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "/^total$|^count_$/",
+          "values": true
+        },
+        "pieType": "pie",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ],
+          "showLegend": true
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "PII Entity Breakdown",
+      "description": "Table showing count of each PII entity type detected",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "customMetrics\n| where name == \"pii.entities.detected\"\n| where $__timeFilter(timestamp)\n| extend entity_type = tostring(customDimensions.entity_type)\n| summarize Count=sum(value) by entity_type\n| order by Count desc\n| project ['PII Category']=entity_type, Count",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "PII Entities Detected Over Time (by Category)",
+      "description": "Rate of PII entities detected, broken down by entity type",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "customMetrics\n| where name == \"pii.entities.detected\"\n| where $__timeFilter(timestamp)\n| extend entity_type = tostring(customDimensions.entity_type)\n| summarize total=sum(value) by bin(timestamp, $__interval), entity_type",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "time_series"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "pointSize": 5,
+            "showPoints": "auto",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "HTTP Request Duration (p50 / p95 / p99)",
+      "description": "Latency percentiles for PII Shield API endpoints",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "requests\n| where $__timeFilter(timestamp)\n| summarize p50=percentile(duration, 50), p95=percentile(duration, 95), p99=percentile(duration, 99) by bin(timestamp, $__interval)",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "time_series"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "pointSize": 5,
+            "showPoints": "auto"
+          }
+        }
+      }
+    }
+  ],
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "templating": {
+    "list": []
+  },
+  "id": null
+}

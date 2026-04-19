@@ -1,0 +1,581 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "title": "PII Shield \u2014 Errors (Azure)",
+  "uid": "pii-shield-errors",
+  "version": 1,
+  "editable": true,
+  "description": "Error monitoring for PII Shield: error rates, breakdowns by endpoint and type, error logs, and error traces.",
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Server Errors (5xx)",
+      "description": "Total 5xx server errors across all endpoints",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "customMetrics\n| where name == \"pii.errors\"\n| where $__timeFilter(timestamp)\n| extend status_code = tostring(customDimensions.status_code)\n| where status_code startswith \"5\"\n| summarize total=sum(value)",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "graphMode": "none",
+        "colorMode": "value",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Client Errors (4xx)",
+      "description": "Total 4xx client errors across all endpoints",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "customMetrics\n| where name == \"pii.errors\"\n| where $__timeFilter(timestamp)\n| extend status_code = tostring(customDimensions.status_code)\n| where status_code startswith \"4\"\n| summarize total=sum(value)",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "orange",
+                "value": 50
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "graphMode": "none",
+        "colorMode": "value",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Error Rate",
+      "description": "Percentage of HTTP requests resulting in 4xx/5xx responses",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "requests\n| where $__timeFilter(timestamp)\n| summarize error_rate=round(100.0 * countif(toint(resultCode) >= 400) / count(), 2)",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "orange",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "graphMode": "none",
+        "colorMode": "value",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Total Errors",
+      "description": "Total error count across all endpoints in the selected time range",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "customMetrics\n| where name == \"pii.errors\"\n| where $__timeFilter(timestamp)\n| summarize total=sum(value)",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 50
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "graphMode": "none",
+        "colorMode": "value",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Error Rate Over Time",
+      "description": "Error count over time, split by status code class (4xx vs 5xx)",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "customMetrics\n| where name == \"pii.errors\"\n| where $__timeFilter(timestamp)\n| extend status_code = tostring(customDimensions.status_code)\n| extend error_class = iff(status_code startswith \"5\", \"5xx Server Errors\", iff(status_code startswith \"4\", \"4xx Client Errors\", \"Other\"))\n| where error_class != \"Other\"\n| summarize total=sum(value) by bin(timestamp, $__interval), error_class",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "time_series"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "pointSize": 5,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "5xx Server Errors"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "4xx Client Errors"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Errors by Endpoint",
+      "description": "Error count broken down by API endpoint",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "customMetrics\n| where name == \"pii.errors\"\n| where $__timeFilter(timestamp)\n| extend endpoint = tostring(customDimensions.endpoint)\n| summarize total=sum(value) by bin(timestamp, $__interval), endpoint",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "time_series"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "pointSize": 5,
+            "showPoints": "auto"
+          }
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "piechart",
+      "title": "Errors by Type",
+      "description": "Distribution of errors by type (not_found, validation, internal)",
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "customMetrics\n| where name == \"pii.errors\"\n| where $__timeFilter(timestamp)\n| extend error_type = tostring(customDimensions.error_type)\n| summarize total=sum(value) by error_type\n| order by total desc\n| take 15",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "/^total$|^count_$/",
+          "values": true
+        },
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ],
+          "showLegend": true
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "Error Breakdown",
+      "description": "Detailed error counts by status code, endpoint, and error type",
+      "gridPos": {
+        "h": 9,
+        "w": 16,
+        "x": 8,
+        "y": 16
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "customMetrics\n| where name == \"pii.errors\"\n| where $__timeFilter(timestamp)\n| extend status_code = tostring(customDimensions.status_code), endpoint = tostring(customDimensions.endpoint), error_type = tostring(customDimensions.error_type)\n| summarize Count=sum(value) by status_code, endpoint, error_type\n| order by Count desc\n| project ['Status Code']=status_code, Endpoint=endpoint, ['Error Type']=error_type, Count",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "logs",
+      "title": "Recent Error & Warning Logs",
+      "description": "Error and warning logs from PII Shield via App Insights",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 26
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "traces\n| where $__timeFilter(timestamp)\n| where severityLevel >= 3\n| project timestamp, message, severityLevel\n| order by timestamp desc\n| take 100",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "logs"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none"
+      }
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "Error Traces",
+      "description": "Recent exceptions from App Insights",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "exceptions\n| where $__timeFilter(timestamp)\n| project timestamp, problemId, type, outerMessage, innermostMessage, details\n| order by timestamp desc\n| take 50",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ]
+    }
+  ],
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "templating": {
+    "list": []
+  },
+  "id": null
+}

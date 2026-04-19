@@ -1,0 +1,344 @@
+# PII Shield — Recognizer Context Configuration
+#
+# This file defines the context words used by each recognizer. Context words
+# are terms that, when found near a potential PII match, boost the recognizer's
+# confidence score. Edit this file to customize detection without code changes.
+#
+# Usage:
+#   1. Set RECOGNIZER_CONTEXTS_FILE=config/recognizer_contexts.yml in .env
+#   2. Edit the entries below to add/remove context words
+#   3. Restart the service
+#
+# Two modes per recognizer:
+#   context:         Sets the recognizer's context word list
+#   context_append:  Adds words on top of what's defined in context (or code defaults)
+#
+# Keys must match Presidio recognizer class names (case-sensitive).
+
+recognizers:
+
+  # --- Indian Recognizers ---
+
+  InAadhaarImprovedRecognizer:
+    context:
+      - aadhaar
+      - aadhar
+      - uidai
+      - uid
+
+  InApaarRecognizer:
+    context:
+      - apaar
+      - academic
+      - student id
+      - student
+      - abc
+      - academic bank of credits
+      - digilocker
+      - education
+      - enrollment
+      - school
+      - university
+      - college
+      - pen
+      - permanent education number
+
+  InCkycRecognizer:
+    context:
+      - ckyc
+      - central kyc
+      - kyc identifier
+      - kin
+      - cersai
+      - kyc number
+      - kyc compliance
+      - central registry
+
+  CustomerIdRecognizer:
+    context:
+      - customer id
+      - customer number
+      - customer no
+      - cust id
+      - custid
+      - cust no
+      - cif
+      - cif number
+      - cif no
+      - net banking
+      - internet banking
+      - mobile banking
+      - login id
+      - user id
+      - banking id
+      - welcome kit
+      - welcome letter
+
+  InBankAccountRecognizer:
+    context:
+      # India-specific transfer / payment systems
+      - ifsc
+      - neft
+      - rtgs
+      - imps
+      - upi
+      - nach
+      - ecs
+      - challan
+      # India-specific account terms
+      - a/c
+      - passbook
+      - cheque
+      - nre
+      - nro
+      # Generic banking terms (India-default in an India-focused system)
+      - bank
+      - account
+      - savings
+      - current
+      # Indian bank names
+      - sbi
+      - state bank
+      - hdfc
+      - icici
+      - pnb
+      - punjab national
+      - axis
+      - kotak
+      - indusind
+      - canara
+      - union bank
+      - bank of baroda
+      - bob
+      - idbi
+      - indian bank
+      - central bank
+      - bank of india
+      - boi
+      - rbl
+      - federal bank
+      - south indian bank
+      - karur vysya
+      - bandhan
+      - yes bank
+      - idfc
+      # Fictional Indian bank used in test data
+      - contoso
+      # Indian currency
+      - inr
+      - "₹"
+      - rupee
+      - rupees
+
+  InDrivingLicenseRecognizer:
+    context:
+      - driving
+      - license
+      - licence
+      - dl
+      - DL
+
+  InPhoneRecognizer:
+    context:
+      - phone
+      - mobile
+      - contact
+      - tel
+      - telephone
+      - cell
+      - landline
+      - call
+      - whatsapp
+      - sms
+      - reach
+      - dial
+      - number
+      - ph
+
+  InPinCodeRecognizer:
+    context:
+      - pin
+      - postal
+      - zip
+      - pincode
+      - postcode
+      - post office
+      - post code
+      # Address-related words
+      - address
+      - addr
+      - residence
+      - residential
+      # Indian locality suffixes
+      - enclave
+      - nagar
+      - colony
+      - layout
+      - sector
+      - vihar
+      - puram
+      - kunj
+      - marg
+      - bagh
+      - chowk
+      # Geographic terms
+      - city
+      - town
+      - village
+      - district
+      - taluk
+
+  InPranRecognizer:
+    context:
+      - pran
+      - nps
+      - national pension
+      - pension
+      - retirement
+      - pfrda
+      - annuity
+      - tier i
+      - tier ii
+      - subscriber
+      - pension fund
+      - cra
+
+  InUpiIdRecognizer:
+    context:
+      - upi
+      - vpa
+      - pay
+      - payment
+      - transfer
+      - send
+      - receive
+      - gpay
+      - google pay
+      - phonepe
+      - paytm
+      - bhim
+      - wallet
+      - merchant
+      - qr
+      - scan
+      - collect
+      - request
+
+  NaturalDateRecognizer:
+    context:
+      - date
+      - dated
+      - "on"
+      - from
+      - since
+      - until
+      - by
+      - before
+      - after
+      - received
+      - initiated
+      - submitted
+      - applied
+      - issued
+      - expires
+      - expiry
+      - valid
+
+  # --- US Recognizer ---
+
+  UsBankAccountRecognizer:
+    context:
+      # US bank names
+      - wells
+      - fargo
+      - america
+      - chase
+      - citi
+      - citibank
+      - jpmorgan
+      - pnc
+      - capital
+      - goldman
+      - morgan
+      - stanley
+      # US banking terms
+      - routing
+      - wire
+      - checking
+
+  # --- Presidio Built-in India Recognizers (context enhancement) ---
+
+  InGstinRecognizer:
+    context:
+      - gstin
+      - gst
+      - goods and services tax
+      - tax identification
+      - gst number
+      - gst registration
+      - tax
+      - tin
+      - taxpayer
+      - invoice
+      - billing
+      - vendor
+      - supplier
+      - merchant
+      - business
+      - firm
+      - company
+      - registered
+
+  InPassportRecognizer:
+    context:
+      - passport
+      - indian passport
+      - passport number
+      - travel document
+      - immigration
+      - visa
+      - emigration
+      - foreign travel
+      - consulate
+      - embassy
+      - mea
+      - ministry of external affairs
+      - psk
+      - passport seva kendra
+      - ecr
+      - ecnr
+
+  InVehicleRegistrationRecognizer:
+    context:
+      - vehicle
+      - registration
+      - plate
+      - rto
+      - number plate
+      - car
+      - bike
+      - motorcycle
+      - two wheeler
+      - four wheeler
+      - automobile
+      - motor
+      - transport
+      - chassis
+      - rc
+      - registration certificate
+      - parivahan
+
+  InVoterRecognizer:
+    context:
+      - voter
+      - epic
+      - elector photo identity card
+      - voter id
+      - voter card
+      - election
+      - electoral
+      - election commission
+      - eci
+      - polling
+      - constituency
+      - electors

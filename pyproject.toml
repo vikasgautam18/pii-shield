@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pii-shield"
+version = "0.2.0"
+description = "PII detection and anonymization library for Indian and universal entity types"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Text Processing",
+]
+
+dependencies = [
+    "presidio-analyzer>=2.2.355",
+    "presidio-anonymizer>=2.2.355",
+    "spacy>=3.7",
+    "cryptography>=42.0",
+]
+
+[project.optional-dependencies]
+# NLP backends (pick one; user must also download the spaCy model)
+spacy = []  # default — user runs: python -m spacy download en_core_web_lg
+stanza = ["stanza>=1.6", "spacy-stanza>=1.0", "torch"]
+transformers = ["transformers>=4.30", "spacy-huggingface-pipelines", "torch"]
+onnx = ["optimum[onnxruntime]", "transformers>=4.30", "spacy-huggingface-pipelines"]
+
+# Post-quantum encryption
+pqc = ["keeper-mlkem"]
+
+# Batch processing extras
+batch = ["pandas>=2.0", "tqdm"]
+
+# Full service (everything for the FastAPI app + Docker deployment)
+service = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "gunicorn",
+    "redis>=5.0",
+    "gradio>=5.0",
+    "python-dotenv>=1.1",
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp-proto-grpc",
+    "opentelemetry-instrumentation-fastapi",
+    "opentelemetry-instrumentation-logging",
+    "azure-monitor-opentelemetry-exporter",
+]
+
+# Development / testing
+dev = [
+    "pytest>=9.0",
+    "httpx",
+    "fakeredis>=2.26",
+]
+
+[tool.setuptools.packages.find]
+include = ["pii_shield*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

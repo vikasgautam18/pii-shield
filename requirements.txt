@@ -1,0 +1,34 @@
+fastapi==0.115.2
+uvicorn==0.30.6
+presidio-analyzer==2.2.362
+presidio-anonymizer==2.2.362
+pydantic==2.9.2
+requests==2.32.3
+gradio==5.23.0
+streamlit>=1.38.0
+redis>=5.3.0
+fakeredis==2.26.2
+python-dotenv==1.1.0
+stanza==1.6.1
+spacy-stanza==1.0.4
+# --- OpenTelemetry observability ---
+opentelemetry-api==1.40.0
+opentelemetry-sdk==1.40.0
+opentelemetry-exporter-otlp-proto-grpc==1.40.0
+azure-monitor-opentelemetry-exporter==1.0.0b51
+opentelemetry-instrumentation-fastapi==0.61b0
+opentelemetry-instrumentation-logging==0.61b0
+cryptography
+keeper-mlkem
+# --- Transformers NLP engine (optional, for NLP_ENGINE=transformers) ---
+spacy-huggingface-pipelines
+transformers
+# --- ONNX Runtime NLP engine (optional, for NLP_ENGINE=onnx) ---
+optimum[onnxruntime]
+# --- PyTorch CPU (required by Stanza) ---
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+gunicorn
+# --- Azure Redis Entra authentication (optional, for REDIS_AUTH_MODE=entra) ---
+azure-identity>=1.15.0
+PyYAML==6.0.3

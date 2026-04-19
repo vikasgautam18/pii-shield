@@ -1,0 +1,25 @@
+# PII Shield — Terraform variable values
+#
+# 1. Copy this file to terraform.tfvars
+# 2. Set subscription_id (required)
+# 3. Set project_name — used as a prefix for all resources
+#    (3-16 lowercase alphanumeric chars)
+#
+#   cp terraform.tfvars.example terraform.tfvars
+
+# REQUIRED: your Azure subscription ID
+subscription_id = "<your-subscription-id>"
+
+# Name prefix for all resources. A random 5-char suffix is appended to
+# globally-unique resources (ACR, Redis, Grafana) automatically.
+project_name = "piishield"
+
+# Azure region
+location = "centralindia"
+
+# Optional: explicit suffix for globally-unique resources.
+# Leave empty to auto-generate. Useful for reproducible redeploys.
+# name_suffix = "prod01"
+
+# Redis sizing (Standard C1 is a sensible default; raise to C3 for production load)
+redis_capacity = 1

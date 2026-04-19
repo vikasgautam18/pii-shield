@@ -1,0 +1,35 @@
+# PII Shield — Test Suite Configuration (TEMPLATE)
+#
+# Copy this file to test_config.yml and fill in your deployment-specific
+# values. test_config.yml is git-ignored and is the file the test scripts
+# actually read.
+
+defaults:
+  timeout_seconds: 30
+
+local:
+  api_url: "http://localhost:8000"
+  output: "examples/__results/test_report.html"
+
+azure:
+  api_url: "https://<your-api>.<region>.azurecontainerapps.io"
+  output: "examples/__results/test_report_azure.html"
+  timeout_seconds: 60
+  workers: 4
+  retries:
+    total: 3
+    backoff_factor: 0.5
+
+scale:
+  api_url: "https://<your-api>.<region>.azurecontainerapps.io"
+  output: "examples/__results/scale_test_report.json"
+  apps: 6
+  rpm: 100
+  duration_seconds: 300
+  concurrency: 50
+  workers: 4
+  ramp_up_seconds: 30
+  timeout_seconds: 30
+
+library:
+  output: "examples/__results/library_test_report.html"
