@@ -9,16 +9,13 @@ import os
 import requests
 import streamlit as st
 
+from themes import apply_theme
+
 API_BASE = os.getenv("API_BASE", "http://localhost:8000")
 
-st.set_page_config(page_title="PII Shield Playground", page_icon="", layout="wide")
-st.markdown(
-    "<style>#MainMenu {visibility: hidden;} footer {visibility: hidden;} "
-    "header [data-testid='stStatusWidget'] {display: none;} "
-    ".stDeployButton {display: none;}</style>",
-    unsafe_allow_html=True,
-)
-st.title(" PII Shield Playground")
+st.set_page_config(page_title="PII Shield Playground", page_icon="🛡️", layout="wide")
+apply_theme()
+st.title("🛡️ PII Shield Playground")
 st.caption("Detect, anonymize, and restore PII using Microsoft Presidio.")
 
 
@@ -39,7 +36,7 @@ def app_choices() -> dict[str, str]:
 
 # ── Tabs ─────────────────────────────────────────────────────────────────────
 
-tab_anon, tab_deanon = st.tabs(["[lock] Anonymize", " De-anonymize"])
+tab_anon, tab_deanon = st.tabs(["🔒 Anonymize", "🔓 De-anonymize"])
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 1: Anonymize
@@ -81,8 +78,13 @@ with tab_anon:
                 if resp.status_code == 200:
                     data = resp.json()
 
-                    # Store session for de-anonymize tab
+                    # Store session for de-anonymize tab (write directly into widget keys
+                    # so subsequent reruns show the new value even after the widget was
+                    # already instantiated in a prior render).
                     st.session_state.session_id = data["id"]
+                    st.session_state["deanon_session"] = data["id"]
+                    st.session_state["deanon_input"] = data["anonymized_text"]
+                    st.session_state["deanon_app"] = anon_app_sel
                     all_mappings = {
                         **data["entity_mapping"],
                         **data.get("hash_mapping", {}),
@@ -94,7 +96,7 @@ with tab_anon:
 
                     col1, col2 = st.columns(2)
                     with col1:
-                        st.markdown("**Detected PIIs:**")
+                        st.markdown("<p class='pii-section-label'>Detected PIIs:</p>", unsafe_allow_html=True)
                         pii_lines = []
                         for placeholder, original in data["entity_mapping"].items():
                             pii_lines.append(f"`{placeholder}` → {original}")
@@ -105,7 +107,7 @@ with tab_anon:
                         st.markdown("\n\n".join(pii_lines) if pii_lines else "No PII detected.")
 
                     with col2:
-                        st.markdown("**Anonymized Text:**")
+                        st.markdown("<p class='pii-section-label'>Anonymized Text:</p>", unsafe_allow_html=True)
                         st.text_area(
                             "Result",
                             value=data["anonymized_text"],
@@ -115,11 +117,12 @@ with tab_anon:
                             label_visibility="collapsed",
                         )
 
+                    st.markdown("<p class='pii-section-label'>Session ID:</p>", unsafe_allow_html=True)
                     st.code(data["id"], language=None)
                 else:
                     st.error(f"Anonymization failed: {resp.text}")
             except requests.ConnectionError:
-                st.error("[WARN] Cannot reach the PII Shield API server.")
+                st.error("⚠️ Cannot reach the PII Shield API server.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -138,13 +141,12 @@ with tab_deanon:
     )
     deanon_app_id = choices.get(deanon_app_sel, "")
 
-    # Pre-fill from anonymize tab if available
-    default_text = st.session_state.get("anonymized_text", "")
-    default_session = st.session_state.get("session_id", "")
+    # Pre-fill from anonymize tab if available — the anonymize handler writes
+    # directly into the widget keys ("deanon_input", "deanon_session"), so the
+    # widgets below pick those up on rerun without needing a `value=` default.
 
     deanon_input = st.text_area(
         "Anonymized Text",
-        value=default_text,
         placeholder="Paste anonymized text (with {{ENTITY_N}} placeholders)…",
         height=150,
         key="deanon_input",
@@ -152,7 +154,6 @@ with tab_deanon:
 
     session_id = st.text_input(
         "Session ID",
-        value=default_session,
         key="deanon_session",
     )
 
@@ -195,7 +196,7 @@ with tab_deanon:
                             st.caption("(no mapping available)")
 
                     with col2:
-                        st.markdown("**De-anonymized Text:**")
+                        st.markdown("<p class='pii-section-label'>De-anonymized Text:</p>", unsafe_allow_html=True)
                         st.text_area(
                             "Result",
                             value=result["text"],
@@ -207,4 +208,4 @@ with tab_deanon:
                 else:
                     st.error(f"De-anonymization failed: {resp.text}")
             except requests.ConnectionError:
-                st.error("[WARN] Cannot reach the PII Shield API server.")
+                st.error("⚠️ Cannot reach the PII Shield API server.")

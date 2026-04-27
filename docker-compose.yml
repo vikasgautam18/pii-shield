@@ -43,7 +43,7 @@ services:
       - TRANSFORMERS_MODEL=${TRANSFORMERS_MODEL:-dslim/bert-base-NER}
       - TRANSFORMERS_SPACY_MODEL=${TRANSFORMERS_SPACY_MODEL:-en_core_web_sm}
       - SESSION_TTL_SECONDS=${SESSION_TTL_SECONDS:-86400}
-      - DISABLED_RECOGNIZERS=${DISABLED_RECOGNIZERS:-CreditCardRecognizer,InAadhaarRecognizer,NhsRecognizer,UsBankRecognizer,SgFinRecognizer,AuAbnRecognizer,AuAcnRecognizer,AuTfnRecognizer,AuMedicareRecognizer,MedicalLicenseRecognizer}
+      - DISABLED_RECOGNIZERS=${DISABLED_RECOGNIZERS:-InAadhaarRecognizer,NhsRecognizer,UsBankRecognizer,SgFinRecognizer,AuAbnRecognizer,AuAcnRecognizer,AuTfnRecognizer,AuMedicareRecognizer,MedicalLicenseRecognizer}
       - CONTEXT_SIMILARITY_FACTOR=${CONTEXT_SIMILARITY_FACTOR:-0.45}
     depends_on:
       redis:
@@ -61,6 +61,7 @@ services:
       - "7860:7860"
     environment:
       - API_BASE=http://app:8000
+      - PII_SHIELD_THEME=${PII_SHIELD_THEME:-maroon}
     depends_on:
       - app
 
@@ -76,6 +77,7 @@ services:
       - "7861:7861"
     environment:
       - API_BASE=http://app:8000
+      - PII_SHIELD_THEME=${PII_SHIELD_THEME:-maroon}
     depends_on:
       - app
 

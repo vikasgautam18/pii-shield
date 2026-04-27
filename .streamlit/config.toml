@@ -6,3 +6,15 @@ headless = true
 
 [browser]
 gatherUsageStats = false
+
+# ── Theme: typography baseline shared by ALL deployment themes ───────────
+# Brand colors (primaryColor, backgroundColor, textColor, etc.) live in
+# app/themes.py and are selected at deploy time via PII_SHIELD_THEME.
+[theme]
+base = "light"
+
+borderColor               = "#E2D8D0"
+showWidgetBorder          = true
+baseRadius                = "0.5rem"
+
+baseFontSize              = 18

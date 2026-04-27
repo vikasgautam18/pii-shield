@@ -1,6 +1,6 @@
 """Streamlit UI for PII Shield — Admin & Application Registry.
 
-Run: streamlit run app/streamlit_admin.py --server.port 7861
+Run:  streamlit run app/streamlit_admin.py --server.port 7861
 """
 
 import os
@@ -9,16 +9,13 @@ import pandas as pd
 import requests
 import streamlit as st
 
+from themes import apply_theme
+
 API_BASE = os.getenv("API_BASE", "http://localhost:8000")
 
-st.set_page_config(page_title="PII Admin", page_icon="", layout="wide")
-st.markdown(
-    "<style>#MainMenu {visibility: hidden;} footer {visibility: hidden;} "
-    "header [data-testid='stStatusWidget'] {display: none;} "
-    ".stDeployButton {display: none;}</style>",
-    unsafe_allow_html=True,
-)
-st.title(" PII Admin")
+st.set_page_config(page_title="PII Admin", page_icon="🛡️", layout="wide")
+apply_theme()
+st.title("🛡️ PII Admin")
 st.caption("Application registration, configuration, and management.")
 
 
@@ -55,7 +52,7 @@ def clear_cache():
 # ── Tabs ─────────────────────────────────────────────────────────────────────
 
 tab_apps, tab_admin, tab_allow, tab_audit = st.tabs(
-    [" Registered Apps", " Admin", " Allow-Lists", " Audit Log"]
+    ["📋 Registered Apps", "⚙️ Admin", "🔓 Allow-Lists", "📜 Audit Log"]
 )
 
 
@@ -65,7 +62,7 @@ tab_apps, tab_admin, tab_allow, tab_audit = st.tabs(
 
 with tab_apps:
     st.subheader("All Registered Applications")
-    if st.button(" Refresh", key="refresh_apps"):
+    if st.button("🔄 Refresh", key="refresh_apps"):
         clear_cache()
 
     apps = fetch_apps()
@@ -102,7 +99,7 @@ with tab_admin:
     st.subheader("Application Registration & Configuration")
 
     # ── Register ─────────────────────────────────────────────────────────
-    with st.expander("+ Register New Application", expanded=True):
+    with st.expander("➕ Register New Application", expanded=True):
         reg_name = st.text_input("Application Name", placeholder="e.g. MyLLMApp")
         if st.button("Register", key="register_btn", type="primary"):
             if not reg_name.strip():
@@ -112,13 +109,13 @@ with tab_admin:
                 if resp.status_code == 201:
                     data = resp.json()
                     clear_cache()
-                    st.success(f"[PASS] Registered! App ID: `{data['app_id']}`")
+                    st.success(f"✅ Registered! App ID: `{data['app_id']}`")
                     st.json(data)
                 else:
                     st.error(f"Error: {resp.text}")
 
     # ── Lookup ───────────────────────────────────────────────────────────
-    with st.expander(" Lookup Application"):
+    with st.expander("🔍 Lookup Application"):
         choices = app_choices()
         if choices:
             selected = st.selectbox("Select Application", options=["Pick your application..."] + list(choices.keys()), index=0, key="lookup_sel")
@@ -136,7 +133,7 @@ with tab_admin:
             st.info("No applications registered.")
 
     # ── Update Config ────────────────────────────────────────────────────
-    with st.expander(" Update Entity Strategy"):
+    with st.expander("🔧 Update Entity Strategy"):
         choices = app_choices()
         if choices:
             cfg_sel = st.selectbox("Select Application", options=["Pick your application..."] + list(choices.keys()), index=0, key="cfg_sel")
@@ -157,7 +154,7 @@ with tab_admin:
                     )
                 if resp.status_code == 200:
                     clear_cache()
-                    st.success("[PASS] Config updated!")
+                    st.success("✅ Config updated!")
                     st.json(resp.json())
                 else:
                     st.error(f"Error: {resp.text}")
@@ -165,13 +162,13 @@ with tab_admin:
             st.info("No applications registered.")
 
     # ── Delete ───────────────────────────────────────────────────────────
-    with st.expander(" Delete Application"):
+    with st.expander("🗑️ Delete Application"):
         choices = app_choices()
         if choices:
             del_sel = st.selectbox("Select Application", options=["Pick your application..."] + list(choices.keys()), index=0, key="del_sel")
             del_app_id = choices.get(del_sel, "")
             if del_app_id:
-                st.warning(f"[WARN] This will permanently delete app `{del_app_id}`")
+                st.warning(f"⚠️ This will permanently delete app `{del_app_id}`")
             if st.button("Delete", key="del_btn"):
                 if not del_app_id:
                     st.warning("Please select an application.")
@@ -179,7 +176,7 @@ with tab_admin:
                     resp = requests.delete(f"{API_BASE}/apps/{del_app_id}")
                 if resp.status_code == 204:
                     clear_cache()
-                    st.success(f"[PASS] Deleted: {del_app_id}")
+                    st.success(f"✅ Deleted: {del_app_id}")
                 else:
                     st.error(f"Error: {resp.text}")
         else:
@@ -202,10 +199,10 @@ with tab_allow:
         al_app_id = choices.get(al_sel, "")
 
         if not al_app_id:
-            st.info(" Pick an application above to manage its allow-lists.")
+            st.info("👆 Pick an application above to manage its allow-lists.")
         else:
             # ── Entity-Type Allow-List ───────────────────────────────────
-            with st.expander(" Entity-Type Allow-List", expanded=True):
+            with st.expander("🏷️ Entity-Type Allow-List", expanded=True):
                 st.caption("Select entity types to **exclude** from anonymization for this app.")
                 entity_types = fetch_entity_types()
 
@@ -228,12 +225,12 @@ with tab_allow:
                     )
                     if resp.status_code == 200:
                         clear_cache()
-                        st.success(f"[PASS] Saved {len(selected_et)} entity type(s).")
+                        st.success(f"✅ Saved {len(selected_et)} entity type(s).")
                     else:
                         st.error(f"Error: {resp.text}")
 
             # ── Entity-Keyword Allow-List ────────────────────────────────
-            with st.expander("[key] Entity-Keyword Allow-List", expanded=True):
+            with st.expander("🔑 Entity-Keyword Allow-List", expanded=True):
                 st.caption(
                     "Exclude **specific text** only when detected as a **specific entity type**. "
                     "For example, allow 'Contoso Bank' as ORGANIZATION but still anonymize it if detected as something else."
@@ -290,11 +287,11 @@ with tab_allow:
                         total = sum(len(v) for v in saved.values())
                         clear_cache()
                         st.session_state.ekw_df = edited_df
-                        st.success(f"[PASS] Saved {total} entity-keyword pair(s) across {len(saved)} type(s).")
+                        st.success(f"✅ Saved {total} entity-keyword pair(s) across {len(saved)} type(s).")
                     else:
                         st.error(f"Error: {resp.text}")
 
-                if st.button(" Reload from server", key="ekw_reload"):
+                if st.button("🔄 Reload from server", key="ekw_reload"):
                     st.session_state.pop("ekw_df", None)
                     st.session_state.pop("ekw_app_id", None)
                     st.rerun()
@@ -326,8 +323,8 @@ with tab_audit:
     with col2:
         audit_action = st.selectbox("Filter by Action", options=AUDIT_ACTIONS, key="audit_action")
 
-    if st.button(" Refresh Audit Log", key="audit_refresh"):
-        pass # Just triggers re-run
+    if st.button("🔄 Refresh Audit Log", key="audit_refresh"):
+        pass  # Just triggers re-run
 
     params: dict = {"limit": 200}
     if audit_app_id:
@@ -349,8 +346,8 @@ with tab_audit:
         else:
             st.error(f"Error: {resp.text}")
     except requests.ConnectionError:
-        st.error("[WARN] Cannot reach the API server.")
+        st.error("⚠️ Cannot reach the API server.")
 
 
 if __name__ == "__main__":
-    pass # Run via: streamlit run app/streamlit_admin.py --server.port 7861
+    pass  # Run via: streamlit run app/streamlit_admin.py --server.port 7861
