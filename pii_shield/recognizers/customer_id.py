@@ -1,8 +1,8 @@
 """Custom Presidio recognizer for banking Customer IDs.
 
 Format: 9-digit numeric code assigned to each customer by the bank.
-For example, Axis Bank assigns a 9-digit Customer ID used as the
-primary login identifier for net banking and mobile banking.
+For example, several Indian banks assign a 9-digit Customer ID used as the primary login identifier for net
+banking and mobile banking.
 
 The base score is intentionally low (0.10) — matching IN_BANK_ACCOUNT —
 so that a 9-digit number is only classified as CUSTOMER_ID when context

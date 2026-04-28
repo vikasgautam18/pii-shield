@@ -122,8 +122,14 @@ recognizers:
       - bandhan
       - yes bank
       - idfc
-      # Fictional Indian bank used in test data
+      # Fictional Indian banks used in test data
       - contoso
+      - woodgrove
+      - fabrikam
+      - litware
+      - adventure works
+      - lucerne
+      - proseware
       # Indian currency
       - inr
       - "₹"
@@ -265,6 +271,11 @@ recognizers:
       - routing
       - wire
       - checking
+      # Fictional US banks used in test data
+      - trey
+      - trey research
+      - margie
+      - margie's travel
 
   # --- Presidio Built-in India Recognizers (context enhancement) ---
 

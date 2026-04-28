@@ -149,14 +149,14 @@ class TestAppAllowList:
 
         resp = client.put(
             f"/apps/{app_id}/allow-list",
-            json={"allow_list": ["Contoso Bank", "HDFC Bank"]},
+            json={"allow_list": ["Contoso Bank", "Woodgrove Bank"]},
         )
         assert resp.status_code == 200
-        assert resp.json()["allow_list"] == ["Contoso Bank", "HDFC Bank"]
+        assert resp.json()["allow_list"] == ["Contoso Bank", "Woodgrove Bank"]
 
         resp = client.get(f"/apps/{app_id}/allow-list")
         assert resp.status_code == 200
-        assert resp.json()["allow_list"] == ["Contoso Bank", "HDFC Bank"]
+        assert resp.json()["allow_list"] == ["Contoso Bank", "Woodgrove Bank"]
 
     def test_allow_list_nonexistent_app(self, client):
         resp = client.get("/apps/nonexistent/allow-list")

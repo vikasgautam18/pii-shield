@@ -252,12 +252,6 @@ analyzer = engine._analyzer
 logger.info("PiiShieldEngine ready (NLP engine: %s)", get_nlp_engine_name())
 
 
-@app.get("/health")
-async def health() -> dict:
-    """Liveness probe: returns 200 if the process is up and the engine initialized."""
-    return {"status": "ok", "nlp_engine": get_nlp_engine_name()}
-
-
 @app.get("/supported-entities")
 async def supported_entities() -> list[str]:
     """Return the list of PII entity types the analyzer can detect."""
@@ -486,7 +480,7 @@ async def get_allow_list(app_id: str) -> dict:
 async def update_allow_list(app_id: str, body: dict) -> dict:
     """Set the allow-list for an application.
 
-    Body: ``{"allow_list": ["Contoso Bank", "HDFC Bank"]}``
+    Body: ``{"allow_list": ["Contoso Bank", "Woodgrove Bank"]}``
     """
     allow_list = body.get("allow_list")
     if not isinstance(allow_list, list):

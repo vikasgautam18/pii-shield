@@ -270,7 +270,7 @@
   {
     "id": "upi-merchant-payment",
     "scenario": "UPI Merchant Payment Dispute",
-    "text": "Customer Priya Menon (UPI ID priya.menon@oksbi) raised a dispute for a failed payment of Rs 4,500 to merchant shop.grocery@paytm on 12th March 2025. The transaction was debited from her SBI account linked to UPI but not credited to the merchant. Customer contact: priya.menon@gmail.com, phone +91 9876012345. Merchant address: 45, MG Road, Kochi 682016.",
+    "text": "Customer Priya Menon (UPI ID priya.menon@oksbi) raised a dispute for a failed payment of Rs 4,500 to merchant shop.grocery@paytm on 12th March 2025. The transaction was debited from her Litware Bank account linked to UPI but not credited to the merchant. Customer contact: priya.menon@gmail.com, phone +91 9876012345. Merchant address: 45, MG Road, Kochi 682016.",
     "expected_pii_types": [
       "PERSON",
       "IN_UPI_ID",
@@ -325,7 +325,7 @@
   {
     "id": "json-nri-wire-transfer",
     "scenario": "JSON Payload — NRI Wire Transfer with US SSN",
-    "text": "{\"transfer_id\": \"WIRE-2025-04891\", \"sender\": {\"name\": \"Rajesh Patel\", \"ssn\": \"287-14-5633\", \"email\": \"rajesh.patel@outlook.com\", \"phone\": \"+1 408-555-1234\"}, \"beneficiary\": {\"name\": \"Meera Patel\", \"account\": \"50100236789012\", \"ifsc\": \"HDFC0002345\", \"bank\": \"HDFC Bank\"}, \"amount_usd\": 15000, \"purpose\": \"Family maintenance\", \"timestamp\": \"2025-04-10 09:15:00\"}",
+    "text": "{\"transfer_id\": \"WIRE-2025-04891\", \"sender\": {\"name\": \"Rajesh Patel\", \"ssn\": \"287-14-5633\", \"email\": \"rajesh.patel@outlook.com\", \"phone\": \"+1 408-555-1234\"}, \"beneficiary\": {\"name\": \"Meera Patel\", \"account\": \"50100236789012\", \"ifsc\": \"WGRV0002345\", \"bank\": \"Woodgrove Bank\"}, \"amount_usd\": 15000, \"purpose\": \"Family maintenance\", \"timestamp\": \"2025-04-10 09:15:00\"}",
     "expected_pii_types": [
       "PERSON",
       "US_SSN",
@@ -379,7 +379,7 @@
   {
     "id": "bank-account-neft",
     "scenario": "NEFT Transfer with Indian Bank Account",
-    "text": "Process NEFT transfer of ₹1,50,000 from Amit Verma, SBI savings account 38748392045 (IFSC: SBIN0001234) to beneficiary Kavita Sharma, HDFC Bank account 50100236789012 (IFSC: HDFC0002345). Amit's contact: amit.verma@gmail.com, mobile 9876012345. Transfer date: 25th March 2025.",
+    "text": "Process NEFT transfer of ₹1,50,000 from Amit Verma, Litware Bank savings account 38748392045 (IFSC: LTWR0001234) to beneficiary Kavita Sharma, Woodgrove Bank account 50100236789012 (IFSC: WGRV0002345). Amit's contact: amit.verma@gmail.com, mobile 9876012345. Transfer date: 25th March 2025.",
     "expected_pii_types": [
       "PERSON",
       "IN_BANK_ACCOUNT",
@@ -393,7 +393,7 @@
   {
     "id": "bank-account-rtgs",
     "scenario": "RTGS High-Value Transfer",
-    "text": "RTGS payment of ₹25,00,000 initiated by Narayan Pillai from ICICI Bank current account 125205001234567 to Laxmi Enterprises, Kotak Mahindra Bank account 74110123456789, IFSC KKBK0000123. Contact narayan.pillai@company.in, phone 044-28901234. Initiated on 18 February 2025 from IP 10.200.45.67.",
+    "text": "RTGS payment of ₹25,00,000 initiated by Narayan Pillai from Contoso Bank current account 125205001234567 to Laxmi Enterprises, Adventure Works Bank account 74110123456789, IFSC ADVW0000123. Contact narayan.pillai@company.in, phone 044-28901234. Initiated on 18 February 2025 from IP 10.200.45.67.",
     "expected_pii_types": [
       "PERSON",
       "IN_BANK_ACCOUNT",
@@ -408,7 +408,7 @@
   {
     "id": "bank-account-mixed-context",
     "scenario": "Mixed Indian and US Bank Accounts",
-    "text": "Customer Sanjay Mehta holds an SBI savings account 39876543210 (IFSC SBIN0005678) and a US bank account 123456789012 at Wells Fargo for his international payments. PAN: ABCPM1234F. Contact: sanjay.mehta@outlook.com, mobile +91 9820123456. Address: 45 Marine Drive, Mumbai 400020.",
+    "text": "Customer Sanjay Mehta holds a Litware Bank savings account 39876543210 (IFSC LTWR0005678) and a US bank account 123456789012 at Trey Research Bank for his international payments. PAN: ABCPM1234F. Contact: sanjay.mehta@outlook.com, mobile +91 9820123456. Address: 45 Marine Drive, Mumbai 400020.",
     "expected_pii_types": [
       "PERSON",
       "IN_BANK_ACCOUNT",
@@ -424,7 +424,7 @@
   {
     "id": "bank-account-passbook",
     "scenario": "Passbook Update Request",
-    "text": "Passbook update request from Geeta Devi for PNB savings account 6842000100123456, branch Lajpat Nagar, New Delhi. Aadhaar linked: 5678 9012 3456. Contact mobile 9711023456. Last entry date: 01/12/2024.",
+    "text": "Passbook update request from Geeta Devi for Lucerne Bank savings account 6842000100123456, branch Lajpat Nagar, New Delhi. Aadhaar linked: 5678 9012 3456. Contact mobile 9711023456. Last entry date: 01/12/2024.",
     "expected_pii_types": [
       "DATE_TIME",
       "IN_AADHAAR",
@@ -437,7 +437,7 @@
   {
     "id": "bank-account-cheque",
     "scenario": "Cheque Book Request with A/C Context",
-    "text": "Cheque book request: Customer Ravi Shankar, A/C 917020098712345 at Axis Bank, Jayanagar branch, Bangalore. PAN ABCPS4567K. Email ravi.shankar@yahoo.com, phone 080-41234567. Request date: 5th January 2025.",
+    "text": "Cheque book request: Customer Ravi Shankar, A/C 917020098712345 at Fabrikam Bank, Jayanagar branch, Bangalore. PAN ABCPS4567K. Email ravi.shankar@yahoo.com, phone 080-41234567. Request date: 5th January 2025.",
     "expected_pii_types": [
       "PERSON",
       "IN_BANK_ACCOUNT",
@@ -451,7 +451,7 @@
   {
     "id": "bank-account-nach",
     "scenario": "NACH / ECS Mandate Registration",
-    "text": "NACH debit mandate registration for EMI auto-debit. Borrower: Pradeep Kumar, IndusInd Bank account 201001234567890, IFSC INDB0000123. Loan ID LN2025031234. EMI amount ₹18,500 debit on 5th of every month. Borrower email: pradeep.k@gmail.com, mobile 8800123456.",
+    "text": "NACH debit mandate registration for EMI auto-debit. Borrower: Pradeep Kumar, Proseware Bank account 201001234567890, IFSC PRSW0000123. Loan ID LN2025031234. EMI amount ₹18,500 debit on 5th of every month. Borrower email: pradeep.k@gmail.com, mobile 8800123456.",
     "expected_pii_types": [
       "PERSON",
       "IN_BANK_ACCOUNT",
@@ -464,7 +464,7 @@
   {
     "id": "bank-account-json-transfer",
     "scenario": "JSON Fund Transfer Payload with Bank Accounts",
-    "text": "{\"transfer_type\": \"IMPS\", \"sender\": {\"name\": \"Anita Deshmukh\", \"account\": \"917020065432198\", \"ifsc\": \"SBIN0003456\", \"phone\": \"+919876543210\", \"email\": \"anita.d@gmail.com\"}, \"receiver\": {\"name\": \"Sunil Joshi\", \"account\": \"50100198765432\", \"ifsc\": \"HDFC0007890\", \"bank\": \"HDFC Bank\"}, \"amount\": 75000, \"date\": \"2025-03-20\", \"remarks\": \"Rent payment March 2025\"}",
+    "text": "{\"transfer_type\": \"IMPS\", \"sender\": {\"name\": \"Anita Deshmukh\", \"account\": \"917020065432198\", \"ifsc\": \"LTWR0003456\", \"phone\": \"+919876543210\", \"email\": \"anita.d@gmail.com\"}, \"receiver\": {\"name\": \"Sunil Joshi\", \"account\": \"50100198765432\", \"ifsc\": \"WGRV0007890\", \"bank\": \"Woodgrove Bank\"}, \"amount\": 75000, \"date\": \"2025-03-20\", \"remarks\": \"Rent payment March 2025\"}",
     "expected_pii_types": [
       "PERSON",
       "IN_BANK_ACCOUNT",
@@ -477,8 +477,8 @@
   },
   {
     "id": "bank-account-us-bofa",
-    "scenario": "International Transfer to Bank of America",
-    "text": "International wire transfer request from Deepak Gupta, ICICI Bank account 125205009876543 (IFSC ICIC0001234) to his NRE beneficiary account 0198765432101 at Bank of America, routing number 026009593. Amount: USD 5,000. Deepak's PAN: ABCPG5678K. Email: deepak.gupta@company.com, mobile +91 9845098450. Transfer date: 10th March 2025.",
+    "scenario": "International Transfer to Margie's Travel Bank",
+    "text": "International wire transfer request from Deepak Gupta, Contoso Bank account 125205009876543 (IFSC CNTS0001234) to his NRE beneficiary account 0198765432101 at Margie's Travel Bank, routing number 026009593. Amount: USD 5,000. Deepak's PAN: ABCPG5678K. Email: deepak.gupta@company.com, mobile +91 9845098450. Transfer date: 10th March 2025.",
     "expected_pii_types": [
       "PERSON",
       "IN_BANK_ACCOUNT",

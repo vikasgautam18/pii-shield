@@ -5,9 +5,8 @@ with no universal checksum.  Detection relies on contextual clues —
 nearby keywords like *IFSC*, *NEFT*, *RTGS*, or Indian bank names
 boost confidence.
 
-Digit-length ranges by major bank:
-  SBI: 11 | HDFC: 13–14 | ICICI: 12 | PNB: 16 | Axis: 15 |
-  Kotak: 14 | BOB: 14 | Canara: 13 | Union: 15 | IndusInd: 14
+Most Indian banks issue 11–16-digit account numbers; the recognizer
+accepts 9–18 digits to cover the full range.
 
 Context keywords differentiate IN_BANK_ACCOUNT from the built-in
 US_BANK_NUMBER recognizer (which uses US-centric context like

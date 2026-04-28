@@ -15,7 +15,7 @@ from presidio_analyzer import Pattern, PatternRecognizer
 _UPI_HANDLES = (
     # BHIM / NPCI
     "upi",
-    # PhonePe (Yes Bank, ICICI, Axis)
+    # PhonePe (multiple bank rails)
     "ybl", "ibl", "axl",
     # Google Pay
     "okhdfcbank", "oksbi", "okicici", "okaxis",

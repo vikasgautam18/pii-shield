@@ -25,8 +25,9 @@ def deanonymize(session_id: str, text: str) -> dict:
 
 if __name__ == "__main__":
     sample_text = (
-        "My name is John Smith and my email is john.smith@example.com. "
-        "I live at 123 Main Street, New York. My phone number is 212-555-1234."
+        "Rahul Sharma's Aadhaar is 2345 6789 0123 and his UPI is rahul@okcontoso. "
+        "He lives at MG Road, Bangalore 560001. Call him on +91-9876543210 "
+        "or email rahul.sharma@example.in."
     )
 
     print("Original text:")

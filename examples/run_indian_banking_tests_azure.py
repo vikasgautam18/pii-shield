@@ -14,7 +14,7 @@ Usage:
     python examples/run_indian_banking_tests_azure.py [--api-url URL] [--output FILE]
 
 Defaults:
-    --api-url   reads `azure.api_url` from examples/test_config.yml
+    --api-url   https://pii-shield.thankfulplant-d485e8db.centralindia.azurecontainerapps.io
     --output    examples/__results/test_report_azure.html
 """
 
@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from collections import Counter
@@ -36,17 +35,10 @@ import re
 
 import requests
 
-# Allow `from _config import ...` regardless of the cwd the user runs from.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _config import load_section  # noqa: E402
+# ── Defaults ─────────────────────────────────────────────────────────────────
 
-# ── Configuration loading ────────────────────────────────────────────────────
-
-_cfg = load_section("azure", required_keys=["api_url"])
-DEFAULT_API_URL = os.getenv("PII_SHIELD_API_URL", _cfg["api_url"])
-DEFAULT_OUTPUT = _cfg.get("output", "examples/__results/test_report_azure.html")
-DEFAULT_TIMEOUT = int(_cfg.get("timeout_seconds", 60))
-DEFAULT_WORKERS = int(_cfg.get("workers", 4))
+DEFAULT_API_URL = "https://pii-shield.thankfulplant-d485e8db.centralindia.azurecontainerapps.io"
+DEFAULT_OUTPUT = "examples/__results/test_report_azure.html"
 
 # ── Data Classes ─────────────────────────────────────────────────────────────
 
@@ -753,9 +745,9 @@ class TestRunner:
         }
         self._log(
             "LLM Sandwich",
-            "[PASS] placeholders resolved"
+            "✅ placeholders resolved"
             if not has_placeholders
-            else "[WARN] unresolved placeholders",
+            else "⚠️ unresolved placeholders",
         )
 
     def run_structured_data(self) -> None:
@@ -1377,7 +1369,7 @@ class TestRunner:
             },
             {
                 "label": "NRI remittance with SSN + IFSC",
-                "text": "Wire transfer for SSN 456-78-9012 to ICICI IFSC ICIC0001234, beneficiary account 9876543210.",
+                "text": "Wire transfer for SSN 456-78-9012 to Contoso Bank IFSC CNTS0001234, beneficiary account 9876543210.",
                 "expected_type": "US_SSN",
                 "pii_values": ["456-78-9012"],
             },
@@ -1943,8 +1935,8 @@ class TestRunner:
             },
             {
                 "label": "Email address (corporate)",
-                "text": "Send documents to ravi.kumar@hdfc.co.in please.",
-                "pii_values": ["ravi.kumar@hdfc.co.in"],
+                "text": "Send documents to ravi.kumar@woodgrovebank.co.in please.",
+                "pii_values": ["ravi.kumar@woodgrovebank.co.in"],
                 "pii_types": ["EMAIL_ADDRESS"],
             },
             {
@@ -2093,9 +2085,9 @@ class TestRunner:
             },
             {
                 "label": "Email format (corporate domain)",
-                "text": "Notify ravi.kumar@hdfc.co.in about the update.",
+                "text": "Notify ravi.kumar@woodgrovebank.co.in about the update.",
                 "entity_type": "EMAIL_ADDRESS",
-                "original": "ravi.kumar@hdfc.co.in",
+                "original": "ravi.kumar@woodgrovebank.co.in",
                 "pattern": r"[a-z]+@[a-z]+\.[a-z]+",
             },
             {
@@ -2391,13 +2383,13 @@ class TestRunner:
         if passed < total:
             for label, ok in tests:
                 if not ok:
-                    self._log("Allow-Lists", f" [FAIL] FAIL: {label}")
+                    self._log("Allow-Lists", f"  ❌ FAIL: {label}")
 
     # ── Orchestrator ─────────────────────────────────────────────────────
 
     def run(self) -> None:
         start = time.monotonic()
-        print("\n PII Shield — Indian Banking Test Suite\n")
+        print("\n🛡️  PII Shield — Indian Banking Test Suite\n")
 
         sections = [
             ("Setup", self.run_setup),
@@ -2435,7 +2427,7 @@ class TestRunner:
             try:
                 fn()
             except Exception as exc:
-                print(f" [FAIL] {name} FAILED: {exc}")
+                print(f"  ❌ {name} FAILED: {exc}")
 
         self.elapsed = time.monotonic() - start
         print(f"\n  Done in {self.elapsed:.1f}s\n")
@@ -2447,15 +2439,15 @@ H = html_escape  # shorthand
 
 
 def _icon(ok: bool) -> str:
-    return "[PASS]" if ok else "[FAIL]"
+    return "✅" if ok else "❌"
 
 
 def _icon3(val: float) -> str:
     if val >= 100:
-        return "[PASS]"
+        return "✅"
     if val >= 50:
-        return "[WARN]"
-    return "[FAIL]"
+        return "⚠️"
+    return "❌"
 
 
 def _status_class(ok: bool) -> str:
@@ -2534,13 +2526,13 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
     w('<div class="container">')
 
     # Header
-    w('<h1> PII Shield — Indian Banking Test Report</h1>')
+    w('<h1>🛡️ PII Shield — Indian Banking Test Report</h1>')
     w(f'<p class="timestamp">Generated: {ts} &nbsp;|&nbsp; '
       f'Duration: {runner.elapsed:.1f}s &nbsp;|&nbsp; '
       f'Scenarios: {total_scenarios}</p>')
 
     # ── Summary Dashboard ────────────────────────────────────────────────
-    w('<h2 id="summary"> Summary Dashboard</h2>')
+    w('<h2 id="summary">📊 Summary Dashboard</h2>')
     w('<div class="dashboard">')
     for label, value in [
         ("Scenarios", str(total_scenarios)),
@@ -2585,7 +2577,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
     w("<p>The default anonymization strategy replaces detected PII with "
       "type-tagged placeholders (e.g. <code>&lt;PERSON_1&gt;</code>). "
       "Fully reversible via de-anonymization.</p>")
-    w('<div class="config-summary"><strong> App Configuration</strong>'
+    w('<div class="config-summary"><strong>🔧 App Configuration</strong>'
       '<table><thead><tr><th>App Name</th><th>Entity Type</th><th>Strategy</th>'
       '</tr></thead><tbody>'
       '<tr><td>indian-banking-tests</td><td><em>All entity types</em></td>'
@@ -2599,7 +2591,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         matched = len(sr.matched_types)
         expected_count = len(sr.expected_types)
         status = "pass" if matched == expected_count else "warn" if matched > 0 else "fail"
-        coverage_icon = _icon(matched == expected_count) if matched == expected_count else "[WARN]" if matched > 0 else "[FAIL]"
+        coverage_icon = _icon(matched == expected_count) if matched == expected_count else "⚠️" if matched > 0 else "❌"
         w(f'<details class="scenario-card {status}">')
         w(f"<summary>{H(sr.scenario_name)} &nbsp; {coverage_icon} "
           f"{matched}/{expected_count} types</summary>")
@@ -2619,10 +2611,10 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
 
         w(f"<p><strong>Coverage:</strong> {matched}/{expected_count} expected types</p>")
         if sr.missed_types:
-            w(f'<p class="missed">[WARN] Missed: '
+            w(f'<p class="missed">⚠️ Missed: '
               f'{", ".join(f"<code>{H(m)}</code>" for m in sorted(sr.missed_types))}</p>')
         if sr.extra_types:
-            w(f'<p class="extra">[INFO] Bonus: '
+            w(f'<p class="extra">ℹ️ Bonus: '
               f'{", ".join(f"<code>{H(e)}</code>" for e in sorted(sr.extra_types))}</p>')
         w("</details>")
 
@@ -2649,9 +2641,9 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
       "<th>Status</th></tr></thead><tbody>")
     for i, r in enumerate(runner.round_trip_results, 1):
         if r.exact_match:
-            status_txt = "[PASS] Perfect"
+            status_txt = "✅ Perfect"
         else:
-            status_txt = "[FAIL] Mismatch"
+            status_txt = "❌ Mismatch"
         cls = "pass" if r.exact_match else "fail"
         w(f'<tr class="{cls}"><td>{i}</td><td>{H(r.scenario_name)}</td>'
           f"<td>{_icon(r.exact_match)}</td>"
@@ -2678,11 +2670,11 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         w(f'<div class="text-block"><strong>Restored:</strong><br>'
           f"{H(r.restored)}</div>")
         if r.exact_match:
-            w("<p>[PASS] <strong>Exact match with original</strong></p>")
+            w("<p>✅ <strong>Exact match with original</strong></p>")
         elif r.has_hashed_entities:
-            w("<p>[WARN] <strong>Inexact — hashed entities are irreversible (expected)</strong></p>")
+            w("<p>⚠️ <strong>Inexact — hashed entities are irreversible (expected)</strong></p>")
         else:
-            w("<p>[FAIL] <strong>Mismatch — see below:</strong></p>")
+            w("<p>❌ <strong>Mismatch — see below:</strong></p>")
             w(f'<div class="text-block"><strong>Original:</strong><br>'
               f"{H(r.original)}</div>")
         w("</details>")
@@ -2692,7 +2684,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
     w("<p>Hashing replaces PII with a one-way cryptographic digest. "
       "The original value cannot be recovered — useful for irreversible "
       "pseudonymisation of identifiers.</p>")
-    w('<div class="config-summary"><strong> App Configuration</strong>'
+    w('<div class="config-summary"><strong>🔧 App Configuration</strong>'
       '<table><thead><tr><th>App Name</th><th>Entity Type</th><th>Strategy</th>'
       '<th>De-anonymize Flag</th></tr></thead><tbody>'
       '<tr><td>HashDLTestApp</td><td><code>IN_DRIVING_LICENSE</code></td>'
@@ -2737,9 +2729,9 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
             else:
                 w("<p><em>No hashed entities</em></p>")
             if ok:
-                w(f"<p>[PASS] <strong>{pass_msg}</strong></p>")
+                w(f"<p>✅ <strong>{pass_msg}</strong></p>")
             else:
-                w(f"<p>[WARN] <strong>{fail_msg}</strong></p>")
+                w(f"<p>⚠️ <strong>{fail_msg}</strong></p>")
             w("</details>")
 
     # ── Section 2a: Hash DL Strategy ────────────────────────────────────
@@ -2777,7 +2769,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         w("<table><thead><tr><th>Scenario</th><th>Description</th><th>Phone in Entity Mapping?</th>"
           "<th>Hash Count</th></tr></thead><tbody>")
         for r in runner.hash_phone_results:
-            status = "[WARN] Yes" if r["phone_in_entity_mapping"] else "[PASS] Hashed"
+            status = "⚠️ Yes" if r["phone_in_entity_mapping"] else "✅ Hashed"
             w(f'<tr><td>{H(r["scenario"])}</td>'
               f'<td><small>{H(r["description"])}</small></td><td>{status}</td>'
               f'<td>{r["hash_count"]}</td></tr>')
@@ -2788,7 +2780,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         w("<table><thead><tr><th>Scenario</th><th>Phone Restored?</th>"
           "</tr></thead><tbody>")
         for r in runner.hash_phone_no_flag:
-            status = "[WARN] Yes" if r["phone_restored"] else "[PASS] No (irreversible)"
+            status = "⚠️ Yes" if r["phone_restored"] else "✅ No (irreversible)"
             w(f'<tr><td>{H(r["scenario"])}</td><td>{status}</td></tr>')
         w("</tbody></table>")
 
@@ -2813,7 +2805,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
       "decrypted during de-anonymization when "
       "<code>include_encrypted=True</code> is specified. "
       "Non-deterministic by design.</p>")
-    w('<div class="config-summary"><strong> App Configuration</strong>'
+    w('<div class="config-summary"><strong>🔧 App Configuration</strong>'
       '<table><thead><tr><th>App Name</th><th>Entity Type</th><th>Strategy</th>'
       '</tr></thead><tbody>'
       '<tr><td>EncryptDLTestApp</td><td><code>IN_DRIVING_LICENSE</code></td>'
@@ -2830,7 +2822,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         w("<table><thead><tr><th>Scenario</th><th>DL in Entity Mapping?</th>"
           "<th>Encrypt Count</th></tr></thead><tbody>")
         for r in runner.encrypt_dl_results["anon_rows"]:
-            status = "[WARN] Yes" if r["dl_in_mapping"] else "[PASS] Encrypted"
+            status = "⚠️ Yes" if r["dl_in_mapping"] else "✅ Encrypted"
             w(f'<tr><td>{H(r["scenario"])}</td><td>{status}</td>'
               f'<td>{r["encrypt_count"]}</td></tr>')
         w("</tbody></table>")
@@ -2840,7 +2832,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         w("<table><thead><tr><th>Scenario</th><th>DL Restored?</th>"
           "<th>Ciphertext Present?</th></tr></thead><tbody>")
         for r in runner.encrypt_no_flag:
-            dl_status = "[WARN] Yes" if r["dl_restored"] else "[PASS] No (secure)"
+            dl_status = "⚠️ Yes" if r["dl_restored"] else "✅ No (secure)"
             w(f'<tr><td>{H(r["scenario"])}</td><td>{dl_status}</td>'
               f'<td>{"Yes" if r["cipher_present"] else "No"}</td></tr>')
         w("</tbody></table>")
@@ -2870,7 +2862,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         w("<table><thead><tr><th>Scenario</th><th>Email in Entity Mapping?</th>"
           "<th>Encrypt Count</th></tr></thead><tbody>")
         for r in runner.encrypt_email_results:
-            status = "[WARN] Yes" if r["email_in_entity_mapping"] else "[PASS] Encrypted"
+            status = "⚠️ Yes" if r["email_in_entity_mapping"] else "✅ Encrypted"
             w(f'<tr><td>{H(r["scenario"])}</td><td>{status}</td>'
               f'<td>{r["encrypt_count"]}</td></tr>')
         w("</tbody></table>")
@@ -2880,7 +2872,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         w("<table><thead><tr><th>Scenario</th><th>Email Restored?</th>"
           "<th>Ciphertext Present?</th></tr></thead><tbody>")
         for r in runner.encrypt_email_no_flag:
-            status = "[WARN] Yes" if r["email_restored"] else "[PASS] No (secure)"
+            status = "⚠️ Yes" if r["email_restored"] else "✅ No (secure)"
             w(f'<tr><td>{H(r["scenario"])}</td><td>{status}</td>'
               f'<td>{"Yes" if r["cipher_present"] else "No"}</td></tr>')
         w("</tbody></table>")
@@ -2922,9 +2914,9 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
                     w(f"<tr><td><code>{H(tok[:40])}…</code></td><td>{H(orig)}</td></tr>")
                 w("</tbody></table>")
             if d["exact"]:
-                w("<p>[PASS] <strong>Exact round-trip match</strong></p>")
+                w("<p>✅ <strong>Exact round-trip match</strong></p>")
             else:
-                w("<p>[FAIL] <strong>Round-trip mismatch</strong></p>")
+                w("<p>❌ <strong>Round-trip mismatch</strong></p>")
             w("</details>")
 
     # ── 4. PQC Encryption ───────────────────────────────────────────────
@@ -2934,7 +2926,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
       "<code>include_encrypted</code> (encrypted tokens remain opaque), "
       "deanonymize with <code>include_encrypted=true</code> (PII restored), "
       "and non-determinism verification.</p>")
-    w('<div class="config-summary"><strong> App Configuration</strong>'
+    w('<div class="config-summary"><strong>🔧 App Configuration</strong>'
       '<table><thead><tr><th>App Name</th><th>Entity Type</th><th>Strategy</th>'
       '</tr></thead><tbody>'
       '<tr><td rowspan="3">PQCTestApp</td>'
@@ -3026,9 +3018,9 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
                     w(f"<tr><td><code>{H(tok[:40])}…</code></td><td>{H(orig)}</td></tr>")
                 w("</tbody></table>")
             if d["exact"]:
-                w("<p>[PASS] <strong>Exact round-trip match</strong></p>")
+                w("<p>✅ <strong>Exact round-trip match</strong></p>")
             else:
-                w("<p>[FAIL] <strong>Round-trip mismatch</strong></p>")
+                w("<p>❌ <strong>Round-trip mismatch</strong></p>")
             w("</details>")
 
     # ── 5. Fake Strategy ────────────────────────────────────────────────
@@ -3037,7 +3029,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
       "with structurally valid but fictitious values. Covers basic anonymization, "
       "format validation, within-request consistency, round-trip deanonymization, "
       "and mixed strategies.</p>")
-    w('<div class="config-summary"><strong> App Configuration</strong>'
+    w('<div class="config-summary"><strong>🔧 App Configuration</strong>'
       '<table><thead><tr><th>App Name</th><th>Entity Type</th><th>Strategy</th>'
       '</tr></thead><tbody>'
       '<tr><td rowspan="3">FakeStrategyTestApp</td>'
@@ -3177,11 +3169,11 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
               f'{H(r["restored_text"])}</div>')
             _mapping_table(r["entity_mapping"])
             if r["exact"]:
-                w("<p>[PASS] <strong>Exact match with original</strong></p>")
+                w("<p>✅ <strong>Exact match with original</strong></p>")
             elif r["pii_restored"]:
-                w("<p>[WARN] <strong>All PII values restored but text not byte-identical</strong></p>")
+                w("<p>⚠️ <strong>All PII values restored but text not byte-identical</strong></p>")
             else:
-                w("<p>[FAIL] <strong>Some PII values were NOT restored</strong></p>")
+                w("<p>❌ <strong>Some PII values were NOT restored</strong></p>")
             w("</details>")
 
     if runner.fake_mixed_results:
@@ -3219,7 +3211,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
 
     # ── Section 6: Multi-Tenant ──────────────────────────────────────────
     w('<h2 id="multi-tenant">6. Multi-Tenant App Round-Trip</h2>')
-    w('<div class="config-summary"><strong> App Configuration</strong>'
+    w('<div class="config-summary"><strong>🔧 App Configuration</strong>'
       '<table><thead><tr><th>App Name</th><th>Entity Type</th><th>Strategy</th>'
       '</tr></thead><tbody>'
       '<tr><td>RetailBankingApp</td><td><em>All entity types</em></td>'
@@ -3232,7 +3224,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
           "<th>RetailBankingApp</th><th>InternalAuditApp</th>"
           "</tr></thead><tbody>")
         for r in runner.app_round_trip:
-            dl_flag = "[key] Yes" if r.has_dl else "No"
+            dl_flag = "🔑 Yes" if r.has_dl else "No"
             w(f"<tr><td>{H(r.scenario_name)}</td><td>{dl_flag}</td>"
               f"<td>{_icon(r.retail_exact)}</td>"
               f"<td>{_icon(r.audit_exact)}</td></tr>")
@@ -3242,7 +3234,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
 
     # ── 7. Mixed-Strategy Multi-Tenant Apps ─────────────────────────────
     w('<h2 id="mixed-strategy">7. Mixed-Strategy Multi-Tenant Apps</h2>')
-    w('<div class="config-summary"><strong> App Configuration</strong>'
+    w('<div class="config-summary"><strong>🔧 App Configuration</strong>'
       '<table><thead><tr><th>App Name</th><th>Entity Type</th><th>Strategy</th>'
       '</tr></thead><tbody>'
       '<tr><td rowspan="3">ComplianceApp</td>'
@@ -3261,9 +3253,9 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
           "</tr></thead><tbody>")
         for r in runner.mixed_strategy_results:
             w(f'<tr><td>{H(r["scenario"])}</td>'
-              f'<td>{"Email" if r["has_email"] else "—"}</td>'
-              f'<td>{"Phone" if r["has_phone"] else "—"}</td>'
-              f'<td>{"[key]" if r["has_dl"] else "—"}</td>'
+              f'<td>{"📧" if r["has_email"] else "—"}</td>'
+              f'<td>{"📱" if r["has_phone"] else "—"}</td>'
+              f'<td>{"🔑" if r["has_dl"] else "—"}</td>'
               f'<td>{_icon(r["compliance_default_exact"])}</td>'
               f'<td>{_icon(r["support_default_exact"])}</td></tr>')
         w("</tbody></table>")
@@ -3345,7 +3337,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         w(f'<div class="text-block"><strong>Anonymized:</strong><pre>{H(sr.anonymized_text)}</pre></div>')
         w(f"<p><strong>Coverage:</strong> {matched}/{expected_count} expected types</p>")
         if sr.missed_types:
-            w(f'<p class="missed">[WARN] Missed: '
+            w(f'<p class="missed">⚠️ Missed: '
               f'{", ".join(f"<code>{H(m)}</code>" for m in sorted(sr.missed_types))}</p>')
         w("</div>")
 
@@ -3356,11 +3348,11 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
           "<th>JSON Valid</th><th>Status</th></tr></thead><tbody>")
         for i, r in enumerate(runner.structured_rt, 1):
             if r.exact_match and r.structure_valid:
-                status_txt = "[PASS] Perfect"
+                status_txt = "✅ Perfect"
             elif r.structure_valid:
-                status_txt = "[WARN] Structure OK, content changed"
+                status_txt = "⚠️ Structure OK, content changed"
             else:
-                status_txt = "[FAIL] Structure broken"
+                status_txt = "❌ Structure broken"
             w(f"<tr><td>{i}</td><td>{H(r.scenario_name)}</td>"
               f"<td>{_icon(r.exact_match)}</td>"
               f"<td>{_icon(r.structure_valid)}</td>"
@@ -3524,7 +3516,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         w(f'<p><strong>{al_passed_count}/{al_total_count}</strong> allow-list checks passed.</p>')
         w('<table><thead><tr><th>Test</th><th>Result</th></tr></thead><tbody>')
         for label, ok in al_tests:
-            icon = "[PASS]" if ok else "[FAIL]"
+            icon = "✅" if ok else "❌"
             cls = "" if ok else ' class="fail"'
             w(f'<tr{cls}><td>{html_escape(label)}</td><td>{icon}</td></tr>')
         w("</tbody></table>")
@@ -3570,12 +3562,12 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
                 match = deanon == original
                 color = "#d4edda" if match else "#f8d7da"
                 w(f'<pre style="background:{color};padding:10px;border-radius:4px;white-space:pre-wrap;">{html_escape(deanon)}</pre>')
-                w(f'<p>{"[PASS] Exact match" if match else "[FAIL] Mismatch"}</p>')
+                w(f'<p>{"✅ Exact match" if match else "❌ Mismatch"}</p>')
 
             w('</div></details>')
 
     # ── Final Summary ────────────────────────────────────────────────────
-    w('<h2 id="final-summary"> Final Summary</h2>')
+    w('<h2 id="final-summary">📋 Final Summary</h2>')
     w("<table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>")
     addr_passed = sum(1 for r in runner.address_indicator_results if r["passed"])
     summary_rows = [
@@ -3718,7 +3710,7 @@ def main() -> None:
     if not data_path.exists():
         data_path = Path(__file__).parent / "indian_banking_test_data.json"
     if not data_path.exists():
-        print(f"[FAIL] Cannot find indian_banking_test_data.json")
+        print(f"❌ Cannot find indian_banking_test_data.json")
         sys.exit(1)
 
     with open(data_path) as f:
@@ -3730,7 +3722,7 @@ def main() -> None:
     try:
         client.list_apps()
     except Exception as exc:
-        print(f"[FAIL] Cannot reach API at {args.api_url}: {exc}")
+        print(f"❌ Cannot reach API at {args.api_url}: {exc}")
         print("   Ensure the Azure Container App is running.")
         sys.exit(1)
 
@@ -3741,7 +3733,7 @@ def main() -> None:
     # Generate report
     generate_html_report(runner, args.output)
     abs_path = Path(args.output).resolve()
-    print(f" HTML report written to: {abs_path}\n")
+    print(f"  📄 HTML report written to: {abs_path}\n")
 
 
 if __name__ == "__main__":

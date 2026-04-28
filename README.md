@@ -19,6 +19,8 @@ An intelligent anonymization layer that sits between your AI application and LLM
 
 PII Shield can be imported directly into your Python application for batch PII processing — no web server required.
 
+> 📐 **Looking for the deep dive?** See **[docs/design.md](docs/design.md)** for the full design document — covering architecture, system context, recognizers, anonymization operators (replace / hash / encrypt / fake), the Redis data model, the Azure deployment topology, the observability pipeline, security analysis, and future work. 
+
 ### Install
 
 ```bash
@@ -89,8 +91,8 @@ engine = PiiShieldEngine()  # loads NLP model — create once, reuse!
 
 # Anonymize
 result = engine.anonymize("Rahul Sharma's Aadhaar is 2345 6789 0123")
-print(result.anonymized_text)   # "<PERSON_1>'s Aadhaar is <IN_AADHAAR_1>"
-print(result.entity_mapping)    # {"<PERSON_1>": "Rahul Sharma", "<IN_AADHAAR_1>": "2345 6789 0123"}
+print(result.anonymized_text)   # "{{PERSON_1}}'s Aadhaar is {{IN_AADHAAR_1}}"
+print(result.entity_mapping)    # {"{{PERSON_1}}": "Rahul Sharma", "{{IN_AADHAAR_1}}": "2345 6789 0123"}
 
 # De-anonymize
 original = engine.deanonymize(result.anonymized_text, result.entity_mapping)
@@ -242,34 +244,34 @@ uvicorn app.main:app --reload
 
 The server starts at **http://localhost:8000**. Interactive API docs are available at **http://localhost:8000/docs**.
 
-## Gradio UI
+## Web UIs (Streamlit)
 
 Two web interfaces are included in the Docker Compose stack. They start automatically alongside the main API.
 
-| UI | URL | Purpose |
-|----|-----|---------|
-| PII Shield UI | http://localhost:7860 | Anonymize & de-anonymize text |
-| Admin UI | http://localhost:7861 | Application registration & config |
+| UI | URL | Purpose | Container Name |
+|----|-----|---------|----------------|
+| Playground UI | http://localhost:7860 | Anonymize & de-anonymize text | `playground` |
+| Admin UI | http://localhost:7861 | Application registration & config | `admin` |
 
 ### Running outside Docker
 
 You can also run the UIs standalone (the FastAPI server must be running first):
 
 ```bash
-python app/gradio_app.py           # http://localhost:7860
-python app/gradio_admin.py         # http://localhost:7861
+streamlit run app/streamlit_app.py --server.port 7860 --server.address 0.0.0.0     # http://localhost:7860
+streamlit run app/streamlit_admin.py --server.port 7861 --server.address 0.0.0.0   # http://localhost:7861
 ```
 
 Set the `API_BASE` environment variable if the API is not at `http://localhost:8000`.
 
-### PII Shield UI (Anonymize & De-anonymize)
+### Playground UI (Anonymize & De-anonymize)
 
 Opens at **http://localhost:7860** with:
 
 - **Anonymize tab** — Enter text (and optionally an Application ID) → see detected PIIs and anonymized output using app-specific or global config.
 - **De-anonymize tab** — Paste anonymized text (and optionally an Application ID) → see the PII ↔ placeholder mapping and restored text.
 
-The session ID is passed automatically between tabs via Gradio state.
+The session ID is shared between tabs via `st.session_state`.
 
 ### Admin UI (Application Management)
 
@@ -277,6 +279,8 @@ Opens at **http://localhost:7861** with:
 
 - **Registered Apps tab** — View all registered applications and their configurations.
 - **Admin tab** — Register applications, look up app details, update per-entity anonymization strategies, and delete apps.
+
+> **Legacy note:** `app/gradio_app.py` and `app/gradio_admin.py` are retained for backward compatibility but are no longer wired into Docker Compose or the Azure deployment. New work should target the Streamlit modules above.
 
 ## API Usage
 
@@ -402,7 +406,7 @@ See [`examples/anonymize_request.py`](examples/anonymize_request.py) for the ful
 
 PII Shield can be deployed to Azure using **Terraform** (infrastructure) and **shell scripts** (application lifecycle). The Azure deployment includes:
 
-- **Azure Container Apps** — 3 apps (API, Gradio UI, Gradio Admin) with auto-scaling and HTTPS
+- **Azure Container Apps** — 3 apps (API, Streamlit Playground, Streamlit Admin) with auto-scaling and HTTPS
 - **Azure Cache for Redis** — TLS-only session and app registry store
 - **Azure Container Registry** — Remote Docker image builds (no local Docker required)
 - **Application Insights + Log Analytics** — Full observability via Azure Monitor OTel exporter
