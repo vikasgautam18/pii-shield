@@ -19,7 +19,7 @@ An intelligent anonymization layer that sits between your AI application and LLM
 
 PII Shield can be imported directly into your Python application for batch PII processing — no web server required.
 
-> 📐 **Looking for the deep dive?** See **[docs/design.md](docs/design.md)** for the full design document — covering architecture, system context, recognizers, anonymization operators (replace / hash / encrypt / fake), the Redis data model, the Azure deployment topology, the observability pipeline, security analysis, and future work. 
+> 📐 **Looking for the deep dive?** See **[docs/design.md](docs/design.md)** for the full design document — covering architecture, system context, recognizers, anonymization operators (replace / hash / encrypt / fake), the Redis data model, the Azure deployment topology, the observability pipeline, security analysis, and future work. To add or tune detection, see **[docs/add-a-recognizer.md](docs/add-a-recognizer.md)**.
 
 ### Install
 
