@@ -67,6 +67,7 @@ This document is intended for:
 | **Document** | **Location** | **Description** |
 |----|----|----|
 | Prerequisites Guide | docs/prerequisites.md | Complete list of software, NLP models, environment variables, Azure roles, and RBAC requirements. |
+| Add a Recognizer Guide | docs/add-a-recognizer.md | How to add regex, context-only, Python, runtime, and built-in recognizer customizations. |
 | Azure Deployment Guide | infra/README.md | Step-by-step instructions for Terraform provisioning, ACR builds, Container Apps deployment, and Grafana dashboard setup. |
 | Architecture Diagrams | docs/architecture.drawio | draw.io component diagram — local Docker Compose topology. |
 | Azure Architecture Diagram | docs/architecture-azure.drawio | draw.io deployment diagram — Azure Container Apps, Redis, ACR, App Insights, Managed Grafana. |
