@@ -83,8 +83,8 @@ if [[ -n "$REDIS_NAME" ]]; then
       echo "  Deleting policy assignment: $pa"
       az redis access-policy-assignment delete \
         -g "$RG_NAME" --name "$REDIS_NAME" \
-        --access-policy-assignment-name "$pa" \
-        --yes --only-show-errors >/dev/null \
+        --policy-assignment-name "$pa" \
+        --only-show-errors >/dev/null \
         && echo "    [OK]" \
         || echo "    [skip — Redis may already be gone]"
     done <<< "$ASSIGNMENTS"
