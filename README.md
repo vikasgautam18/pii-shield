@@ -2,6 +2,8 @@
 
 An intelligent anonymization layer that sits between your AI application and LLM — detecting PII, enforcing privacy actions, and enabling reversible de-anonymization via a secure store.
 
+> 📐 **Looking for the deep dive?** See **[docs/design.md](docs/design.md)** for the full design document — covering goals & non-goals, system context, recognizers, anonymization operators (replace / hash / encrypt / fake), the Redis data model, the Azure deployment topology, the observability pipeline, security analysis, and future work. The same content is also available as [`docs/PII-Shield-Design-Document_v0.3.docx`](docs/PII-Shield-Design-Document_v0.3.docx).
+
 ## Features
 
 - **PII Detection** — Uses [Microsoft Presidio Analyzer](https://microsoft.github.io/presidio/analyzer/) to identify entities such as names, emails, phone numbers, addresses, and Indian-specific IDs (Driving License, Aadhaar, PIN Code, UPI ID). Adjacent location entities are automatically merged into composite ADDRESS entities.
@@ -18,8 +20,6 @@ An intelligent anonymization layer that sits between your AI application and LLM
 ## Using as a Library
 
 PII Shield can be imported directly into your Python application for batch PII processing — no web server required.
-
-> 📐 **Looking for the deep dive?** See **[docs/design.md](docs/design.md)** for the full design document — covering architecture, system context, recognizers, anonymization operators (replace / hash / encrypt / fake), the Redis data model, the Azure deployment topology, the observability pipeline, security analysis, and future work. To add or tune detection, see **[docs/add-a-recognizer.md](docs/add-a-recognizer.md)**.
 
 ### Install
 
@@ -97,6 +97,100 @@ print(result.entity_mapping)    # {"{{PERSON_1}}": "Rahul Sharma", "{{IN_AADHAAR
 # De-anonymize
 original = engine.deanonymize(result.anonymized_text, result.entity_mapping)
 ```
+
+### Multi-turn Conversation Middleware (LLM prompt anonymization)
+
+Use `PiiMiddleware` to sit between your app and an LLM: anonymize each user
+turn, send only placeholders to the model, then restore the real PII in the
+answer. Unlike a bare `engine.anonymize()` call, the middleware keeps a
+**stable mapping across turns** — the same value is always the same
+placeholder — and persists it in a pluggable `SessionStore`.
+
+```python
+from pii_shield import PiiMiddleware, AnonymizationPolicy, InMemorySessionStore
+
+# Build ONCE per process (loads the NLP model once) and reuse everywhere.
+middleware = PiiMiddleware(
+    store=InMemorySessionStore(),          # swap for your Redis/Postgres impl
+    policy=AnonymizationPolicy(),          # global policy (see below)
+)
+
+cid = "conversation-123"
+
+# Turn 1 — anonymize the user prompt, send placeholders to the LLM
+result = middleware.anonymize(cid, "Rahul Sharma's Aadhaar is 2345 6789 0123")
+llm_input = result.anonymized_text          # "{{PERSON_1}}'s Aadhaar is {{IN_AADHAAR_1}}"
+llm_reply = call_your_llm(llm_input)         # LLM only ever sees placeholders
+
+# Restore the real PII in the model's answer
+answer = middleware.deanonymize(cid, llm_reply)
+
+# Turn 2 — "Rahul Sharma" keeps the SAME placeholder {{PERSON_1}}
+middleware.anonymize(cid, "Email Rahul Sharma the update")
+```
+
+**Streamed responses.** If you stream tokens to the user, a placeholder can be
+split across chunks. Use the streaming-safe de-anonymizer, which buffers a
+prefix-aware tail so a partial `{{PLACEHOLDER}}` never leaks:
+
+```python
+sd = middleware.streaming_deanonymizer(cid)
+for chunk in llm_token_stream:
+    emit(sd.feed(chunk))     # only emits text that can't contain a partial token
+emit(sd.flush())             # drain the final tail at end of stream
+```
+
+**Fail-closed.** Anonymization raises typed errors (`DetectionError`,
+`InvalidInputError`, all subclasses of `PiiShieldError`) so you can block the
+LLM call rather than leak raw PII:
+
+```python
+from pii_shield import PiiShieldError
+
+try:
+    safe = middleware.anonymize(cid, user_text).anonymized_text
+except PiiShieldError:
+    return "Sorry, I can't process that right now."   # fail closed
+```
+
+**Async.** For interactive services, offload the CPU-bound NLP inference off the
+event loop with `await middleware.anonymize_async(cid, text)` /
+`await middleware.deanonymize_async(cid, text)`.
+
+#### Configuring what/how to anonymize (`AnonymizationPolicy`)
+
+`AnonymizationPolicy` bundles every "what/how" lever into one reusable object
+you can build in code or load from YAML (`AnonymizationPolicy.from_yaml(path)`):
+
+```python
+policy = AnonymizationPolicy(
+    strategies={"IN_AADHAAR": "encrypt", "PERSON": "replace"},  # per-type: replace/hash/encrypt/fake
+    allow_list=["Contoso Bank"],              # exact terms never masked
+    entity_type_allow_list={"EMAIL_ADDRESS"}, # whole types passed through
+    entity_keyword_allow_list={"LOCATION": ["India"]},  # skip a value only as this type
+    entity_type_include_list=set(),           # if set, mask ONLY these types
+    score_threshold=0.5,                      # optional confidence override
+)
+```
+
+#### Session store = a plaintext-PII vault
+
+The `SessionStore` holds the accumulated mapping, which contains the **original
+PII in plaintext** (that is what `deanonymize()` restores). Protect it: use
+short TTLs (`PiiMiddleware(..., ttl=3600)`), keep it network-isolated, and/or
+encrypt it at rest with a `ValueCodec`:
+
+```python
+from pii_shield import SqliteSessionStore, FernetValueCodec
+
+codec = FernetValueCodec(FernetValueCodec.generate_key())  # store the key securely!
+store = SqliteSessionStore("sessions.db", value_codec=codec)  # state encrypted at rest
+```
+
+For a multi-process / multi-replica deployment, implement the `SessionStore`
+Protocol against your own shared backend (Redis, Postgres, …) — the core
+library keeps its zero-infrastructure promise and ships only the in-memory and
+SQLite reference stores.
 
 ### Batch Processing
 

@@ -104,6 +104,135 @@ def reclassify_person_as_location(
 
 
 # ---------------------------------------------------------------------------
+# Extend PERSON spans to adjacent capitalized name tokens (recall for names
+# whose first token NER missed, e.g. odd capitalization "VIkas Gautam")
+# ---------------------------------------------------------------------------
+
+# Capitalized words that commonly sit next to a name but are NOT part of it:
+# pronouns/determiners, greetings, honorific titles, and common role acronyms.
+_NON_NAME_TOKENS = {
+    "i", "my", "me", "we", "our", "your", "his", "her", "their", "the", "a", "an",
+    "hello", "hi", "hey", "dear",
+    "mr", "mrs", "ms", "miss", "dr", "prof", "professor", "sir", "madam", "mister",
+    "ceo", "cto", "cfo", "coo", "vp",
+}
+
+_SENTENCE_END_CHARS = ".!?;:\n\u2014"
+
+_MAX_NAME_TOKENS_ADDED = 2
+
+
+def merge_adjacent_person_tokens(
+    results: list[RecognizerResult],
+    text: str,
+) -> list[RecognizerResult]:
+    """Extend NER PERSON spans left to adjacent capitalized name tokens.
+
+    NER models (esp. spaCy) sometimes drop the first token of a multi-word name
+    when its capitalization is unusual (e.g. ``VIkas Gautam`` -> only
+    ``Gautam``).  This extends a PERSON span leftward across single spaces to
+    include immediately-preceding capitalized alphabetic tokens that look like
+    name parts, so the whole name is captured.
+
+    Guards against over-merging: skips sentence-initial words (so greetings /
+    sentence starts like "Hello Vikas" are not absorbed), skips a small set of
+    pronouns / titles / role acronyms, and adds at most two tokens.
+    """
+    for r in results:
+        if (
+            r.entity_type != "PERSON"
+            or r.recognition_metadata.get("recognizer_name") not in _NER_RECOGNIZERS
+        ):
+            continue
+        new_start = r.start
+        added = 0
+        while added < _MAX_NAME_TOKENS_ADDED:
+            # Require exactly one space immediately before the current span.
+            if new_start < 2 or text[new_start - 1] != " ":
+                break
+            space_idx = new_start - 1
+            k = space_idx - 1
+            while k >= 0 and text[k].isalpha():
+                k -= 1
+            tok_start = k + 1
+            token = text[tok_start:space_idx]
+            if len(token) < 2 or not token[0].isupper() or not token.isalpha():
+                break
+            if token.lower() in _NON_NAME_TOKENS:
+                break
+            # Token must be preceded by a space/start (a clean word boundary)...
+            if tok_start > 0 and text[tok_start - 1] != " ":
+                break
+            # ...and must NOT be sentence-initial (avoid absorbing sentence starts).
+            m = tok_start - 1
+            while m >= 0 and text[m] == " ":
+                m -= 1
+            if m < 0 or text[m] in _SENTENCE_END_CHARS:
+                break
+            new_start = tok_start
+            added += 1
+        if new_start != r.start:
+            r.start = new_start
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Drop sentence-initial PERSON false positives (common non-name words that NER
+# mis-tags as a name when capitalized at the start of an imperative sentence,
+# e.g. "Email me at ..." -> PERSON "Email")
+# ---------------------------------------------------------------------------
+
+# Curated to EXCLUDE any plausible given name — only clear action verbs,
+# greetings, and discourse markers that are essentially never people's names.
+_COMMON_NON_NAME_STARTERS = {
+    # imperative / action verbs
+    "email", "call", "text", "send", "contact", "book", "update", "transfer",
+    "pay", "check", "help", "tell", "show", "find", "share", "forward", "reply",
+    "cancel", "confirm", "verify", "register", "subscribe", "schedule", "order",
+    "download", "upload", "submit", "apply", "request", "kindly", "remind",
+    # greetings / closings / discourse markers
+    "hello", "hey", "hi", "thanks", "thank", "regards", "cheers", "welcome",
+    "greetings", "please", "sure", "okay",
+}
+
+
+def _is_sentence_initial(text: str, pos: int) -> bool:
+    """True if the char at *pos* begins a sentence (start of text or after . ! ?)."""
+    m = pos - 1
+    while m >= 0 and text[m] == " ":
+        m -= 1
+    return m < 0 or text[m] in _SENTENCE_END_CHARS
+
+
+def filter_person_false_positives(
+    results: list[RecognizerResult],
+    text: str,
+) -> list[RecognizerResult]:
+    """Drop single-token, sentence-initial PERSON entities that are common
+    non-name words (e.g. "Email" in "Email me at ...").
+
+    Very conservative: only fires when the span is a single token, sits at a
+    sentence start, and its lowercase form is in a curated word list that
+    excludes plausible given names.
+    """
+    out: list[RecognizerResult] = []
+    for r in results:
+        if (
+            r.entity_type == "PERSON"
+            and r.recognition_metadata.get("recognizer_name") in _NER_RECOGNIZERS
+        ):
+            span = text[r.start : r.end]
+            if (
+                " " not in span
+                and span.lower() in _COMMON_NON_NAME_STARTERS
+                and _is_sentence_initial(text, r.start)
+            ):
+                continue  # drop false positive
+        out.append(r)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Merge adjacent LOCATION / IN_PIN_CODE entities into ADDRESS
 # ---------------------------------------------------------------------------
 

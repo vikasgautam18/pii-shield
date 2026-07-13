@@ -11,6 +11,7 @@ No dependencies on FastAPI, Redis, OpenTelemetry, or any I/O layer.
 import hashlib
 import logging
 import os
+import time
 from collections import Counter
 
 from pathlib import Path
@@ -19,17 +20,20 @@ from presidio_analyzer import AnalyzerEngine, RecognizerResult
 from presidio_analyzer.context_aware_enhancers import LemmaContextAwareEnhancer
 
 from pii_shield.context_config import apply_recognizer_contexts, load_recognizer_contexts
-from pii_shield.models import AnonymizeResult, DetectedEntity, EntityConfig
+from pii_shield.errors import DetectionError, InvalidInputError
+from pii_shield.models import AnonymizeResult, AnonymizeStats, DetectedEntity, EntityConfig
+from pii_shield.observability import Event, EventHook, emit
 from pii_shield.nlp_engine import create_nlp_engine, get_nlp_engine_name
 from pii_shield.operator_config import ENCRYPTION_BACKEND, _DEFAULTS
 from pii_shield.pipeline import (
+    filter_person_false_positives,
     is_valid_datetime,
     merge_address_entities,
+    merge_adjacent_person_tokens,
     reclassify_person_as_location,
     remove_overlapping,
 )
 from pii_shield.recognizers import (
-    CreditCardImprovedRecognizer,
     CustomerIdRecognizer,
     GeoCoordinateRecognizer,
     InAadhaarImprovedRecognizer,
@@ -37,6 +41,7 @@ from pii_shield.recognizers import (
     InBankAccountRecognizer,
     InCkycRecognizer,
     InDrivingLicenseRecognizer,
+    InPanImprovedRecognizer,
     InPhoneRecognizer,
     InPinCodeRecognizer,
     InPranRecognizer,
@@ -46,7 +51,6 @@ from pii_shield.recognizers import (
 )
 from presidio_analyzer.predefined_recognizers import (
     InGstinRecognizer,
-    InPanRecognizer,
     InPassportRecognizer,
     InVehicleRegistrationRecognizer,
     InVoterRecognizer,
@@ -55,8 +59,7 @@ from presidio_analyzer.predefined_recognizers import (
 logger = logging.getLogger("pii-shield")
 
 _DEFAULT_DISABLED_RECOGNIZERS = (
-    "CreditCardRecognizer,"
-    "InAadhaarRecognizer,NhsRecognizer,UsBankRecognizer,SgFinRecognizer,"
+    "InAadhaarRecognizer,InPanRecognizer,NhsRecognizer,UsBankRecognizer,SgFinRecognizer,"
     "AuAbnRecognizer,AuAcnRecognizer,AuTfnRecognizer,AuMedicareRecognizer,"
     "MedicalLicenseRecognizer"
 )
@@ -155,7 +158,6 @@ class PiiShieldEngine:
                 pass  # already removed or not present
 
         # Register custom recognizers
-        self._analyzer.registry.add_recognizer(CreditCardImprovedRecognizer())
         self._analyzer.registry.add_recognizer(CustomerIdRecognizer())
         self._analyzer.registry.add_recognizer(GeoCoordinateRecognizer())
         self._analyzer.registry.add_recognizer(InAadhaarImprovedRecognizer())
@@ -163,7 +165,7 @@ class PiiShieldEngine:
         self._analyzer.registry.add_recognizer(InBankAccountRecognizer())
         self._analyzer.registry.add_recognizer(InCkycRecognizer())
         self._analyzer.registry.add_recognizer(InDrivingLicenseRecognizer())
-        self._analyzer.registry.add_recognizer(InPanRecognizer())
+        self._analyzer.registry.add_recognizer(InPanImprovedRecognizer())
         self._analyzer.registry.add_recognizer(InPassportRecognizer())
         self._analyzer.registry.add_recognizer(InVehicleRegistrationRecognizer())
         self._analyzer.registry.add_recognizer(InVoterRecognizer())
@@ -244,6 +246,8 @@ class PiiShieldEngine:
         allow_list: list[str] | None,
         entity_type_allow_list: set[str] | None,
         entity_keyword_allow_list: dict[str, list[str]] | None = None,
+        score_threshold: float | None = None,
+        entity_type_include_list: set[str] | None = None,
     ) -> list[RecognizerResult]:
         """Run Presidio analysis + full PII Shield post-processing pipeline."""
         # Merge per-request allow_list with global allow_list
@@ -251,12 +255,18 @@ class PiiShieldEngine:
         if allow_list:
             merged_allow.extend(allow_list)
 
-        analyzer_results = self._analyzer.analyze(
-            text=text,
-            language=language,
-            score_threshold=self._score_threshold,
-            allow_list=merged_allow or None,
+        threshold = (
+            self._score_threshold if score_threshold is None else score_threshold
         )
+        try:
+            analyzer_results = self._analyzer.analyze(
+                text=text,
+                language=language,
+                score_threshold=threshold,
+                allow_list=merged_allow or None,
+            )
+        except Exception as exc:
+            raise DetectionError(f"PII detection failed: {exc}") from exc
 
         # Filter entity types in allow-list (and suppress overlapping entities)
         if entity_type_allow_list:
@@ -306,10 +316,23 @@ class PiiShieldEngine:
         # Reclassify PERSON → LOCATION when preceded by location context
         analyzer_results = reclassify_person_as_location(analyzer_results, text)
 
+        # Extend PERSON spans to adjacent capitalized name tokens NER may have missed
+        analyzer_results = merge_adjacent_person_tokens(analyzer_results, text)
+
+        # Drop sentence-initial PERSON false positives (e.g. "Email me ...")
+        analyzer_results = filter_person_false_positives(analyzer_results, text)
+
         # Merge adjacent LOCATION / IN_PIN_CODE entities into ADDRESS
         analyzer_results = merge_address_entities(analyzer_results, text)
 
-        return remove_overlapping(analyzer_results)
+        results = remove_overlapping(analyzer_results)
+
+        # Positive inclusion filter: keep ONLY the requested entity types.
+        if entity_type_include_list is not None:
+            results = [
+                r for r in results if r.entity_type in entity_type_include_list
+            ]
+        return results
 
     @property
     def supported_entities(self) -> list[str]:
@@ -329,14 +352,21 @@ class PiiShieldEngine:
         allow_list: list[str] | None = None,
         entity_type_allow_list: set[str] | None = None,
         entity_keyword_allow_list: dict[str, list[str]] | None = None,
+        score_threshold: float | None = None,
+        entity_type_include_list: set[str] | None = None,
     ) -> list[DetectedEntity]:
         """Detect PII entities without anonymizing.
 
         Returns a list of ``DetectedEntity`` objects sorted by position.
         """
+        if not isinstance(text, str):
+            raise InvalidInputError(
+                f"text must be a str, got {type(text).__name__}"
+            )
         results = self._run_pipeline(
             text, language, allow_list, entity_type_allow_list,
-            entity_keyword_allow_list,
+            entity_keyword_allow_list, score_threshold=score_threshold,
+            entity_type_include_list=entity_type_include_list,
         )
         return sorted(
             [
@@ -352,6 +382,76 @@ class PiiShieldEngine:
             key=lambda e: e.start,
         )
 
+    def _assign_replacements(
+        self,
+        text: str,
+        sorted_results: list[RecognizerResult],
+        strategies: dict[str, str],
+        *,
+        type_counters: dict[str, int],
+        value_to_placeholder: dict[tuple[str, str], str],
+        entity_mapping: dict[str, str],
+        hash_mapping: dict[str, str],
+        encrypt_mapping: dict[str, str],
+    ) -> list[tuple[int, int, str]]:
+        """Compute ``(start, end, replacement)`` tuples, updating state in place.
+
+        The mapping dicts and ``type_counters`` are **mutated in place** so a
+        caller can carry state across multiple calls — this is what lets the
+        stateful conversation anonymizer keep placeholders consistent across
+        turns (the same value reuses its placeholder, and counters continue).
+
+        ``sorted_results`` must be sorted by ``start`` descending (so the last
+        occurrence in the text is numbered ``_1``, matching legacy behaviour).
+        """
+        replacements: list[tuple[int, int, str]] = []
+        for result in sorted_results:
+            original_value = text[result.start : result.end]
+            strategy = strategies.get(result.entity_type, "replace")
+
+            if strategy == "hash":
+                replacement = hashlib.sha3_256(original_value.encode()).hexdigest()
+                hash_mapping[replacement] = original_value
+            elif strategy == "encrypt":
+                replacement = _get_encrypt_op().operate(original_value)
+                encrypt_mapping[replacement] = original_value
+            elif strategy == "fake":
+                key = (result.entity_type, original_value)
+                if key not in value_to_placeholder:
+                    fake_val = _get_fake_op().operate(
+                        original_value, {"entity_type": result.entity_type}
+                    )
+                    value_to_placeholder[key] = fake_val
+                    entity_mapping[fake_val] = original_value
+                replacement = value_to_placeholder[key]
+            else:  # replace
+                key = (result.entity_type, original_value)
+                if key not in value_to_placeholder:
+                    type_counters[result.entity_type] = (
+                        type_counters.get(result.entity_type, 0) + 1
+                    )
+                    counter = type_counters[result.entity_type]
+                    placeholder = f"{{{{{result.entity_type}_{counter}}}}}"
+                    value_to_placeholder[key] = placeholder
+                    entity_mapping[placeholder] = original_value
+                replacement = value_to_placeholder[key]
+
+            replacements.append((result.start, result.end, replacement))
+        return replacements
+
+    @staticmethod
+    def _build_text(text: str, replacements: list[tuple[int, int, str]]) -> str:
+        """Apply ``(start, end, replacement)`` tuples to *text* in one forward pass."""
+        ordered = sorted(replacements, key=lambda r: r[0])
+        parts: list[str] = []
+        last_end = 0
+        for start, end, replacement in ordered:
+            parts.append(text[last_end:start])
+            parts.append(replacement)
+            last_end = end
+        parts.append(text[last_end:])
+        return "".join(parts)
+
     def anonymize(
         self,
         text: str,
@@ -360,6 +460,9 @@ class PiiShieldEngine:
         allow_list: list[str] | None = None,
         entity_type_allow_list: set[str] | None = None,
         entity_keyword_allow_list: dict[str, list[str]] | None = None,
+        score_threshold: float | None = None,
+        entity_type_include_list: set[str] | None = None,
+        on_event: EventHook | None = None,
     ) -> AnonymizeResult:
         """Detect and anonymize PII in a single text string.
 
@@ -385,89 +488,47 @@ class PiiShieldEngine:
             Contains ``anonymized_text``, ``entity_mapping``,
             ``hash_mapping``, ``encrypt_mapping``, and ``entities``.
         """
+        if not isinstance(text, str):
+            raise InvalidInputError(
+                f"text must be a str, got {type(text).__name__}"
+            )
         config = config or EntityConfig()
 
         # Build strategy lookup from defaults + user overrides (simple dict, no lock needed)
         strategies = dict(_DEFAULTS)
         strategies.update(config.strategies)
 
+        _t0 = time.perf_counter()
         non_overlapping = self._run_pipeline(
             text, language, allow_list, entity_type_allow_list,
-            entity_keyword_allow_list,
+            entity_keyword_allow_list, score_threshold=score_threshold,
+            entity_type_include_list=entity_type_include_list,
         )
+        _detect_ms = (time.perf_counter() - _t0) * 1000.0
 
         # Sort by start position descending so replacements don't shift indices
+        _t1 = time.perf_counter()
         sorted_results = sorted(
             non_overlapping, key=lambda r: r.start, reverse=True
         )
 
-        def _get_strategy(entity_type: str) -> str:
-            return strategies.get(entity_type, "replace")
-
-        hashed_types = {
-            r.entity_type for r in sorted_results
-            if _get_strategy(r.entity_type) == "hash"
-        }
-        encrypted_types = {
-            r.entity_type for r in sorted_results
-            if _get_strategy(r.entity_type) == "encrypt"
-        }
-        fake_types = {
-            r.entity_type for r in sorted_results
-            if _get_strategy(r.entity_type) == "fake"
-        }
-
+        # Fresh per-call mapping state
         type_counters: dict[str, int] = {}
         value_to_placeholder: dict[tuple[str, str], str] = {}
         entity_mapping: dict[str, str] = {}
         hash_mapping: dict[str, str] = {}
         encrypt_mapping: dict[str, str] = {}
 
-        # First pass (reverse order): compute replacements and build mappings
-        replacements: list[tuple[int, int, str]] = []
-        for result in sorted_results:
-            original_value = text[result.start : result.end]
-
-            if result.entity_type in hashed_types:
-                replacement = hashlib.sha3_256(original_value.encode()).hexdigest()
-                hash_mapping[replacement] = original_value
-            elif result.entity_type in encrypted_types:
-                replacement = _get_encrypt_op().operate(original_value)
-                encrypt_mapping[replacement] = original_value
-            elif result.entity_type in fake_types:
-                key = (result.entity_type, original_value)
-                if key not in value_to_placeholder:
-                    fake_val = _get_fake_op().operate(
-                        original_value, {"entity_type": result.entity_type}
-                    )
-                    value_to_placeholder[key] = fake_val
-                    entity_mapping[fake_val] = original_value
-                replacement = value_to_placeholder[key]
-            else:
-                key = (result.entity_type, original_value)
-                if key not in value_to_placeholder:
-                    type_counters[result.entity_type] = (
-                        type_counters.get(result.entity_type, 0) + 1
-                    )
-                    counter = type_counters[result.entity_type]
-                    placeholder = f"{{{{{result.entity_type}_{counter}}}}}"
-                    value_to_placeholder[key] = placeholder
-                    entity_mapping[placeholder] = original_value
-
-                replacement = value_to_placeholder[key]
-
-            replacements.append((result.start, result.end, replacement))
-
-        # Single-pass forward build: O(n) instead of O(n × text_length)
-        replacements.sort(key=lambda r: r[0])
-        parts: list[str] = []
-        last_end = 0
-        for start, end, replacement in replacements:
-            parts.append(text[last_end:start])
-            parts.append(replacement)
-            last_end = end
-        parts.append(text[last_end:])
-        result_text = "".join(parts)
+        replacements = self._assign_replacements(
+            text, sorted_results, strategies,
+            type_counters=type_counters,
+            value_to_placeholder=value_to_placeholder,
+            entity_mapping=entity_mapping,
+            hash_mapping=hash_mapping,
+            encrypt_mapping=encrypt_mapping,
+        )
+        result_text = self._build_text(text, replacements)
+        _anonymize_ms = (time.perf_counter() - _t1) * 1000.0
 
         entities = sorted(
             [
@@ -483,9 +544,30 @@ class PiiShieldEngine:
             key=lambda e: e.start,
         )
 
+        entity_counts = dict(Counter(e.entity_type for e in entities))
+        stats = AnonymizeStats(
+            detect_ms=_detect_ms,
+            anonymize_ms=_anonymize_ms,
+            total_ms=(time.perf_counter() - _t0) * 1000.0,
+            entity_count=len(entities),
+            entity_counts=entity_counts,
+        )
+
         logger.info(
             "Anonymization complete: %d entities detected",
             len(non_overlapping),
+        )
+
+        emit(
+            on_event,
+            Event(
+                name="anonymize",
+                entity_count=len(entities),
+                entity_counts=entity_counts,
+                duration_ms=stats.total_ms,
+                detect_ms=_detect_ms,
+                anonymize_ms=_anonymize_ms,
+            ),
         )
 
         return AnonymizeResult(
@@ -494,6 +576,7 @@ class PiiShieldEngine:
             hash_mapping=hash_mapping,
             encrypt_mapping=encrypt_mapping,
             entities=entities,
+            stats=stats,
         )
 
     def deanonymize(
