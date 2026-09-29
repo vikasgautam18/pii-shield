@@ -33,6 +33,22 @@ class DetectedEntity:
 
 
 @dataclass
+class AnonymizeStats:
+    """Lightweight, dependency-free timing/count stats for one anonymize call.
+
+    Emitted as plain data so a host application can forward it to its own
+    telemetry (OpenTelemetry, StatsD, logs) without the library depending on
+    any telemetry framework.
+    """
+
+    detect_ms: float = 0.0
+    anonymize_ms: float = 0.0
+    total_ms: float = 0.0
+    entity_count: int = 0
+    entity_counts: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
 class AnonymizeResult:
     """Result of anonymizing a single text string."""
 
@@ -41,3 +57,4 @@ class AnonymizeResult:
     hash_mapping: dict[str, str] = field(default_factory=dict)
     encrypt_mapping: dict[str, str] = field(default_factory=dict)
     entities: list[DetectedEntity] = field(default_factory=list)
+    stats: AnonymizeStats | None = None
