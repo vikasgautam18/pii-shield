@@ -26,11 +26,18 @@ from pii_shield.observability import Event, EventHook, emit
 from pii_shield.nlp_engine import create_nlp_engine, get_nlp_engine_name
 from pii_shield.operator_config import ENCRYPTION_BACKEND, _DEFAULTS
 from pii_shield.pipeline import (
+    _NER_ENTITY_TYPES,
+    extend_person_over_initials,
+    filter_attributive_nrp,
     filter_person_false_positives,
     is_valid_datetime,
     merge_address_entities,
     merge_adjacent_person_tokens,
+    merge_recovered_results,
+    normalize_case,
+    normalize_person_titles,
     reclassify_person_as_location,
+    reclassify_phone_as_bank_account,
     remove_overlapping,
 )
 from pii_shield.recognizers import (
@@ -211,6 +218,12 @@ class PiiShieldEngine:
                     exc_info=True,
                 )
 
+        # Allow-listed acronyms must survive ALL-CAPS normalisation unchanged,
+        # so "IFSC" is never rewritten to the name-like token "Ifsc".
+        self._normalize_skip = frozenset(
+            w.upper() for w in self._global_allow_list if w.isalpha()
+        )
+
         # Apply recognizer context words from YAML config
         ctx_path = context_file or os.getenv(
             "RECOGNIZER_CONTEXTS_FILE", "config/recognizer_contexts.yml"
@@ -268,6 +281,38 @@ class PiiShieldEngine:
         except Exception as exc:
             raise DetectionError(f"PII detection failed: {exc}") from exc
 
+        # Recover PII from badly-cased text.  Cased NER models mislabel or miss
+        # ALL-CAPS and all-lowercase names, so re-run NER only over a re-cased
+        # copy and merge what it finds.  The copy is the same length, so offsets
+        # map 1:1; the original text is never analysed differently, leaving
+        # case-sensitive recognizers (PAN, SWIFT) untouched.
+        normalized = normalize_case(text, self._normalize_skip)
+        if normalized is not None:
+            try:
+                recovered = self._analyzer.analyze(
+                    text=normalized,
+                    language=language,
+                    entities=sorted(_NER_ENTITY_TYPES),
+                    score_threshold=threshold,
+                    allow_list=merged_allow or None,
+                )
+            except Exception:
+                logger.warning(
+                    "Case-recovery pass failed; using primary results only",
+                    exc_info=True,
+                )
+                recovered = []
+            if recovered:
+                analyzer_results = merge_recovered_results(
+                    analyzer_results, recovered, text
+                )
+
+        # Resolve honorific / professional titles ("CA Abhay", "Er. Ram"), which
+        # NER labels ORGANIZATION or splits into a title-only span.  This runs
+        # before the allow-list filters so that an app allow-listing
+        # ORGANIZATION does not end up exempting a person's name.
+        analyzer_results = normalize_person_titles(analyzer_results, text)
+
         # Filter entity types in allow-list (and suppress overlapping entities)
         if entity_type_allow_list:
             allowed_spans: list[tuple[int, int]] = []
@@ -319,13 +364,26 @@ class PiiShieldEngine:
         # Extend PERSON spans to adjacent capitalized name tokens NER may have missed
         analyzer_results = merge_adjacent_person_tokens(analyzer_results, text)
 
+        # Dotted initials end the entity in cased NER ("R.K." from "R.K.
+        # Sharma"), so pull the following surname back into the span.
+        analyzer_results = extend_person_over_initials(analyzer_results, text)
+
         # Drop sentence-initial PERSON false positives (e.g. "Email me ...")
         analyzer_results = filter_person_false_positives(analyzer_results, text)
 
         # Merge adjacent LOCATION / IN_PIN_CODE entities into ADDRESS
         analyzer_results = merge_address_entities(analyzer_results, text)
 
+        # Drop NRP that describes a thing rather than a person ("South Indian
+        # branches").  Runs after address merging so a building name already
+        # promoted to ADDRESS is not affected.
+        analyzer_results = filter_attributive_nrp(analyzer_results, text)
+
         results = remove_overlapping(analyzer_results)
+
+        # A bare 10-digit number matches both the Indian mobile and bank
+        # account patterns; resolve it from the nearest surrounding cue.
+        results = reclassify_phone_as_bank_account(results, text)
 
         # Positive inclusion filter: keep ONLY the requested entity types.
         if entity_type_include_list is not None:

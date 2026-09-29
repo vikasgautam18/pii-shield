@@ -67,7 +67,6 @@ This document is intended for:
 | **Document** | **Location** | **Description** |
 |----|----|----|
 | Prerequisites Guide | docs/prerequisites.md | Complete list of software, NLP models, environment variables, Azure roles, and RBAC requirements. |
-| Add a Recognizer Guide | docs/add-a-recognizer.md | How to add regex, context-only, Python, runtime, and built-in recognizer customizations. |
 | Azure Deployment Guide | infra/README.md | Step-by-step instructions for Terraform provisioning, ACR builds, Container Apps deployment, and Grafana dashboard setup. |
 | Architecture Diagrams | docs/architecture.drawio | draw.io component diagram — local Docker Compose topology. |
 | Azure Architecture Diagram | docs/architecture-azure.drawio | draw.io deployment diagram — Azure Container Apps, Redis, ACR, App Insights, Managed Grafana. |
@@ -206,7 +205,12 @@ The library package provides the core PII detection and anonymization engine wit
 <tr>
 <td>pipeline.py</td>
 <td><p>Shared post-processing logic:</p>
+<p><em><strong>normalize_case()</strong></em> / <em><strong>merge_recovered_results()</strong></em> - recover names from ALL-CAPS and all-lowercase text that cased NER models mislabel, truncate, or miss</p>
 <p><em><strong>reclassify_person_as_location()</strong></em> - fixes spaCy misclassification of Indian places</p>
+<p><em><strong>reclassify_phone_as_bank_account()</strong></em> - a bare 10-digit number is both a valid Indian mobile and a bank account number; the nearest account/phone cue decides</p>
+<p><em><strong>extend_person_over_initials()</strong></em> - dotted initials end the entity in cased NER models, so "Mr. R.K. Sharma" would otherwise leak the surname</p>
+<p><em><strong>normalize_person_titles()</strong></em> - Indian honorifics and professional prefixes: "CA Abhay" is tagged ORGANIZATION and "Er." becomes a PERSON of its own; titles are trimmed and the name forced to PERSON</p>
+<p><em><strong>filter_attributive_nrp()</strong></em> - NRP is personal data only when it describes a person; "South Indian branches" describes a thing and is not redacted</p>
 <p><em><strong>merge_address_entities()</strong></em> - combines adjacent LOCATION + IN_PIN_CODE into ADDRESS</p>
 <p><em><strong>remove_overlapping()</strong></em> - keeps highest-scoring non-overlapping matches</p>
 <p><strong>is_valid_datetime()</strong> - date format validation</p></td>

@@ -173,8 +173,7 @@
       "DATE_TIME",
       "ADDRESS",
       "IN_BANK_ACCOUNT",
-      "IN_PASSPORT",
-      "NRP"
+      "IN_PASSPORT"
     ]
   },
   {
@@ -608,7 +607,6 @@
       "ADDRESS",
       "EMAIL_ADDRESS",
       "IN_PAN",
-      "NRP",
       "PERSON",
       "US_PASSPORT"
     ]

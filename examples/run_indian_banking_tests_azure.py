@@ -337,6 +337,12 @@ class TestRunner:
         self.hash_phone_with_flag: list[dict] = []
         self.mixed_strategy_results: list[dict] = []
         self.address_indicator_results: list[dict] = []
+        self.case_robustness_results: list[dict] = []
+        self.address_completeness_results: list[dict] = []
+        self.account_phone_results: list[dict] = []
+        self.person_initials_results: list[dict] = []
+        self.person_titles_results: list[dict] = []
+        self.nrp_alignment_results: list[dict] = []
         self.geo_coordinate_results: list[dict] = []
         self.nrp_results: list[dict] = []
         self.us_entity_results: list[dict] = []
@@ -1121,6 +1127,593 @@ class TestRunner:
         self._log(
             "Address Indicator",
             f"{passed}/{len(self.address_indicator_results)} passed",
+        )
+
+    def run_case_robustness(self) -> None:
+        """Test that PII is detected regardless of how the text is cased.
+
+        Cased NER models (dslim/bert-base-NER and its ONNX derivatives) rely on
+        capitalisation, so ALL-CAPS names come back mislabelled ORGANIZATION or
+        truncated, and all-lowercase names are missed outright — a silent leak.
+        Each name is sent in Title, UPPER and lower casing and must be found as
+        PERSON every time, with the round-trip restoring the original casing.
+
+        Also guards the two precision risks of case recovery: case-sensitive
+        identifiers (PAN, IFSC) must survive, and ordinary prose must not gain
+        spurious entities from re-casing.
+        """
+        name_cases = [
+            ("Three-part name", "Rajesh Kumar Sharma", "{} residing at Kanakia Zen World has some concerns"),
+            ("Two-part name", "Sanjay Gupta", "Cheque issued by {} bounced due to insufficient funds"),
+            ("South Indian name", "Priya Venkatesan", "Applicant {} signed the form at the Mumbai branch"),
+            ("Name before PAN", "Anil Deshmukh", "The account holder is {} and the PAN is ABCPS1234K"),
+            ("Name in request", "Meera Nair", "Kindly update the records for {} before Friday"),
+        ]
+
+        for label, name, template in name_cases:
+            for casing, transform in (
+                ("Title", lambda s: s),
+                ("UPPER", str.upper),
+                ("lower", str.lower),
+            ):
+                text = transform(template.format(name))
+                anon = self.client.anonymize_unique(text)
+                mapping = anon["entity_mapping"]
+
+                persons = " ".join(
+                    v.lower() for k, v in mapping.items() if "PERSON" in k
+                ).strip()
+                expected = transform(name).lower()
+                detected = bool(persons) and all(
+                    part in persons for part in expected.split()
+                )
+                # The bug being guarded against: the name coming back as an
+                # organisation/location rather than a person.
+                mislabelled = any(
+                    any(part in v.lower() for part in expected.split())
+                    and ("ORGANIZATION" in k or "NRP" in k)
+                    for k, v in mapping.items()
+                )
+                restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+                exact = restored["text"] == text
+
+                self.case_robustness_results.append({
+                    "label": f"{label} ({casing})",
+                    "text": text[:80] + ("…" if len(text) > 80 else ""),
+                    "anonymized": anon["anonymized_text"][:80]
+                    + ("…" if len(anon["anonymized_text"]) > 80 else ""),
+                    "full_text": text,
+                    "full_anonymized": anon["anonymized_text"],
+                    "mapping": mapping,
+                    "restored": restored["text"],
+                    "detected": detected,
+                    "not_mislabelled": not mislabelled,
+                    "round_trip": exact,
+                    "passed": detected and not mislabelled and exact,
+                })
+
+        # Case-sensitive identifiers must survive re-casing untouched.
+        guard_text = (
+            "THE ACCOUNT HOLDER IS SUNITA KRISHNAN AND HER PAN IS ABCPS1234K, "
+            "IFSC SBIN0001234"
+        )
+        anon = self.client.anonymize_unique(guard_text)
+        mapping = anon["entity_mapping"]
+        pan_ok = any("IN_PAN" in k and v == "ABCPS1234K" for k, v in mapping.items())
+        ifsc_ok = any("IN_IFSC" in k and v == "SBIN0001234" for k, v in mapping.items())
+        restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+        self.case_robustness_results.append({
+            "label": "ALL-CAPS preserves PAN + IFSC",
+            "text": guard_text[:80] + "…",
+            "anonymized": anon["anonymized_text"][:80] + "…",
+            "full_text": guard_text,
+            "full_anonymized": anon["anonymized_text"],
+            "mapping": mapping,
+            "restored": restored["text"],
+            "detected": pan_ok and ifsc_ok,
+            "not_mislabelled": True,
+            "round_trip": restored["text"] == guard_text,
+            "passed": pan_ok and ifsc_ok and restored["text"] == guard_text,
+        })
+
+        # Normally-cased prose must not gain entities from case recovery.
+        for label, text, forbidden in (
+            (
+                "Cased prose keeps org separate",
+                "Kavitha visited Contoso Bank in Chennai.",
+                "kavitha visited contoso bank",
+            ),
+            (
+                "Lowercase prose without PII",
+                "the loan application is still pending approval from the credit team",
+                "credit team",
+            ),
+            (
+                "Lowercase prose without PII (banking)",
+                "please reset my internet banking password immediately",
+                "internet banking password",
+            ),
+        ):
+            anon = self.client.anonymize_unique(text)
+            mapping = anon["entity_mapping"]
+            # No entity may span the whole forbidden phrase.
+            clean = not any(v.lower() == forbidden for v in mapping.values())
+            restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+            self.case_robustness_results.append({
+                "label": label,
+                "text": text[:80] + ("…" if len(text) > 80 else ""),
+                "anonymized": anon["anonymized_text"][:80]
+                + ("…" if len(anon["anonymized_text"]) > 80 else ""),
+                "full_text": text,
+                "full_anonymized": anon["anonymized_text"],
+                "mapping": mapping,
+                "restored": restored["text"],
+                "detected": clean,
+                "not_mislabelled": clean,
+                "round_trip": restored["text"] == text,
+                "passed": clean and restored["text"] == text,
+            })
+
+        passed = sum(1 for r in self.case_robustness_results if r["passed"])
+        self._log(
+            "Case Robustness",
+            f"{passed}/{len(self.case_robustness_results)} passed",
+        )
+
+    def run_address_completeness(self) -> None:
+        """Test that the whole address lands inside one ADDRESS span.
+
+        A flat/unit number left outside the span (``F3003``, ``A-101``, the
+        ``12`` of ``12 MG Road``) is an exposed identifier, and a building name
+        alone never merged because NER tags it LOCATION, ORGANIZATION or NRP
+        interchangeably.  Each case asserts the fragments that must be covered
+        and, where relevant, that nothing outside an address is swallowed.
+        """
+        test_cases = [
+            {
+                "label": "Flat number + society, no city",
+                "text": "Rajesh Sharma residing at F3003, Kanakia Zen World has some concerns",
+                "must_cover": ["F3003", "Kanakia Zen"],
+                "must_not_cover": [],
+            },
+            {
+                "label": "Flat number + society + city + PIN",
+                "text": (
+                    "Rajesh Sharma residing at F3003, Kanakia Zen World, "
+                    "Kandivali East, Mumbai 400101"
+                ),
+                "must_cover": ["F3003", "Kanakia Zen World", "Mumbai", "400101"],
+                "must_not_cover": [],
+            },
+            {
+                "label": "Hyphenated unit number",
+                "text": "He lives at A-101, Prestige Shantiniketan, Whitefield, Bengaluru 560048",
+                "must_cover": ["A-101", "Prestige Shantiniketan", "560048"],
+                "must_not_cover": [],
+            },
+            {
+                "label": "Flat keyword + tower",
+                "text": "Address: Flat 302, Tower B, Lodha Amara, Thane West, Mumbai 400604",
+                "must_cover": ["302", "Lodha Amara", "400604"],
+                "must_not_cover": [],
+            },
+            {
+                "label": "House number before road",
+                "text": "Send it to 12 MG Road, Bengaluru 560001",
+                "must_cover": ["12", "MG Road", "560001"],
+                "must_not_cover": [],
+            },
+            {
+                "label": "Society name in ALL-CAPS",
+                "text": "RESIDING AT F3003, KANAKIA ZEN WORLD, MUMBAI 400101",
+                "must_cover": ["F3003", "KANAKIA ZEN WORLD"],
+                "must_not_cover": [],
+            },
+        ]
+
+        for tc in test_cases:
+            anon = self.client.anonymize_unique(tc["text"])
+            mapping = anon["entity_mapping"]
+            address_values = [
+                v for k, v in mapping.items() if "ADDRESS" in k or "LOCATION" in k
+            ]
+            covered = " | ".join(address_values)
+
+            missing = [f for f in tc["must_cover"] if f.lower() not in covered.lower()]
+            leaked = [
+                f for f in tc["must_not_cover"] if f.lower() in covered.lower()
+            ]
+            restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+
+            self.address_completeness_results.append({
+                "label": tc["label"],
+                "text": tc["text"][:80] + ("…" if len(tc["text"]) > 80 else ""),
+                "address": covered[:80] + ("…" if len(covered) > 80 else "") or "—",
+                "missing": ", ".join(missing) or "—",
+                "full_text": tc["text"],
+                "full_anonymized": anon["anonymized_text"],
+                "mapping": mapping,
+                "restored": restored["text"],
+                "complete": not missing,
+                "no_overreach": not leaked,
+                "round_trip": restored["text"] == tc["text"],
+                "passed": not missing and not leaked and restored["text"] == tc["text"],
+            })
+
+        # Outside address context, ordinary ORGANIZATION / LOCATION mentions
+        # must keep their own type rather than being folded into an address.
+        for label, text, phrase in (
+            ("Employer is not an address", "She works at Contoso Manufacturing on weekdays", "Contoso Manufacturing"),
+            ("Sponsor is not an address", "The Kanakia Zen group sponsors the event", "Kanakia Zen"),
+        ):
+            anon = self.client.anonymize_unique(text)
+            mapping = anon["entity_mapping"]
+            not_address = not any(
+                "ADDRESS" in k and phrase.lower() in v.lower()
+                for k, v in mapping.items()
+            )
+            restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+            self.address_completeness_results.append({
+                "label": label,
+                "text": text[:80] + ("…" if len(text) > 80 else ""),
+                "address": "— (expected none)",
+                "missing": "—",
+                "full_text": text,
+                "full_anonymized": anon["anonymized_text"],
+                "mapping": mapping,
+                "restored": restored["text"],
+                "complete": not_address,
+                "no_overreach": not_address,
+                "round_trip": restored["text"] == text,
+                "passed": not_address and restored["text"] == text,
+            })
+
+        passed = sum(1 for r in self.address_completeness_results if r["passed"])
+        self._log(
+            "Address Completeness",
+            f"{passed}/{len(self.address_completeness_results)} passed",
+        )
+
+    def run_account_phone_disambiguation(self) -> None:
+        """Test that a bare 10-digit number is classified from its context.
+
+        A bare 10-digit number starting 6-9 is simultaneously a valid Indian
+        mobile and a valid Indian bank account number, and scores cannot
+        separate them: the phone pattern scores 0.60 against the account
+        pattern's 0.10, and "number" sits in the phone recognizer's context
+        list, so "bank account number" boosts the phone score to 1.00.  Only
+        the surrounding words carry the answer.
+        """
+        cases = [
+            ("Bank account number", "His bank account number is 9876543210",
+             "9876543210", "IN_BANK_ACCOUNT"),
+            ("Account number, no bank word", "His account number is 9876543210",
+             "9876543210", "IN_BANK_ACCOUNT"),
+            ("A/C abbreviation", "Credit A/C no 9876543210 today",
+             "9876543210", "IN_BANK_ACCOUNT"),
+            ("IFSC follows the digits", "Transfer to 9876543210 IFSC SBIN0001234",
+             "9876543210", "IN_BANK_ACCOUNT"),
+            ("NEFT follows the digits", "NEFT credit to 9876543210 via RTGS today",
+             "9876543210", "IN_BANK_ACCOUNT"),
+            ("Mobile cue", "His mobile number is 9876543210",
+             "9876543210", "PHONE_NUMBER"),
+            ("No cue at all", "Call me on 9876543210",
+             "9876543210", "PHONE_NUMBER"),
+            ("Account word AFTER a phone", "Call me on 9876543210 for account queries",
+             "9876543210", "PHONE_NUMBER"),
+            ("+91 prefix stays a phone", "Contact him at +91 98765 43210",
+             "+91 98765 43210", "PHONE_NUMBER"),
+            ("Leading zero stays a phone", "Reach me on 09876543210",
+             "09876543210", "PHONE_NUMBER"),
+            ("12-digit account", "His bank account number is 123456789012",
+             "123456789012", "IN_BANK_ACCOUNT"),
+            ("Nearest cue wins (account)",
+             "His bank account number is 9876543210 and mobile is 9123456780",
+             "9876543210", "IN_BANK_ACCOUNT"),
+            ("Nearest cue wins (mobile)",
+             "His bank account number is 9876543210 and mobile is 9123456780",
+             "9123456780", "PHONE_NUMBER"),
+        ]
+
+        for label, text, value, expected in cases:
+            anon = self.client.anonymize_unique(text)
+            mapping = anon["entity_mapping"]
+            actual = next(
+                (
+                    k.strip("{}").rsplit("_", 1)[0]
+                    for k, v in mapping.items()
+                    if v == value
+                ),
+                "(not detected)",
+            )
+            restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+            passed = actual == expected and restored["text"] == text
+            self.account_phone_results.append({
+                "label": label,
+                "text": text[:80] + ("…" if len(text) > 80 else ""),
+                "value": value,
+                "expected": expected,
+                "actual": actual,
+                "full_text": text,
+                "full_anonymized": anon["anonymized_text"],
+                "mapping": mapping,
+                "restored": restored["text"],
+                "correct_type": actual == expected,
+                "round_trip": restored["text"] == text,
+                "passed": passed,
+            })
+
+        passed = sum(1 for r in self.account_phone_results if r["passed"])
+        self._log(
+            "Account vs Phone",
+            f"{passed}/{len(self.account_phone_results)} passed",
+        )
+
+    def run_person_initials(self) -> None:
+        """Test that a surname after dotted initials is not left exposed.
+
+        Cased NER models end the entity at dotted initials: queried directly,
+        "Mr. R.K. Sharma" returns only ``PERSON 'R.K.'`` and the surname is
+        never detected.  The same name without periods returns one complete
+        span, which isolates the periods as the trigger.
+        """
+        cases = [
+            ("Two initials + surname", "Mr. R.K. Sharma has written a complaint",
+             "R.K. Sharma"),
+            ("No title, two initials", "R.K. Sharma has written a complaint",
+             "R.K. Sharma"),
+            ("Three initials + two names", "Dr. A.P.J. Abdul Kalam visited the branch",
+             "A.P.J. Abdul Kalam"),
+            ("Single initial + surname", "Ms. S. Iyer called the branch", "S. Iyer"),
+            ("Spaced initials", "Cheque signed by R. K. Sharma today", "R. K. Sharma"),
+            ("Three spaced initials", "Report by A. P. J. Kalam filed today",
+             "A. P. J. Kalam"),
+            ("Initials mid-sentence", "Complaint filed by R.K. Sharma yesterday",
+             "R.K. Sharma"),
+            ("Undotted initials", "The cheque was signed by R K Sharma", "R K Sharma"),
+            ("Ordinary name unaffected", "Mr. Rajesh Sharma has written a complaint",
+             "Rajesh Sharma"),
+        ]
+
+        for label, text, expected in cases:
+            anon = self.client.anonymize_unique(text)
+            mapping = anon["entity_mapping"]
+            persons = [v for k, v in mapping.items() if "PERSON" in k]
+            captured = expected in persons
+            # The surname must not survive in the anonymized output.
+            surname = expected.split()[-1]
+            leaked = surname in anon["anonymized_text"]
+            restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+            self.person_initials_results.append({
+                "label": label,
+                "text": text[:80] + ("…" if len(text) > 80 else ""),
+                "expected": expected,
+                "actual": ", ".join(persons) or "(none)",
+                "full_text": text,
+                "full_anonymized": anon["anonymized_text"],
+                "mapping": mapping,
+                "restored": restored["text"],
+                "full_span": captured,
+                "no_leak": not leaked,
+                "round_trip": restored["text"] == text,
+                "passed": captured and not leaked and restored["text"] == text,
+            })
+
+        # Guard: an unrelated capitalised word after initials must not be eaten.
+        guard = "Send it to A.B. Next week we will follow up"
+        anon = self.client.anonymize_unique(guard)
+        mapping = anon["entity_mapping"]
+        over_reach = any("Next" in v for v in mapping.values())
+        restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+        self.person_initials_results.append({
+            "label": "Guard: clause after initials not absorbed",
+            "text": guard,
+            "expected": "'Next' must not be part of a name",
+            "actual": ", ".join(mapping.values()) or "(none)",
+            "full_text": guard,
+            "full_anonymized": anon["anonymized_text"],
+            "mapping": mapping,
+            "restored": restored["text"],
+            "full_span": not over_reach,
+            "no_leak": not over_reach,
+            "round_trip": restored["text"] == guard,
+            "passed": not over_reach and restored["text"] == guard,
+        })
+
+        passed = sum(1 for r in self.person_initials_results if r["passed"])
+        self._log(
+            "Person Initials",
+            f"{passed}/{len(self.person_initials_results)} passed",
+        )
+
+    def run_person_titles(self) -> None:
+        """Test Indian honorific and professional prefixes.
+
+        Only the Western titles were known to the pipeline.  "CA Abhay Sharma"
+        and "CS Priya" came back as ORGANIZATION — still redacted by default,
+        but leaked outright for an app allow-listing ORGANIZATION — while
+        "Er. Ram" tagged the abbreviation itself as PERSON and left a stray
+        "." entity behind.  Titles stay outside the span, matching the
+        existing behaviour for "Mr. Rajesh Sharma".
+        """
+        cases = [
+            ("Dr.", "Dr. Ajay has approved the loan", "Ajay"),
+            ("Er.", "Er. Ram has approved the loan", "Ram"),
+            ("CA (no dot)", "CA Abhay has approved the loan", "Abhay"),
+            ("CA + surname", "CA Abhay Sharma has approved the loan", "Abhay Sharma"),
+            ("CS (no dot)", "CS Priya has approved the loan", "Priya"),
+            ("Adv.", "Adv. Meera has approved the loan", "Meera"),
+            ("Prof.", "Prof. Anil has approved the loan", "Anil"),
+            ("Shri", "Shri Ramesh has approved the loan", "Ramesh"),
+            ("Smt.", "Smt. Kavita has approved the loan", "Kavita"),
+            ("Capt.", "Capt. Vikram has approved the loan", "Vikram"),
+            ("Col.", "Col. Rana has approved the loan", "Rana"),
+            ("Pt.", "Pt. Ravi has approved the loan", "Ravi"),
+            ("Justice", "Justice Khanna has approved the loan", "Khanna"),
+            ("Stacked titles", "Lt. Col. Vikram Rana called", "Vikram Rana"),
+            ("Title + full name", "Er. Ram Kumar filed the report", "Ram Kumar"),
+        ]
+
+        for label, text, expected_name in cases:
+            anon = self.client.anonymize_unique(text)
+            mapping = anon["entity_mapping"]
+            persons = [v for k, v in mapping.items() if "PERSON" in k]
+            as_person = expected_name in persons
+            # No entity may be a bare title or a lone punctuation mark.
+            junk = [
+                v for v in mapping.values()
+                if not v.strip() or not any(c.isalnum() for c in v)
+            ]
+            name_leaked = expected_name.split()[0] in anon["anonymized_text"]
+            restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+            self.person_titles_results.append({
+                "label": label,
+                "text": text[:80] + ("…" if len(text) > 80 else ""),
+                "expected": expected_name,
+                "actual": ", ".join(f"{k.strip('{}')}={v}" for k, v in mapping.items())
+                or "(none)",
+                "full_text": text,
+                "full_anonymized": anon["anonymized_text"],
+                "mapping": mapping,
+                "restored": restored["text"],
+                "as_person": as_person,
+                "no_junk": not junk,
+                "round_trip": restored["text"] == text,
+                "passed": (
+                    as_person and not junk and not name_leaked
+                    and restored["text"] == text
+                ),
+            })
+
+        # Control: a genuine organisation must keep its own type.
+        control = "Contoso Manufacturing has approved the loan"
+        anon = self.client.anonymize_unique(control)
+        mapping = anon["entity_mapping"]
+        still_org = any("ORGANIZATION" in k for k in mapping)
+        restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+        self.person_titles_results.append({
+            "label": "Control: real organisation unaffected",
+            "text": control,
+            "expected": "ORGANIZATION",
+            "actual": ", ".join(f"{k.strip('{}')}={v}" for k, v in mapping.items())
+            or "(none)",
+            "full_text": control,
+            "full_anonymized": anon["anonymized_text"],
+            "mapping": mapping,
+            "restored": restored["text"],
+            "as_person": still_org,
+            "no_junk": True,
+            "round_trip": restored["text"] == control,
+            "passed": still_org and restored["text"] == control,
+        })
+
+        passed = sum(1 for r in self.person_titles_results if r["passed"])
+        self._log(
+            "Person Titles",
+            f"{passed}/{len(self.person_titles_results)} passed",
+        )
+
+    def run_nrp_alignment(self) -> None:
+        """Test that NRP fires only when the demonym describes a person.
+
+        NRP (nationality / religious / political group) is personal data only
+        when it describes a person.  The NER model emits it for any demonym, so
+        aggregate business language — "South Indian branches", "Indian banking
+        sector" — was redacted even though it identifies nobody.  Used
+        predicatively ("the customer is Indian") or before a singular person
+        noun ("a Muslim woman") it describes an individual and must stay.
+        """
+        descriptive = [
+            ("Branches, not a person",
+             "Our South Indian branches have shown 20% growth this quarter."),
+            ("Region, not a person",
+             "The North Indian region has the highest loan disbursement."),
+            ("Sector, not a person",
+             "Indian banking sector is growing rapidly."),
+            ("Generic customer segment",
+             "South Indian customers prefer mobile banking."),
+            ("Market, not a person",
+             "The South Indian market has high potential for home loans."),
+            ("Areas, not a person",
+             "South Indian rural areas need more ATM coverage."),
+            ("Business segment",
+             "The bank is targeting South Indian SME customers."),
+            ("Loans, not a person",
+             "South Indian agriculture loans are performing well."),
+            ("Portfolio, not a person",
+             "The South Indian credit card portfolio is expanding."),
+            ("Customer segment (NRI)",
+             "South Indian NRI customers are our focus segment."),
+            ("Adoption rate, not a person",
+             "The South Indian digital banking adoption is high."),
+            ("Services, not a person",
+             "South Indian wealth management services are in demand."),
+        ]
+
+        for label, text in descriptive:
+            anon = self.client.anonymize_unique(text)
+            mapping = anon["entity_mapping"]
+            nrp = [v for k, v in mapping.items() if "NRP" in k]
+            unchanged = anon["anonymized_text"] == text
+            restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+            self.nrp_alignment_results.append({
+                "label": label,
+                "text": text[:80] + ("…" if len(text) > 80 else ""),
+                "expectation": "no redaction",
+                "nrp": ", ".join(nrp) or "—",
+                "full_text": text,
+                "full_anonymized": anon["anonymized_text"],
+                "mapping": mapping,
+                "restored": restored["text"],
+                "as_expected": unchanged,
+                "round_trip": restored["text"] == text,
+                "passed": unchanged and restored["text"] == text,
+            })
+
+        personal = [
+            ("Predicate position", "The customer is Indian and lives in Mumbai.", "Indian"),
+            ("End of sentence", "He is a South Indian Hindu.", "South Indian Hindu"),
+            ("Before a preposition", "Rajesh is a Tamil Brahmin from Chennai.", "Tamil Brahmin"),
+            ("Singular person noun", "The applicant is a Muslim woman aged 34.", "Muslim"),
+            ("Attributive, no copula", "The Muslim woman filed a complaint.", "Muslim"),
+            ("Religious role noun",
+             "Indian national and Buddhist devotee Rahul Verma opened an account.",
+             "Buddhist"),
+            ("Label value", "Nationality: Indian", "Indian"),
+            ("Singular customer", "A South Indian customer raised the issue.", "South Indian"),
+            ("Occupation after copula (Tamil)",
+             "The account holder is a Tamil speaker from Coimbatore.", "Tamil"),
+            ("Occupation after copula (Punjabi)",
+             "The borrower is a Punjabi farmer seeking a crop loan.", "Punjabi"),
+            ("Occupation after copula (Gujarati)",
+             "He is a Gujarati businessman with three accounts.", "Gujarati"),
+            ("Caste + occupation", "He is a Rajput landowner from Rajasthan.", "Rajput"),
+        ]
+
+        for label, text, expected_nrp in personal:
+            anon = self.client.anonymize_unique(text)
+            mapping = anon["entity_mapping"]
+            nrp = [v for k, v in mapping.items() if "NRP" in k]
+            detected = any(expected_nrp in v for v in nrp)
+            restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+            self.nrp_alignment_results.append({
+                "label": f"{label} (must stay NRP)",
+                "text": text[:80] + ("…" if len(text) > 80 else ""),
+                "expectation": f"NRP '{expected_nrp}'",
+                "nrp": ", ".join(nrp) or "—",
+                "full_text": text,
+                "full_anonymized": anon["anonymized_text"],
+                "mapping": mapping,
+                "restored": restored["text"],
+                "as_expected": detected,
+                "round_trip": restored["text"] == text,
+                "passed": detected and restored["text"] == text,
+            })
+
+        passed = sum(1 for r in self.nrp_alignment_results if r["passed"])
+        self._log(
+            "NRP Alignment",
+            f"{passed}/{len(self.nrp_alignment_results)} passed",
         )
 
     def run_geo_coordinates(self) -> None:
@@ -2414,6 +3007,12 @@ class TestRunner:
             ("LLM Sandwich", self.run_llm_sandwich),
             ("Structured Data", self.run_structured_data),
             ("Address Indicator", self.run_address_indicator),
+            ("Case Robustness", self.run_case_robustness),
+            ("Address Completeness", self.run_address_completeness),
+            ("Account vs Phone", self.run_account_phone_disambiguation),
+            ("Person Initials", self.run_person_initials),
+            ("Person Titles", self.run_person_titles),
+            ("NRP Alignment", self.run_nrp_alignment),
             ("Geo-Coordinates", self.run_geo_coordinates),
             ("NRP Detection", self.run_nrp),
             ("US Entities", self.run_us_entities),
@@ -2452,6 +3051,54 @@ def _icon3(val: float) -> str:
 
 def _status_class(ok: bool) -> str:
     return "pass" if ok else "fail"
+
+
+def _render_io_detail(
+    w,
+    label: str,
+    passed: bool,
+    badge: str,
+    record: dict,
+    extra_rows: list[tuple[str, str]] | None = None,
+) -> None:
+    """Render one collapsible card with the exact input/output text pair.
+
+    ``record`` must carry ``full_text``, ``full_anonymized``, ``mapping`` and
+    ``restored``; the summary tables above truncate, so this is where the
+    untruncated pair lives.
+    """
+    cls = "pass" if passed else "fail"
+    w(f'<details class="scenario-card {cls}">')
+    w(f"<summary>{H(label)} &nbsp; {_icon(passed)} &nbsp; "
+      f"<small>{badge}</small></summary>")
+    w(f'<div class="text-block"><strong>Input:</strong><br>'
+      f'<pre style="white-space:pre-wrap;margin:0;">{H(record["full_text"])}</pre></div>')
+    w(f'<div class="text-block"><strong>Output (anonymized):</strong><br>'
+      f'<pre style="white-space:pre-wrap;margin:0;">{H(record["full_anonymized"])}</pre></div>')
+
+    mapping = record.get("mapping") or {}
+    if mapping:
+        w("<table><thead><tr><th>Placeholder</th><th>Original</th>"
+          "</tr></thead><tbody>")
+        for placeholder, original in mapping.items():
+            w(f"<tr><td><code>{H(placeholder)}</code></td>"
+              f"<td>{H(original)}</td></tr>")
+        w("</tbody></table>")
+    else:
+        w("<p><em>No entities detected.</em></p>")
+
+    restored = record.get("restored", "")
+    exact = restored == record["full_text"]
+    colour = "#d4edda" if exact else "#f8d7da"
+    w("<div class=\"text-block\"><strong>De-anonymized (round-trip):</strong><br>"
+      f'<pre style="background:{colour};padding:8px;border-radius:4px;'
+      f'white-space:pre-wrap;margin:0;">{H(restored)}</pre></div>')
+    w(f"<p>{'✅ Exact match' if exact else '❌ Mismatch'}</p>")
+
+    for row_label, row_value in extra_rows or []:
+        w(f"<p><strong>{H(row_label)}:</strong> {H(row_value)}</p>")
+
+    w("</details>")
 
 
 def generate_html_report(runner: TestRunner, output_path: str) -> None:
@@ -3382,6 +4029,264 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         w(f"<p><strong>{addr_passed}/{len(runner.address_indicator_results)}</strong> "
           f"address indicator tests passed.</p>")
 
+    # ── 11b. Case Robustness (ALL-CAPS / lowercase) ─────────────────────
+    w('<h2 id="case-robustness">11b. Case Robustness</h2>')
+    w("<p>Cased NER models rely on capitalisation, so ALL-CAPS names come back "
+      "mislabelled <code>ORGANIZATION</code> or truncated, and all-lowercase "
+      "names are missed outright. Each name is sent in Title, UPPER and lower "
+      "casing and must be detected as <code>PERSON</code> every time, with the "
+      "round-trip restoring the original casing. The final rows guard the "
+      "precision risks: case-sensitive identifiers (PAN, IFSC) must survive, "
+      "and ordinary prose must not gain spurious entities.</p>")
+
+    if runner.case_robustness_results:
+        w("<table><thead><tr><th>Test Case</th><th>Input (truncated)</th>"
+          "<th>Anonymized</th><th>Detected?</th><th>Correct type?</th>"
+          "<th>Round-trip</th><th>Result</th></tr></thead><tbody>")
+        for r in runner.case_robustness_results:
+            w(f'<tr><td>{H(r["label"])}</td>'
+              f'<td><small>{H(r["text"])}</small></td>'
+              f'<td><small>{H(r["anonymized"])}</small></td>'
+              f'<td>{_icon(r["detected"])}</td>'
+              f'<td>{_icon(r["not_mislabelled"])}</td>'
+              f'<td>{_icon(r["round_trip"])}</td>'
+              f'<td>{_icon(r["passed"])}</td></tr>')
+        w("</tbody></table>")
+        case_passed = sum(1 for r in runner.case_robustness_results if r["passed"])
+        w(f"<p><strong>{case_passed}/{len(runner.case_robustness_results)}</strong> "
+          f"case robustness tests passed.</p>")
+
+        w("<h3>11b-i. Case Robustness — Input / Output Detail</h3>")
+        for r in runner.case_robustness_results:
+            _render_io_detail(
+                w,
+                label=r["label"],
+                passed=r["passed"],
+                badge=(
+                    f'{_icon(r["detected"])} detected &nbsp; '
+                    f'{_icon(r["not_mislabelled"])} type &nbsp; '
+                    f'{_icon(r["round_trip"])} round-trip'
+                ),
+                record=r,
+            )
+
+    # ── 11c. Address Completeness ───────────────────────────────────────
+    w('<h2 id="address-completeness">11c. Address Completeness</h2>')
+    w("<p>A flat/unit number left outside the <code>ADDRESS</code> span "
+      "(<code>F3003</code>, <code>A-101</code>, the <code>12</code> of "
+      "<code>12 MG Road</code>) is an exposed identifier. These cases assert "
+      "every address fragment lands inside the span, and that ordinary "
+      "organisation mentions outside address context are not folded in.</p>")
+
+    if runner.address_completeness_results:
+        w("<table><thead><tr><th>Test Case</th><th>Input (truncated)</th>"
+          "<th>Address captured</th><th>Missing</th><th>Complete?</th>"
+          "<th>No over-reach</th><th>Round-trip</th><th>Result</th>"
+          "</tr></thead><tbody>")
+        for r in runner.address_completeness_results:
+            w(f'<tr><td>{H(r["label"])}</td>'
+              f'<td><small>{H(r["text"])}</small></td>'
+              f'<td><small>{H(r["address"])}</small></td>'
+              f'<td><small>{H(r["missing"])}</small></td>'
+              f'<td>{_icon(r["complete"])}</td>'
+              f'<td>{_icon(r["no_overreach"])}</td>'
+              f'<td>{_icon(r["round_trip"])}</td>'
+              f'<td>{_icon(r["passed"])}</td></tr>')
+        w("</tbody></table>")
+        ac_passed = sum(1 for r in runner.address_completeness_results if r["passed"])
+        w(f"<p><strong>{ac_passed}/{len(runner.address_completeness_results)}</strong> "
+          f"address completeness tests passed.</p>")
+
+        w("<h3>11c-i. Address Completeness — Input / Output Detail</h3>")
+        for r in runner.address_completeness_results:
+            _render_io_detail(
+                w,
+                label=r["label"],
+                passed=r["passed"],
+                badge=(
+                    f'{_icon(r["complete"])} complete &nbsp; '
+                    f'{_icon(r["no_overreach"])} no over-reach &nbsp; '
+                    f'{_icon(r["round_trip"])} round-trip'
+                ),
+                record=r,
+                extra_rows=[("Missing fragments", r["missing"])],
+            )
+
+    # ── 11d. Account Number vs Phone Number ─────────────────────────────
+    w('<h2 id="account-phone">11d. Account Number vs Phone Number</h2>')
+    w("<p>A bare 10-digit number starting 6-9 is simultaneously a valid Indian "
+      "mobile and a valid Indian bank account number. Scores cannot separate "
+      "them — the phone pattern scores 0.60 against the account pattern's "
+      "0.10, and <code>number</code> sits in the phone recognizer's context "
+      "list, so <em>bank account number</em> boosts the phone score to 1.00. "
+      "The nearest surrounding cue decides, with transfer markers (IFSC, "
+      "NEFT) also counting when they follow the digits.</p>")
+
+    if runner.account_phone_results:
+        w("<table><thead><tr><th>Test Case</th><th>Input (truncated)</th>"
+          "<th>Value</th><th>Expected</th><th>Actual</th><th>Round-trip</th>"
+          "<th>Result</th></tr></thead><tbody>")
+        for r in runner.account_phone_results:
+            w(f'<tr><td>{H(r["label"])}</td>'
+              f'<td><small>{H(r["text"])}</small></td>'
+              f'<td><code>{H(r["value"])}</code></td>'
+              f'<td><code>{H(r["expected"])}</code></td>'
+              f'<td><code>{H(r["actual"])}</code></td>'
+              f'<td>{_icon(r["round_trip"])}</td>'
+              f'<td>{_icon(r["passed"])}</td></tr>')
+        w("</tbody></table>")
+        ap_passed = sum(1 for r in runner.account_phone_results if r["passed"])
+        w(f"<p><strong>{ap_passed}/{len(runner.account_phone_results)}</strong> "
+          f"account/phone disambiguation tests passed.</p>")
+
+        w("<h3>11d-i. Account vs Phone — Input / Output Detail</h3>")
+        for r in runner.account_phone_results:
+            _render_io_detail(
+                w,
+                label=r["label"],
+                passed=r["passed"],
+                badge=(
+                    f'{_icon(r["correct_type"])} type &nbsp; '
+                    f'{_icon(r["round_trip"])} round-trip'
+                ),
+                record=r,
+                extra_rows=[
+                    ("Value under test", r["value"]),
+                    ("Expected type", r["expected"]),
+                    ("Actual type", r["actual"]),
+                ],
+            )
+
+    # ── 11e. Names With Dotted Initials ─────────────────────────────────
+    w('<h2 id="person-initials">11e. Names With Dotted Initials</h2>')
+    w("<p>Cased NER models end the entity at dotted initials: queried "
+      "directly, <code>Mr. R.K. Sharma</code> returns only "
+      "<code>PERSON 'R.K.'</code> and the surname is never detected, leaking "
+      "it. The same name without periods returns one complete span, which "
+      "isolates the periods as the trigger.</p>")
+
+    if runner.person_initials_results:
+        w("<table><thead><tr><th>Test Case</th><th>Input (truncated)</th>"
+          "<th>Expected span</th><th>Detected</th><th>Full span?</th>"
+          "<th>No leak</th><th>Round-trip</th><th>Result</th>"
+          "</tr></thead><tbody>")
+        for r in runner.person_initials_results:
+            w(f'<tr><td>{H(r["label"])}</td>'
+              f'<td><small>{H(r["text"])}</small></td>'
+              f'<td><small>{H(r["expected"])}</small></td>'
+              f'<td><small>{H(r["actual"])}</small></td>'
+              f'<td>{_icon(r["full_span"])}</td>'
+              f'<td>{_icon(r["no_leak"])}</td>'
+              f'<td>{_icon(r["round_trip"])}</td>'
+              f'<td>{_icon(r["passed"])}</td></tr>')
+        w("</tbody></table>")
+        pi_passed = sum(1 for r in runner.person_initials_results if r["passed"])
+        w(f"<p><strong>{pi_passed}/{len(runner.person_initials_results)}</strong> "
+          f"initials tests passed.</p>")
+
+        w("<h3>11e-i. Dotted Initials — Input / Output Detail</h3>")
+        for r in runner.person_initials_results:
+            _render_io_detail(
+                w,
+                label=r["label"],
+                passed=r["passed"],
+                badge=(
+                    f'{_icon(r["full_span"])} full span &nbsp; '
+                    f'{_icon(r["no_leak"])} no leak &nbsp; '
+                    f'{_icon(r["round_trip"])} round-trip'
+                ),
+                record=r,
+                extra_rows=[("Expected span", r["expected"])],
+            )
+
+    # ── 11f. Honorific and Professional Titles ──────────────────────────
+    w('<h2 id="person-titles">11f. Honorific and Professional Titles</h2>')
+    w("<p>Only the Western titles were known to the pipeline. "
+      "<code>CA Abhay Sharma</code> and <code>CS Priya</code> came back as "
+      "<code>ORGANIZATION</code> — still redacted by default, but leaked "
+      "outright for an app allow-listing ORGANIZATION — while "
+      "<code>Er. Ram</code> tagged the abbreviation itself as PERSON and left "
+      "a stray <code>.</code> entity behind. Titles stay outside the span, "
+      "matching the existing behaviour for <code>Mr. Rajesh Sharma</code>.</p>")
+
+    if runner.person_titles_results:
+        w("<table><thead><tr><th>Title</th><th>Input (truncated)</th>"
+          "<th>Expected name</th><th>Entities</th><th>Is PERSON?</th>"
+          "<th>No junk span</th><th>Round-trip</th><th>Result</th>"
+          "</tr></thead><tbody>")
+        for r in runner.person_titles_results:
+            w(f'<tr><td>{H(r["label"])}</td>'
+              f'<td><small>{H(r["text"])}</small></td>'
+              f'<td><small>{H(r["expected"])}</small></td>'
+              f'<td><small>{H(r["actual"])}</small></td>'
+              f'<td>{_icon(r["as_person"])}</td>'
+              f'<td>{_icon(r["no_junk"])}</td>'
+              f'<td>{_icon(r["round_trip"])}</td>'
+              f'<td>{_icon(r["passed"])}</td></tr>')
+        w("</tbody></table>")
+        pt_passed = sum(1 for r in runner.person_titles_results if r["passed"])
+        w(f"<p><strong>{pt_passed}/{len(runner.person_titles_results)}</strong> "
+          f"title tests passed.</p>")
+
+        w("<h3>11f-i. Titles — Input / Output Detail</h3>")
+        for r in runner.person_titles_results:
+            _render_io_detail(
+                w,
+                label=r["label"],
+                passed=r["passed"],
+                badge=(
+                    f'{_icon(r["as_person"])} PERSON &nbsp; '
+                    f'{_icon(r["no_junk"])} no junk &nbsp; '
+                    f'{_icon(r["round_trip"])} round-trip'
+                ),
+                record=r,
+                extra_rows=[("Expected name", r["expected"])],
+            )
+
+    # ── 11g. NRP Alignment ──────────────────────────────────────────────
+    w('<h2 id="nrp-alignment">11g. NRP Alignment</h2>')
+    w("<p>NRP (nationality / religious / political group) is personal data only "
+      "when it describes a <em>person</em>. The NER model emits it for any "
+      "demonym, so aggregate business language — <code>South Indian "
+      "branches</code>, <code>Indian banking sector</code> — was redacted even "
+      "though it identifies nobody. Used predicatively (<code>the customer is "
+      "Indian</code>) or before a singular person noun (<code>a Muslim "
+      "woman</code>) it describes an individual and must stay.</p>")
+
+    if runner.nrp_alignment_results:
+        w("<table><thead><tr><th>Test Case</th><th>Input (truncated)</th>"
+          "<th>Expectation</th><th>NRP detected</th><th>As expected?</th>"
+          "<th>Round-trip</th><th>Result</th></tr></thead><tbody>")
+        for r in runner.nrp_alignment_results:
+            w(f'<tr><td>{H(r["label"])}</td>'
+              f'<td><small>{H(r["text"])}</small></td>'
+              f'<td><small>{H(r["expectation"])}</small></td>'
+              f'<td><small>{H(r["nrp"])}</small></td>'
+              f'<td>{_icon(r["as_expected"])}</td>'
+              f'<td>{_icon(r["round_trip"])}</td>'
+              f'<td>{_icon(r["passed"])}</td></tr>')
+        w("</tbody></table>")
+        na_passed = sum(1 for r in runner.nrp_alignment_results if r["passed"])
+        w(f"<p><strong>{na_passed}/{len(runner.nrp_alignment_results)}</strong> "
+          f"NRP alignment tests passed.</p>")
+
+        w("<h3>11g-i. NRP Alignment — Input / Output Detail</h3>")
+        for r in runner.nrp_alignment_results:
+            _render_io_detail(
+                w,
+                label=r["label"],
+                passed=r["passed"],
+                badge=(
+                    f'{_icon(r["as_expected"])} as expected &nbsp; '
+                    f'{_icon(r["round_trip"])} round-trip'
+                ),
+                record=r,
+                extra_rows=[
+                    ("Expectation", r["expectation"]),
+                    ("NRP detected", r["nrp"]),
+                ],
+            )
+
     # ── 12. Geo-Coordinate Detection ────────────────────────────────────
     w('<h2 id="geo-coordinates">12. Geo-Coordinate Detection</h2>')
     w("<p>Verifies that geographic coordinates (latitude/longitude) in "
@@ -3590,6 +4495,12 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         ("ComplianceApp RT (full)", f"{comp_full_exact}/{total_scenarios}"),
         ("CustomerSupportApp RT", f"{supp_default_exact}/{total_scenarios}"),
         ("Address indicator tests", f"{addr_passed}/{len(runner.address_indicator_results)}"),
+        ("Case robustness tests", f"{sum(1 for r in runner.case_robustness_results if r['passed'])}/{len(runner.case_robustness_results)}"),
+        ("Address completeness tests", f"{sum(1 for r in runner.address_completeness_results if r['passed'])}/{len(runner.address_completeness_results)}"),
+        ("Account vs phone tests", f"{sum(1 for r in runner.account_phone_results if r['passed'])}/{len(runner.account_phone_results)}"),
+        ("Dotted initials tests", f"{sum(1 for r in runner.person_initials_results if r['passed'])}/{len(runner.person_initials_results)}"),
+        ("Honorific title tests", f"{sum(1 for r in runner.person_titles_results if r['passed'])}/{len(runner.person_titles_results)}"),
+        ("NRP alignment tests", f"{sum(1 for r in runner.nrp_alignment_results if r['passed'])}/{len(runner.nrp_alignment_results)}"),
         ("Geo-coordinate tests", f"{sum(1 for r in runner.geo_coordinate_results if r['passed'])}/{len(runner.geo_coordinate_results)}"),
         ("NRP detection tests", f"{sum(1 for r in runner.nrp_results if r['passed'])}/{len(runner.nrp_results)}"),
         ("US entity tests", f"{sum(1 for r in runner.us_entity_results if r['passed'])}/{len(runner.us_entity_results)}"),
