@@ -206,14 +206,17 @@ The library package provides the core PII detection and anonymization engine wit
 <td>pipeline.py</td>
 <td><p>Shared post-processing logic:</p>
 <p><em><strong>normalize_case()</strong></em> / <em><strong>merge_recovered_results()</strong></em> - recover names from ALL-CAPS and all-lowercase text that cased NER models mislabel, truncate, or miss</p>
+<p><em><strong>split_at_line_breaks()</strong></em> - NER reads a line break as plain whitespace, so a name ending one line can swallow the next line's first word; NER spans are split so no entity crosses a line</p>
+<p><em><strong>prefer_line_context()</strong></em> - when a context-only ID (APAAR, PRAN, Customer ID) owes its score to a keyword on another line, a recognizer with its own keyword on the number's line decides the type</p>
 <p><em><strong>reclassify_person_as_location()</strong></em> - fixes spaCy misclassification of Indian places</p>
 <p><em><strong>reclassify_phone_as_bank_account()</strong></em> - a bare 10-digit number is both a valid Indian mobile and a bank account number; the nearest account/phone cue decides</p>
 <p><em><strong>extend_person_over_initials()</strong></em> - dotted initials end the entity in cased NER models, so "Mr. R.K. Sharma" would otherwise leak the surname</p>
 <p><em><strong>normalize_person_titles()</strong></em> - Indian honorifics and professional prefixes: "CA Abhay" is tagged ORGANIZATION and "Er." becomes a PERSON of its own; titles are trimmed and the name forced to PERSON</p>
 <p><em><strong>filter_attributive_nrp()</strong></em> - NRP is personal data only when it describes a person; "South Indian branches" describes a thing and is not redacted</p>
-<p><em><strong>merge_address_entities()</strong></em> - combines adjacent LOCATION + IN_PIN_CODE into ADDRESS</p>
+<p><em><strong>merge_address_entities()</strong></em> - combines adjacent LOCATION + IN_PIN_CODE into ADDRESS; a line break ends the address unless an indicator ("Address:", "Flat", "residing at") introduced it, so a list of cities on separate lines stays separate</p>
 <p><em><strong>remove_overlapping()</strong></em> - keeps highest-scoring non-overlapping matches</p>
-<p><strong>is_valid_datetime()</strong> - date format validation</p></td>
+<p><strong>is_valid_datetime()</strong> - date format validation</p>
+<p>The keyword windows that relabel an entity are confined to its own line and sentence, plus a line directly above that introduces it (a "Label:" line, or a heading ending in the keyword such as "Correspondence Address"), so a keyword on one line of multi-line input never relabels an entity on another. Keywords further away may still widen an ADDRESS, which never exposes anything.</p></td>
 </tr>
 <tr>
 <td>nlp_engine.py</td>
@@ -538,7 +541,7 @@ The library can be grouped by purpose.
 
 Indian identity numbers. InAadhaarImprovedRecognizer replaces Presidio's built-in InAadhaarRecognizer, supporting the three common Aadhaar formats — space-separated (9876 5432 1098), hyphen-separated (9876-5432-1098), and unseparated (987654321098) — and enforcing the rule that the leading digit must be in the range 2–9 (UIDAI does not issue numbers starting with 0 or 1). The separated variants score 0.85; the bare twelve-digit variant scores 0.30 and so requires nearby context such as aadhaar, uidai, or uid to clear the threshold. InDrivingLicenseRecognizer matches the standard SS RR YYYY NNNNNNN driving-licence format across all 36 Indian state and UT codes, with three variants for space, hyphen, and unseparated forms. InPanRecognizer (a Presidio built-in retained at startup) detects Permanent Account Numbers in the canonical AAAAA9999A shape. InPassportRecognizer, InVehicleRegistrationRecognizer, and InVoterRecognizer are likewise retained Presidio built-ins, registered with enriched context vocabulary supplied via recognizer_contexts.yml.
 
-Indian financial and tax identifiers. InGstinRecognizer (a retained built-in) detects GST identification numbers. InBankAccountRecognizer detects bank-account numbers (9–18 digits) using context keywords such as IFSC, NEFT, RTGS, and Indian bank names; the base score is intentionally kept very low (0.10) so that bare numeric strings are only classified as IN_BANK_ACCOUNT in the presence of those keywords. UsBankAccountRecognizer mirrors this design for US accounts (8–17 digits) using US-specific bank names and payment terms; the deliberately matched base scores mean that context — not pattern — decides whether a numeric string is classified as Indian or US in ambiguous cases. InCkycRecognizer covers Central KYC identifiers in both the standard 14-digit form and the prefixed forms (L, S, or O followed by 14 digits) used for simplified-measures, small-account, and OTP-based eKYC respectively. InPranRecognizer covers Permanent Retirement Account Numbers issued under the National Pension System; because PRAN is also 12 digits and would otherwise be indistinguishable from Aadhaar, the recognizer uses a low base score (0.15) and an analyze() override that elevates the score to 0.95 when context words such as pran, nps, pension, or pfrda appear in the text — letting context decide the overlap rather than score alone.
+Indian financial and tax identifiers. InGstinRecognizer (a retained built-in) detects GST identification numbers. InBankAccountRecognizer detects bank-account numbers (9–18 digits) using context keywords such as IFSC, NEFT, RTGS, and Indian bank names; the base score is intentionally kept very low (0.10) so that bare numeric strings are only classified as IN_BANK_ACCOUNT in the presence of those keywords. UsBankAccountRecognizer mirrors this design for US accounts (8–17 digits) using US-specific bank names and payment terms; the deliberately matched base scores mean that context — not pattern — decides whether a numeric string is classified as Indian or US in ambiguous cases. InCkycRecognizer covers Central KYC identifiers in both the standard 14-digit form and the prefixed forms (L, S, or O followed by 14 digits) used for simplified-measures, small-account, and OTP-based eKYC respectively. InPranRecognizer covers Permanent Retirement Account Numbers issued under the National Pension System; because PRAN is also 12 digits and would otherwise be indistinguishable from Aadhaar, the recognizer uses a low base score (0.15) and an analyze() override that elevates the score to 0.95 when context words such as pran, nps, pension, or pfrda appear in the text — letting context decide the overlap rather than score alone. When the keyword is only on another line, a recognizer with its own keyword on the number's line (for example an Aadhaar label) decides the type instead.
 
 Indian education and customer identifiers. InApaarRecognizer handles APAAR student IDs (One Nation, One Student ID), again 12 digits and again using a context-boosted analyze() override (boost on apaar, student, digilocker, abc, etc.) to disambiguate from Aadhaar. CustomerIdRecognizer handles 9-digit banking customer identifiers, similarly using context (customer id, cif, net banking, welcome kit, etc.) to distinguish them from generic numeric strings or bank-account fragments.
 
@@ -1635,11 +1638,11 @@ These recognizers are **kept** at startup after non-India country-specific recog
 | IN_PHONE | Custom regex | InPhoneRecognizer | +91 / 0-prefix mobile and landline numbers |
 | IN_PIN_CODE | Custom regex | InPinCodeRecognizer | 6-digit Indian postal code with boundary checks |
 | IN_UPI_ID | Custom regex | InUpiIdRecognizer | UPI VPA format (user@bank) |
-| IN_APAAR | Custom regex + context | InApaarRecognizer | 12-digit APAAR student-ID; base score 0.10 elevated to 0.95 on context match |
+| IN_APAAR | Custom regex + context | InApaarRecognizer | 12-digit APAAR student-ID; base score 0.15 elevated to 0.95 on context match; a keyword only on another line yields to a competing recognizer with a keyword on the number's line |
 | IN_BANK_ACCOUNT | Custom regex | InBankAccountRecognizer | 9-18 digit Indian bank account numbers |
 | IN_CKYC | Custom regex | InCkycRecognizer | 14-digit Central KYC identifier |
-| IN_PRAN | Custom regex + context | InPranRecognizer | 12-digit PRAN (Permanent Retirement Account Number); context-elevated |
-| CUSTOMER_ID | Custom regex + context | CustomerIdRecognizer | Generic alphanumeric customer/account IDs; context-elevated to 0.95 when keywords match |
+| IN_PRAN | Custom regex + context | InPranRecognizer | 12-digit PRAN (Permanent Retirement Account Number); context-elevated, yielding like IN_APAAR to a line-local keyword of another type |
+| CUSTOMER_ID | Custom regex + context | CustomerIdRecognizer | Generic alphanumeric customer/account IDs; context-elevated to 0.95 when keywords match, yielding like IN_APAAR to a line-local keyword of another type |
 | GEO_COORDINATE | Custom regex | GeoCoordinateRecognizer | Latitude/longitude in decimal-degree, labelled, cardinal, or DMS notation |
 | US_BANK_ACCOUNT | Custom regex | UsBankAccountRecognizer | 8-17 digit US bank account numbers (replaces Presidio's stricter UsBankRecognizer) |
 
@@ -1647,7 +1650,7 @@ These recognizers are **kept** at startup after non-India country-specific recog
 
 | Entity Type | Source | Created By | Notes |
 |----|----|----|----|
-| ADDRESS | Pipeline | merge_address_entities() | Merges adjacent LOCATION + IN_PIN_CODE entities (gap ≤ 50 chars of address-like text) |
+| ADDRESS | Pipeline | merge_address_entities() | Merges adjacent LOCATION + IN_PIN_CODE entities (gap ≤ 50 chars of address-like text); spans lines only inside an address introduced by an indicator |
 
 #### A.4 Anonymization Strategies per Entity Type
 

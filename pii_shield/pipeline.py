@@ -10,6 +10,13 @@ import re
 
 from presidio_analyzer import RecognizerResult
 
+from pii_shield.text_lines import (
+    CONTEXT_OFF_LINE_KEY,
+    INLINE_SPACE,
+    block_start,
+    line_end,
+)
+
 # ---------------------------------------------------------------------------
 # DATE_TIME validation — filter SpaCy NER false positives
 # ---------------------------------------------------------------------------
@@ -79,6 +86,176 @@ _NER_RECOGNIZERS = {"SpacyRecognizer", "TransformersRecognizer", "StanzaRecogniz
 
 
 # ---------------------------------------------------------------------------
+# Context windows — bounded by the entity's own line and sentence
+# ---------------------------------------------------------------------------
+
+# Several steps relabel an entity from keywords near it.  A keyword in another
+# statement says nothing about the entity, so those windows stop at line breaks
+# and sentence ends.  A line directly above still counts when it introduces the
+# entity's line — a "Label:" line, or a heading ending in the keyword, see
+# ``text_lines.block_start``.  Steps that only widen a mask (address merging)
+# keep their wider windows, so bounding never unmasks anything.
+_TERMINATOR = re.compile(r"[.!?](?=[ \t])")
+
+# Words that end in "." without ending the sentence ("Acct. No. 12", "Opp.
+# Park").  Words under three characters ("No.", "R.K.") never end a sentence,
+# and neither do honorifics ("Mr.", "Smt.") from _PERSON_TITLES.
+_ABBREVIATIONS = frozenset({
+    # banking / identity
+    "acc", "acct", "accts", "bal", "amt", "cust", "ref", "mob", "tel", "nos",
+    "qty", "approx", "etc",
+    # address
+    "addr", "res", "resi", "perm", "corr", "opp", "ave", "hwy", "mkt", "tal",
+    "teh", "dist", "distt", "vill", "sec", "sect", "bldg", "apt", "apts",
+    "appt", "flr", "hno", "qtr", "soc", "hsg", "chs", "ext", "blk", "est",
+    "ind", "stn",
+    # organisations / roles
+    "govt", "dept", "ltd", "pvt", "inc", "corp", "univ", "inst", "assn",
+    "mgr", "asst", "exec",
+    # months
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct",
+    "nov", "dec",
+})
+
+
+def _is_sentence_end(text: str, i: int) -> bool:
+    """Whether the terminator at ``text[i]`` ends a sentence."""
+    if text[i] != ".":
+        return True
+    j = i
+    while j > 0 and text[j - 1].isalnum():
+        j -= 1
+    word = text[j:i].lower()
+    return (
+        len(word) >= 3
+        and word not in _ABBREVIATIONS
+        and word not in _PERSON_TITLES
+    )
+
+
+def _context_start(
+    text: str,
+    pos: int,
+    width: int,
+    introducer: re.Pattern[str] | None = None,
+) -> int:
+    """Start of a lookback window of at most *width* chars ending at *pos*.
+
+    *introducer* is the keyword pattern of the calling step: a line above that
+    ends with one of those keywords introduces *pos*'s line and stays in view.
+    """
+    start = max(block_start(text, pos, introducer), pos - width)
+    for match in _TERMINATOR.finditer(text, start, pos):
+        if _is_sentence_end(text, match.start()):
+            start = match.end()
+    return start
+
+
+def _context_end(text: str, pos: int, width: int) -> int:
+    """End of a lookahead window of at most *width* chars starting at *pos*."""
+    end = min(line_end(text, pos), pos + width)
+    for match in _TERMINATOR.finditer(text, pos, end):
+        if _is_sentence_end(text, match.start()):
+            return match.start()
+    return end
+
+
+# ---------------------------------------------------------------------------
+# Split NER spans at line breaks
+# ---------------------------------------------------------------------------
+
+
+def split_at_line_breaks(
+    results: list[RecognizerResult],
+    text: str,
+    allow_list: list[str] | None = None,
+) -> list[RecognizerResult]:
+    """Split NER spans that run across a line break into one span per line.
+
+    The NER tokenizer treats a line break as ordinary whitespace, so a name
+    ending one line can swallow the first word of the next ("Ananya Rao" +
+    "Aadhaar").  Each fragment keeps the original type and score, so nothing is
+    unmasked, except fragments that are allow-listed or have no letters or
+    digits, which are dropped.  Pattern-based entities are left alone: their
+    regexes decide themselves whether they may span lines.
+    """
+    allowed = set(allow_list or ())
+    out: list[RecognizerResult] = []
+    for r in results:
+        span = text[r.start : r.end]
+        if r.entity_type not in _NER_ENTITY_TYPES or "\n" not in span:
+            out.append(r)
+            continue
+        pos = r.start
+        for piece in span.split("\n"):
+            start = pos + len(piece) - len(piece.lstrip())
+            end = pos + len(piece.rstrip())
+            pos += len(piece) + 1
+            fragment = text[start:end]
+            if fragment in allowed or not any(c.isalnum() for c in fragment):
+                continue
+            out.append(
+                RecognizerResult(
+                    entity_type=r.entity_type,
+                    start=start,
+                    end=end,
+                    score=r.score,
+                    analysis_explanation=r.analysis_explanation,
+                    recognition_metadata=dict(r.recognition_metadata or {}),
+                )
+            )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Line-local evidence decides between recognizers claiming the same number
+# ---------------------------------------------------------------------------
+
+
+def prefer_line_context(
+    results: list[RecognizerResult],
+    text: str,
+    context_patterns: dict[str, re.Pattern[str]],
+) -> list[RecognizerResult]:
+    """Let a keyword on the number's own line decide between two recognizers.
+
+    The context-only recognizers (APAAR, PRAN, Customer ID) accept a bare number
+    whenever their keyword appears anywhere in the text, flagging matches whose
+    keyword sits on another line.  When a different recognizer claims exactly
+    the same digits and one of *its* context words is on the number's line (or
+    on a line introducing it), that recognizer decides the type: in "Student:
+    Ananya Rao\\nAadhaar: 234567890123" the number is an Aadhaar.  Only the type
+    changes — the competitor covers the same span, so nothing is unmasked.
+
+    *context_patterns* maps a recognizer name to a pattern of its context words.
+    """
+    def _meta(r: RecognizerResult) -> dict:
+        return r.recognition_metadata or {}
+
+    def _has_line_evidence(r: RecognizerResult) -> bool:
+        pattern = context_patterns.get(_meta(r).get("recognizer_name"))
+        if pattern is None:
+            return False
+        own_lines = text[block_start(text, r.start, pattern) : line_end(text, r.end)]
+        return bool(pattern.search(own_lines))
+
+    by_span: dict[tuple[int, int], list[RecognizerResult]] = {}
+    for r in results:
+        by_span.setdefault((r.start, r.end), []).append(r)
+
+    return [
+        r for r in results
+        if not _meta(r).get(CONTEXT_OFF_LINE_KEY)
+        or not any(
+            other.entity_type != r.entity_type
+            and not _meta(other).get(CONTEXT_OFF_LINE_KEY)
+            and _has_line_evidence(other)
+            for other in by_span[(r.start, r.end)]
+        )
+    ]
+
+
+# ---------------------------------------------------------------------------
 # PHONE_NUMBER → IN_BANK_ACCOUNT reclassification
 # ---------------------------------------------------------------------------
 
@@ -119,17 +296,21 @@ def reclassify_phone_as_bank_account(
     either the nearest cue before it is an account word rather than a phone
     word, or a transfer marker (IFSC, NEFT, ...) sits just after it.  Using the
     *nearest* preceding cue keeps "account number is X and mobile is Y" correct
-    for both numbers.
+    for both numbers.  Cues only count on the number's own line and sentence,
+    or on a line directly above that introduces it ("Account number:", "Bank
+    account").
     """
     for r in results:
         if r.entity_type != "PHONE_NUMBER":
             continue
         if not _BARE_MOBILE_SHAPED.match(text[r.start : r.end]):
             continue
-        window = text[max(0, r.start - _ACCOUNT_CUE_WINDOW) : r.start]
+        window = text[
+            _context_start(text, r.start, _ACCOUNT_CUE_WINDOW, _ACCOUNT_CUE) : r.start
+        ]
         account_at = max((m.start() for m in _ACCOUNT_CUE.finditer(window)), default=-1)
         phone_at = max((m.start() for m in _PHONE_CUE.finditer(window)), default=-1)
-        following = text[r.end : r.end + _STRONG_CUE_WINDOW]
+        following = text[r.end : _context_end(text, r.end, _STRONG_CUE_WINDOW)]
         if account_at > phone_at or _STRONG_BANK_CUE.search(following):
             r.entity_type = "IN_BANK_ACCOUNT"
     return results
@@ -144,7 +325,10 @@ def reclassify_person_as_location(
     NER models (SpaCy, Transformers, Stanza) frequently misclassify Indian
     place names (e.g. Sholapur, Kumar Pinnacle) as PERSON.  When a PERSON
     entity is preceded by words like *village*, *taluka*, *road*, *address*,
-    *flat*, etc., it is almost certainly a location.
+    *flat*, etc., it is almost certainly a location.  Only words on the same
+    line and in the same sentence count — "residing at Mumbai. My name is
+    R.K. Sharma" is about a person — plus a line directly above that
+    introduces it ("Branch:", "Correspondence Address").
     """
     updated: list[RecognizerResult] = []
     for r in results:
@@ -152,7 +336,9 @@ def reclassify_person_as_location(
             r.entity_type == "PERSON"
             and r.recognition_metadata.get("recognizer_name") in _NER_RECOGNIZERS
         ):
-            window_start = max(0, r.start - _LOCATION_CONTEXT_WINDOW)
+            window_start = _context_start(
+                text, r.start, _LOCATION_CONTEXT_WINDOW, _LOCATION_CONTEXT_WORDS
+            )
             preceding = text[window_start : r.start]
             if _LOCATION_CONTEXT_WORDS.search(preceding):
                 r.entity_type = "LOCATION"
@@ -384,8 +570,17 @@ def filter_person_false_positives(
 # PERSON, leaving a stray "." span behind.
 _TITLE_ALTERNATION = "|".join(sorted(_PERSON_TITLES, key=len, reverse=True))
 
-# One or more titles leading a span: "CA ", "Smt. ", "Lt. Col. "
-_TITLE_PREFIX = re.compile(rf"(?i)\A(?:(?:{_TITLE_ALTERNATION})\.?\s+)+")
+# One or more titles leading a span: "CA ", "Smt. ", "Lt. Col. ".  Only
+# whitespace within the line counts: a title-like word ending the line above
+# may be a surname ("Kumari", "Pandit"), not a title of the name below it.
+_TITLE_PREFIX = re.compile(
+    rf"(?i)\A(?:(?:{_TITLE_ALTERNATION})\.?{INLINE_SPACE}+)+"
+)
+
+# Titles filling the span's whole first line, the name on the next: "CA\n".
+_TITLE_LINE = re.compile(
+    rf"(?i)\A(?:(?:{_TITLE_ALTERNATION})\.?{INLINE_SPACE}*)+\r?\n"
+)
 
 # The span is nothing but a title: "Er", "Col."
 _TITLE_ONLY = re.compile(rf"(?i)\A(?:{_TITLE_ALTERNATION})\.?\Z")
@@ -422,7 +617,11 @@ def normalize_person_titles(
        covering "Smt. Kavita" where the title sits outside the span.
 
     Titles are always left outside the span, matching the existing behaviour
-    for "Mr. Rajesh Sharma" — a title is not itself PII.
+    for "Mr. Rajesh Sharma" — a title is not itself PII.  The exception is a
+    title-like word alone at the end of a line with the name on the next line:
+    it may be a surname ("Surname: Kumari\\nPriya Sharma"), so it stays in the
+    span and only the type becomes PERSON; ``split_at_line_breaks`` later
+    masks each line separately.
     """
     out: list[RecognizerResult] = []
     for r in results:
@@ -437,6 +636,10 @@ def normalize_person_titles(
             match = _TITLE_PREFIX.match(span)
             if match and match.end() < len(span):
                 r.start += match.end()
+                r.entity_type = "PERSON"
+                out.append(r)
+                continue
+            if _TITLE_LINE.match(span):
                 r.entity_type = "PERSON"
                 out.append(r)
                 continue
@@ -479,7 +682,8 @@ _MAX_MERGE_GAP = 50
 # Building / society names are tagged inconsistently by NER — the same name can
 # come back as LOCATION, ORGANIZATION or NRP depending on surrounding words.
 # Near an address indicator they are address components, so they are allowed to
-# merge (and, alone, to be promoted) there and nowhere else.
+# merge there and nowhere else (for promoting one on its own, see
+# merge_address_entities).
 _ADDRESS_CONTEXT_TYPES = frozenset({"ORGANIZATION", "NRP"})
 
 # Flat / unit / house numbers: "F3003", "A-101", "501", "12B".  There is no
@@ -489,12 +693,33 @@ _UNIT_NUMBER_TOKEN = re.compile(r"[A-Za-z]{0,2}-?\d{1,5}[A-Za-z]?\Z")
 
 
 def _has_address_indicator(text: str, pos: int) -> bool:
-    """True if an address indicator appears shortly before *pos*."""
+    """True if an address indicator appears shortly before *pos*.
+
+    Deliberately not bounded by lines or sentences: it only decides how far an
+    address extends, and a wider address never exposes anything.
+    """
     return bool(
         _ADDRESS_INDICATOR.search(
             text[max(0, pos - _ADDRESS_INDICATOR_WINDOW) : pos]
         )
     )
+
+
+def _indicator_in_statement(text: str, pos: int) -> bool:
+    """True if an address indicator introduces *pos* within its own statement."""
+    start = _context_start(text, pos, _ADDRESS_INDICATOR_WINDOW, _ADDRESS_INDICATOR)
+    return bool(_ADDRESS_INDICATOR.search(text[start:pos]))
+
+
+def _near_location_word(text: str, pos: int) -> bool:
+    """True if a location word appears within the 40 chars before *pos*.
+
+    This is the unbounded window ``reclassify_person_as_location`` used before
+    it was confined to the entity's own statement.  Merging still uses it, so a
+    building name tagged PERSON joins its address exactly as before.
+    """
+    window = text[max(0, pos - _LOCATION_CONTEXT_WINDOW) : pos]
+    return bool(_LOCATION_CONTEXT_WORDS.search(window))
 
 
 def _absorb_unit_number(text: str, start: int) -> int:
@@ -516,7 +741,7 @@ def _absorb_unit_number(text: str, start: int) -> int:
         return start
     if not _UNIT_NUMBER_TOKEN.fullmatch(token):
         return start
-    if tok and text[tok - 1] not in " \t(":
+    if tok and text[tok - 1] not in " \t(\n":
         return start
     return tok
 
@@ -539,14 +764,40 @@ def merge_address_entities(
     context ORGANIZATION / NRP spans also count as address components, a lone
     such span is promoted to ADDRESS, and a leading flat/unit number is
     absorbed so it is not left exposed.
+
+    Keywords may come from another line or sentence when they only widen the
+    address, since that never exposes anything, but they do not relabel an
+    entity left on its own: a building name tagged PERSON joins a neighbouring
+    address part yet stays PERSON when alone, and a lone ORGANIZATION becomes
+    an ADDRESS only when its own statement marks it as one.  A bare line break
+    ends an address unless an indicator introduced it and its PIN code has not
+    been reached, so a list of cities stays separate; a name on a new line is
+    never pulled into the address above it.
     """
+    def _is_person_candidate(r: RecognizerResult) -> bool:
+        return (
+            r.entity_type == "PERSON"
+            and r.recognition_metadata.get("recognizer_name") in _NER_RECOGNIZERS
+            and _near_location_word(text, r.start)
+        )
+
     def _is_mergeable(r: RecognizerResult) -> bool:
         if r.entity_type in _MERGEABLE_TYPES:
             return True
-        return (
-            r.entity_type in _ADDRESS_CONTEXT_TYPES
-            and _has_address_indicator(text, r.start)
-        )
+        if r.entity_type in _ADDRESS_CONTEXT_TYPES:
+            return _has_address_indicator(text, r.start)
+        return _is_person_candidate(r)
+
+    def _promote_alone(r: RecognizerResult) -> bool:
+        if r.entity_type == "NRP":
+            # Left alone it could be dropped by filter_attributive_nrp.
+            return True
+        if r.entity_type == "ORGANIZATION":
+            return (
+                _indicator_in_statement(text, r.start)
+                or _absorb_unit_number(text, r.start) != r.start
+            )
+        return False
 
     mergeable = sorted(
         [r for r in results if _is_mergeable(r)],
@@ -557,32 +808,39 @@ def merge_address_entities(
     if not mergeable:
         return results
 
-    def _gap_is_valid(prev: RecognizerResult, curr: RecognizerResult) -> bool:
+    def _gap_is_valid(
+        first: RecognizerResult,
+        prev: RecognizerResult,
+        curr: RecognizerResult,
+    ) -> bool:
         gap = text[prev.end : curr.start]
         if len(gap) > _MAX_MERGE_GAP or _SENTENCE_BOUNDARY.search(gap):
             return False
+        introduced = _has_address_indicator(text, first.start)
+        crosses_line = "\n" in gap
         if _ADDRESS_GLUE.match(gap):
-            return True
-        window_start = max(0, prev.start - _ADDRESS_INDICATOR_WINDOW)
-        preceding = text[window_start : prev.start]
-        if _ADDRESS_INDICATOR.search(preceding) and _ADDRESS_LOOSE_GLUE.match(gap):
-            return True
-        return False
+            # Only separators and address words in between, so leaving them
+            # out exposes nothing.
+            return not crosses_line or (
+                introduced and prev.entity_type != "IN_PIN_CODE"
+            )
+        if crosses_line and curr.entity_type == "PERSON":
+            return False
+        return (introduced or _has_address_indicator(text, prev.start)) and bool(
+            _ADDRESS_LOOSE_GLUE.match(gap)
+        )
 
     groups: list[list[RecognizerResult]] = [[mergeable[0]]]
     for r in mergeable[1:]:
-        prev = groups[-1][-1]
-        if _gap_is_valid(prev, r):
-            groups[-1].append(r)
+        group = groups[-1]
+        if _gap_is_valid(group[0], group[-1], r):
+            group.append(r)
         else:
             groups.append([r])
 
     merged: list[RecognizerResult] = []
     for group in groups:
-        promote = (
-            len(group) > 1 or group[0].entity_type in _ADDRESS_CONTEXT_TYPES
-        )
-        if not promote:
+        if len(group) == 1 and not _promote_alone(group[0]):
             merged.append(group[0])
             continue
         start = group[0].start

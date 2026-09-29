@@ -11,6 +11,7 @@ No dependencies on FastAPI, Redis, OpenTelemetry, or any I/O layer.
 import hashlib
 import logging
 import os
+import re
 import time
 from collections import Counter
 
@@ -36,9 +37,11 @@ from pii_shield.pipeline import (
     merge_recovered_results,
     normalize_case,
     normalize_person_titles,
+    prefer_line_context,
     reclassify_person_as_location,
     reclassify_phone_as_bank_account,
     remove_overlapping,
+    split_at_line_breaks,
 )
 from pii_shield.recognizers import (
     CustomerIdRecognizer,
@@ -242,6 +245,18 @@ class PiiShieldEngine:
             except Exception:
                 logger.warning("Failed to load recognizer contexts from %s", ctx_path, exc_info=True)
 
+        # Each recognizer's context words (after the YAML overrides above), used
+        # to tell which recognizer has a keyword on a disputed number's line.
+        self._context_patterns = {
+            rec.name: re.compile(
+                r"(?i)(?<!\w)(?:"
+                + "|".join(re.escape(w) for w in sorted(rec.context, key=len, reverse=True))
+                + r")(?!\w)"
+            )
+            for rec in self._analyzer.registry.recognizers
+            if getattr(rec, "context", None)
+        }
+
         logger.info(
             "PiiShieldEngine ready (NLP engine: %s, threshold: %.2f)",
             get_nlp_engine_name(),
@@ -312,6 +327,19 @@ class PiiShieldEngine:
         # before the allow-list filters so that an app allow-listing
         # ORGANIZATION does not end up exempting a person's name.
         analyzer_results = normalize_person_titles(analyzer_results, text)
+
+        # NER reads a line break as plain whitespace, so a name ending one line
+        # can swallow the first word of the next.  Keep every NER span on its
+        # own line before any later step reasons about the words inside it.
+        # Splitting after the title step keeps a surname that doubles as a
+        # title ("Sunita\nKumari") from being dropped as a stray title.
+        analyzer_results = split_at_line_breaks(analyzer_results, text, merged_allow)
+
+        # A context-only ID whose keyword sits on another line yields to a
+        # recognizer with its own keyword on the number's line.
+        analyzer_results = prefer_line_context(
+            analyzer_results, text, self._context_patterns
+        )
 
         # Filter entity types in allow-list (and suppress overlapping entities)
         if entity_type_allow_list:
