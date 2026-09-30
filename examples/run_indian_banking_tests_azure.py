@@ -346,6 +346,7 @@ class TestRunner:
         self.multiline_results: list[dict] = []
         self.mixed_case_results: list[dict] = []
         self.address_units_results: list[dict] = []
+        self.key_value_results: list[dict] = []
         self.geo_coordinate_results: list[dict] = []
         self.nrp_results: list[dict] = []
         self.us_entity_results: list[dict] = []
@@ -1427,14 +1428,15 @@ class TestRunner:
         )
 
     def run_account_phone_disambiguation(self) -> None:
-        """Test that a bare 10-digit number is classified from its context.
+        """Test that a bare number is classified as an account or a phone.
 
-        A bare 10-digit number starting 6-9 is simultaneously a valid Indian
-        mobile and a valid Indian bank account number, and scores cannot
-        separate them: the phone pattern scores 0.60 against the account
-        pattern's 0.10, and "number" sits in the phone recognizer's context
-        list, so "bank account number" boosts the phone score to 1.00.  Only
-        the surrounding words carry the answer.
+        A bare run of 9-18 digits is a valid Indian bank account number, and
+        the phone recognizer claims the same digits whenever they also form a
+        mobile ("9876543210") or a landline without its leading 0
+        ("5498721032").  Scores cannot separate them: the phone pattern scores
+        0.60 against the account pattern's 0.10, and "number" sits in the
+        phone recognizer's context list, so "bank account number" boosts the
+        phone score to 1.00.  Only the surrounding words carry the answer.
         """
         cases = [
             ("Bank account number", "His bank account number is 9876543210",
@@ -1465,6 +1467,18 @@ class TestRunner:
             ("Nearest cue wins (mobile)",
              "His bank account number is 9876543210 and mobile is 9123456780",
              "9123456780", "PHONE_NUMBER"),
+            ("Reported: landline-shaped account number",
+             "My Account number is 5498721032.",
+             "5498721032", "IN_BANK_ACCOUNT"),
+            ("11-digit account number", "My account number is 54987210321.",
+             "54987210321", "IN_BANK_ACCOUNT"),
+            ("Landline-shaped account, then mobile",
+             "My account number is 5498721032 and my mobile is 9876543210",
+             "5498721032", "IN_BANK_ACCOUNT"),
+            ("Landline-shaped phone", "My phone number is 5498721032.",
+             "5498721032", "PHONE_NUMBER"),
+            ("Helpline after an account word", "Account helpline 9876543210",
+             "9876543210", "PHONE_NUMBER"),
         ]
 
         for label, text, value, expected in cases:
@@ -2056,6 +2070,78 @@ class TestRunner:
         self._log(
             "Address Units",
             f"{passed}/{len(self.address_units_results)} passed",
+        )
+
+    def run_key_value_context(self) -> None:
+        """Test that the key of a key=value pair counts as a context word.
+
+        spaCy keeps a URL, and a key=value pair written without spaces, as one
+        token, so in "https://api.com?aadhaar=987654321098&pan=ABCPK1234L" the
+        key "aadhaar" was never seen as context.  An Aadhaar number without
+        separators scores below the threshold without it, so it leaked while
+        the PAN next to it was masked.  Keys that are not context words
+        ("txn_id=") must change nothing.
+        """
+        cases = [
+            ("Reported: Aadhaar in a URL query",
+             "my website is https://api.com?aadhaar=987654321098&pan=ABCPK1234L.",
+             {"987654321098": "IN_AADHAAR", "ABCPK1234L": "IN_PAN"},
+             ["987654321098", "ABCPK1234L"], ["my website is ", "?aadhaar=", "&pan="]),
+            ("Key=value in plain text",
+             "aadhaar=987654321098",
+             {"987654321098": "IN_AADHAAR"}, ["987654321098"], ["aadhaar="]),
+            ("Key:value without a space",
+             "Aadhaar:987654321098, PAN:ABCPK1234L",
+             {"987654321098": "IN_AADHAAR", "ABCPK1234L": "IN_PAN"},
+             ["987654321098", "ABCPK1234L"], ["Aadhaar:", ", PAN:"]),
+            ("camelCase key",
+             "aadhaarNumber=987654321098",
+             {"987654321098": "IN_AADHAAR"}, ["987654321098"], ["aadhaarNumber="]),
+            ("snake_case key in a request line",
+             "GET /kyc?aadhaar_no=987654321098&mobile=9876543210 HTTP/1.1",
+             {"987654321098": "IN_AADHAAR", "9876543210": "PHONE_NUMBER"},
+             ["987654321098", "9876543210"],
+             ["GET /kyc?aadhaar_no=", "&mobile=", " HTTP/1.1"]),
+            ("UID key in a URL",
+             "https://api.com?uid=987654321098",
+             {"987654321098": "IN_AADHAAR"}, ["987654321098"], ["?uid="]),
+            ("Form-encoded body",
+             "pan=ABCPK1234L&aadhaar=987654321098",
+             {"ABCPK1234L": "IN_PAN", "987654321098": "IN_AADHAAR"},
+             ["ABCPK1234L", "987654321098"], ["pan=", "&aadhaar="]),
+            ("Query string with a name",
+             "POST /kyc?name=rahul&aadhaar=987654321098 HTTP/1.1",
+             {"rahul": "PERSON", "987654321098": "IN_AADHAAR"},
+             ["rahul", "987654321098"], ["POST /kyc?name=", "&aadhaar=", " HTTP/1.1"]),
+            ("Log line with a name",
+             "log: user=rahul uid=987654321098 status=ok",
+             {"rahul": "PERSON", "987654321098": "IN_AADHAAR"},
+             ["rahul", "987654321098"], ["log: user=", " uid=", " status=ok"]),
+            ("ALL-CAPS log line",
+             "LOG: USER=RAHUL UID=987654321098 STATUS=OK",
+             {"RAHUL": "PERSON", "987654321098": "IN_AADHAAR"},
+             ["RAHUL", "987654321098"], ["LOG: USER=", " UID=", " STATUS=OK"]),
+            ("Baseline: key as a separate word",
+             "My aadhaar is 987654321098",
+             {"987654321098": "IN_AADHAAR"}, ["987654321098"], ["My aadhaar is "]),
+            # Guards: keys that are not context words change nothing.
+            ("Guard: transaction id",
+             "txn_id=987654321098&amount=500",
+             {}, [], ["txn_id=987654321098&amount=500"]),
+            ("Guard: order number",
+             "Order 987654321098 dispatched today",
+             {}, [], ["Order 987654321098 dispatched today"]),
+            ("Guard: URL without IDs",
+             "Search https://example.com/search?q=account&page=2 for help",
+             {"https://example.com/search?q=account&page=2": "URL"},
+             ["example.com"], ["Search ", " for help"]),
+        ]
+
+        self.key_value_results = self._check_expectations(cases)
+        passed = sum(1 for r in self.key_value_results if r["passed"])
+        self._log(
+            "Key-value Context",
+            f"{passed}/{len(self.key_value_results)} passed",
         )
 
     def run_geo_coordinates(self) -> None:
@@ -3358,6 +3444,7 @@ class TestRunner:
             ("Multi-line Context", self.run_multiline_context),
             ("Mixed-case Names", self.run_mixed_case_names),
             ("Address Units", self.run_address_units),
+            ("Key-value Context", self.run_key_value_context),
             ("Geo-Coordinates", self.run_geo_coordinates),
             ("NRP Detection", self.run_nrp),
             ("US Entities", self.run_us_entities),
@@ -4509,13 +4596,15 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
 
     # ── 11d. Account Number vs Phone Number ─────────────────────────────
     w('<h2 id="account-phone">11d. Account Number vs Phone Number</h2>')
-    w("<p>A bare 10-digit number starting 6-9 is simultaneously a valid Indian "
-      "mobile and a valid Indian bank account number. Scores cannot separate "
-      "them — the phone pattern scores 0.60 against the account pattern's "
-      "0.10, and <code>number</code> sits in the phone recognizer's context "
-      "list, so <em>bank account number</em> boosts the phone score to 1.00. "
-      "The nearest surrounding cue decides, with transfer markers (IFSC, "
-      "NEFT) also counting when they follow the digits.</p>")
+    w("<p>A bare run of 9-18 digits is a valid Indian bank account number, "
+      "and the phone recognizer claims the same digits whenever they also form "
+      "a mobile (<code>9876543210</code>) or a landline without its leading 0 "
+      "(<code>5498721032</code>). Scores cannot separate them — the phone "
+      "pattern scores 0.60 against the account pattern's 0.10, and "
+      "<code>number</code> sits in the phone recognizer's context list, so "
+      "<em>bank account number</em> boosts the phone score to 1.00. The "
+      "nearest surrounding cue decides, with transfer markers (IFSC, NEFT) "
+      "also counting when they follow the digits.</p>")
 
     if runner.account_phone_results:
         w("<table><thead><tr><th>Test Case</th><th>Input (truncated)</th>"
@@ -4732,6 +4821,23 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         w, runner.address_units_results,
         kept_label="Context kept", noun="address unit",
         detail_heading="11j-i. Address Units — Input / Output Detail",
+    )
+
+    # ── 11k. Key-value Context ──────────────────────────────────────────
+    w('<h2 id="key-value">11k. Key-value Context</h2>')
+    w("<p>Context words are read from spaCy's tokens, and spaCy keeps a URL, "
+      "or a key=value pair written without spaces, as one token. In "
+      "<code>https://api.com?aadhaar=987654321098&amp;pan=ABCPK1234L</code> the "
+      "key <code>aadhaar</code> was never seen as context, so the Aadhaar "
+      "number, which scores below the threshold without it, leaked while the "
+      "PAN next to it was masked. The key directly before a value now counts "
+      "as a context word (<code>aadhaar_no=</code>, <code>aadhaarNumber=</code>, "
+      "<code>Aadhaar:</code>), while keys that are not context words "
+      "(<code>txn_id=</code>) change nothing.</p>")
+    _render_expectation_results(
+        w, runner.key_value_results,
+        kept_label="Context kept", noun="key-value context",
+        detail_heading="11k-i. Key-value Context — Input / Output Detail",
     )
 
     # ── 12. Geo-Coordinate Detection ────────────────────────────────────
@@ -4951,6 +5057,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         ("Multi-line context tests", f"{sum(1 for r in runner.multiline_results if r['passed'])}/{len(runner.multiline_results)}"),
         ("Mixed-case name tests", f"{sum(1 for r in runner.mixed_case_results if r['passed'])}/{len(runner.mixed_case_results)}"),
         ("Address unit tests", f"{sum(1 for r in runner.address_units_results if r['passed'])}/{len(runner.address_units_results)}"),
+        ("Key-value context tests", f"{sum(1 for r in runner.key_value_results if r['passed'])}/{len(runner.key_value_results)}"),
         ("Geo-coordinate tests", f"{sum(1 for r in runner.geo_coordinate_results if r['passed'])}/{len(runner.geo_coordinate_results)}"),
         ("NRP detection tests", f"{sum(1 for r in runner.nrp_results if r['passed'])}/{len(runner.nrp_results)}"),
         ("US entity tests", f"{sum(1 for r in runner.us_entity_results if r['passed'])}/{len(runner.us_entity_results)}"),

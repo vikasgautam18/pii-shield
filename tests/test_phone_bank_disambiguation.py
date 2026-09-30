@@ -1,12 +1,16 @@
 """Tests for PHONE_NUMBER → IN_BANK_ACCOUNT disambiguation.
 
-A bare 10-digit number starting 6-9 is simultaneously a valid Indian mobile
-and a valid Indian bank account number.  Scores cannot separate them — the
-phone pattern scores 0.60 against the account pattern's 0.10, and "number"
-sits in the phone recognizer's context list, so "bank account number" boosts
-the phone score to 1.00.  Only the nearest surrounding cue carries the answer.
+A bare run of 9-18 digits is a valid Indian bank account number, and the phone
+recognizer claims the same digits whenever they also form a valid phone
+number: a mobile ("9876543210") or a landline without its leading 0
+("5498721032").  Scores cannot separate them — the phone pattern scores 0.60
+against the account pattern's 0.10, and "number" sits in the phone recognizer's
+context list, so "bank account number" boosts the phone score to 1.00.  Only
+the nearest surrounding cue carries the answer.
 """
 
+import pytest
+from fastapi.testclient import TestClient
 from presidio_analyzer import RecognizerResult
 
 from pii_shield.pipeline import reclassify_phone_as_bank_account
@@ -58,6 +62,21 @@ def test_cue_in_longer_sentence():
     assert _types(text, [_phone(text, "9876543210")]) == ["IN_BANK_ACCOUNT"]
 
 
+@pytest.mark.parametrize(
+    ("text", "value"),
+    [
+        # A valid landline once its leading 0 is dropped, so the phone
+        # recognizer claims it.
+        ("My Account number is 5498721032.", "5498721032"),
+        ("My account number is 54987210321.", "54987210321"),
+        ("Beneficiary account 123456789", "123456789"),
+        ("Account number: 501001234567890123", "501001234567890123"),
+    ],
+)
+def test_any_bare_account_length_number_is_reclassified(text, value):
+    assert _types(text, [_phone(text, value)]) == ["IN_BANK_ACCOUNT"]
+
+
 # ---------------------------------------------------------------------------
 # left alone when it really is a phone
 # ---------------------------------------------------------------------------
@@ -98,6 +117,30 @@ def test_zero_prefixed_number_never_reclassified():
 def test_separated_number_never_reclassified():
     text = "Account desk on 98765-43210"
     assert _types(text, [_phone(text, "98765-43210")]) == ["PHONE_NUMBER"]
+
+
+def test_mobile_with_country_code_never_reclassified():
+    # "91" without the "+" is still a country code in front of a mobile.
+    text = "Registered mobile for the account: 919876543210"
+    assert _types(text, [_phone(text, "919876543210")]) == ["PHONE_NUMBER"]
+
+
+def test_landline_shaped_number_with_phone_cue_stays_phone():
+    text = "My phone number is 5498721032."
+    assert _types(text, [_phone(text, "5498721032")]) == ["PHONE_NUMBER"]
+
+
+@pytest.mark.parametrize("cue", ["helpline", "toll-free", "tollfree", "fax"])
+def test_helpline_and_fax_cues_keep_phone(cue):
+    text = f"Account {cue} 9876543210"
+    assert _types(text, [_phone(text, "9876543210")]) == ["PHONE_NUMBER"]
+
+
+@pytest.mark.parametrize("value", ["12345678", "1234567890123456789"])
+def test_number_outside_account_length_stays_phone(value):
+    # Indian bank account numbers are 9-18 digits.
+    text = f"His account number is {value}"
+    assert _types(text, [_phone(text, value)]) == ["PHONE_NUMBER"]
 
 
 def test_distant_account_cue_is_ignored():
@@ -143,3 +186,34 @@ def test_distant_ifsc_does_not_reclassify():
         "and I will share the IFSC"
     )
     assert _types(text, [_phone(text, "9876543210")]) == ["PHONE_NUMBER"]
+
+
+# ---------------------------------------------------------------------------
+# End to end through the API
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def client():
+    from app.main import app
+
+    return TestClient(app)
+
+
+@pytest.mark.parametrize(
+    ("text", "value", "expected"),
+    [
+        ("My Account number is 5498721032.", "5498721032", "IN_BANK_ACCOUNT"),
+        ("My account number is 54987210321.", "54987210321", "IN_BANK_ACCOUNT"),
+        ("My account number is 5498721032 and my mobile is 9876543210",
+         "5498721032", "IN_BANK_ACCOUNT"),
+        ("My account number is 5498721032 and my mobile is 9876543210",
+         "9876543210", "PHONE_NUMBER"),
+        ("My phone number is 5498721032.", "5498721032", "PHONE_NUMBER"),
+    ],
+)
+def test_label_through_the_api(client, text, value, expected):
+    data = client.post("/anonymize_unique", json={"text": text}).json()
+    labels = {v: k.strip("{}").rsplit("_", 1)[0] for k, v in data["entity_mapping"].items()}
+    assert labels.get(value) == expected
+    assert value not in data["anonymized_text"]

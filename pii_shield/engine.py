@@ -18,9 +18,9 @@ from collections import Counter
 from pathlib import Path
 
 from presidio_analyzer import AnalyzerEngine, RecognizerResult
-from presidio_analyzer.context_aware_enhancers import LemmaContextAwareEnhancer
 
 from pii_shield.context_config import apply_recognizer_contexts, load_recognizer_contexts
+from pii_shield.context_enhancer import KeyValueContextEnhancer
 from pii_shield.errors import DetectionError, InvalidInputError
 from pii_shield.models import AnonymizeResult, AnonymizeStats, DetectedEntity, EntityConfig
 from pii_shield.observability import Event, EventHook, emit
@@ -43,6 +43,7 @@ from pii_shield.pipeline import (
     prefer_line_context,
     reclassify_person_as_location,
     reclassify_phone_as_bank_account,
+    remove_allowed_overlaps,
     remove_overlapping,
     split_at_line_breaks,
 )
@@ -162,14 +163,15 @@ class PiiShieldEngine:
             "context_suffix_count": 5,
         }
         # whole_word matching avoids substring false positives
-        # (e.g. "ahmedabad" matching US context "aba")
+        # (e.g. "ahmedabad" matching US context "aba").  The key of a
+        # "key=value" pair inside a URL counts as context too.
         try:
-            enhancer = LemmaContextAwareEnhancer(
+            enhancer = KeyValueContextEnhancer(
                 **enhancer_kwargs, context_matching_mode="whole_word",
             )
         except TypeError:
             # Older presidio-analyzer (<2.2.36) lacks context_matching_mode
-            enhancer = LemmaContextAwareEnhancer(**enhancer_kwargs)
+            enhancer = KeyValueContextEnhancer(**enhancer_kwargs)
         self._analyzer = AnalyzerEngine(
             nlp_engine=nlp_engine,
             supported_languages=["en"],
@@ -392,12 +394,10 @@ class PiiShieldEngine:
                     allowed_spans.append((r.start, r.end))
                 else:
                     kept.append(r)
-            # Remove entities that overlap with allowed spans (e.g., URL inside EMAIL)
+            # Remove entities that overlap with allowed spans (e.g., URL inside
+            # EMAIL); NER spans keep their parts outside them.
             if allowed_spans:
-                analyzer_results = [
-                    r for r in kept
-                    if not any(r.start < end and r.end > start for start, end in allowed_spans)
-                ]
+                analyzer_results = remove_allowed_overlaps(kept, text, allowed_spans)
             else:
                 analyzer_results = kept
 
@@ -413,10 +413,7 @@ class PiiShieldEngine:
                 else:
                     kept.append(r)
             if allowed_spans:
-                analyzer_results = [
-                    r for r in kept
-                    if not any(r.start < end and r.end > start for start, end in allowed_spans)
-                ]
+                analyzer_results = remove_allowed_overlaps(kept, text, allowed_spans)
             else:
                 analyzer_results = kept
 

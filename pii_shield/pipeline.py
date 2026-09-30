@@ -10,6 +10,7 @@ import re
 
 from presidio_analyzer import RecognizerResult
 
+from pii_shield.context_enhancer import key_start
 from pii_shield.text_lines import (
     CONTEXT_OFF_LINE_KEY,
     INLINE_SPACE,
@@ -259,19 +260,25 @@ def prefer_line_context(
 # PHONE_NUMBER → IN_BANK_ACCOUNT reclassification
 # ---------------------------------------------------------------------------
 
-# A bare 10-digit number starting 6-9 is simultaneously a valid Indian mobile
-# and a valid (short) Indian bank account number, so the regexes cannot settle
-# it.  Scores cannot settle it either: the phone pattern scores 0.60 against the
-# account pattern's 0.10, and "number" sits in the phone recognizer's context
-# list, so "bank account number" boosts the *phone* score to 1.00.  Only the
-# surrounding words carry the answer, so the nearest preceding cue decides.
-_BARE_MOBILE_SHAPED = re.compile(r"\A[6-9]\d{9}\Z")
+# A bare run of 9-18 digits is a valid Indian bank account number, and the
+# phone recognizer claims the same digits whenever they also form a valid phone
+# number: a mobile ("9876543210") or a landline without its leading 0
+# ("5498721032").  The regexes cannot settle it.  Scores cannot settle it
+# either: the phone pattern scores 0.60 against the account pattern's 0.10, and
+# "number" sits in the phone recognizer's context list, so "bank account number"
+# boosts the *phone* score to 1.00.  Only the surrounding words carry the
+# answer, so the nearest preceding cue decides.
+_BARE_ACCOUNT_SHAPED = re.compile(r"\A[1-9]\d{8,17}\Z")
+
+# A mobile number written with its country code but without the "+"
+# ("919876543210") is a phone, just like "+91 98765 43210".
+_MOBILE_WITH_COUNTRY_CODE = re.compile(r"\A91[6-9]\d{9}\Z")
 
 _ACCOUNT_CUE = re.compile(r"(?i)\b(?:a/c|ac\s*no|acct|account|passbook|beneficiary)\b")
 
 _PHONE_CUE = re.compile(
     r"(?i)\b(?:mobile|phone|cell|contact|whatsapp|telephone|tel|landline"
-    r"|call|dial|sms|reach)\b"
+    r"|call|dial|sms|reach|helpline|toll|tollfree|fax)\b"
 )
 
 _ACCOUNT_CUE_WINDOW = 45
@@ -289,21 +296,22 @@ def reclassify_phone_as_bank_account(
     results: list[RecognizerResult],
     text: str,
 ) -> list[RecognizerResult]:
-    """Relabel a bare 10-digit PHONE_NUMBER as IN_BANK_ACCOUNT on account cues.
+    """Relabel a bare PHONE_NUMBER as IN_BANK_ACCOUNT on account cues.
 
-    Only fires when the span is exactly a mobile-shaped bare number (a ``+91``
-    prefix, leading ``0`` or any separator means it really is a phone) and
-    either the nearest cue before it is an account word rather than a phone
-    word, or a transfer marker (IFSC, NEFT, ...) sits just after it.  Using the
-    *nearest* preceding cue keeps "account number is X and mobile is Y" correct
-    for both numbers.  Cues only count on the number's own line and sentence,
-    or on a line directly above that introduces it ("Account number:", "Bank
-    account").
+    Only fires when the span is a bare run of 9-18 digits, the length of an
+    Indian bank account number (a ``+91`` or ``91`` country code, leading
+    ``0`` or any separator means it really is a phone), and either the nearest
+    cue before it is an account word rather than a phone word, or a transfer
+    marker (IFSC, NEFT, ...) sits just after it.  Using the *nearest* preceding
+    cue keeps "account number is X and mobile is Y" correct for both numbers.
+    Cues only count on the number's own line and sentence, or on a line
+    directly above that introduces it ("Account number:", "Bank account").
     """
     for r in results:
         if r.entity_type != "PHONE_NUMBER":
             continue
-        if not _BARE_MOBILE_SHAPED.match(text[r.start : r.end]):
+        digits = text[r.start : r.end]
+        if not _BARE_ACCOUNT_SHAPED.match(digits) or _MOBILE_WITH_COUNTRY_CODE.match(digits):
             continue
         window = text[
             _context_start(text, r.start, _ACCOUNT_CUE_WINDOW, _ACCOUNT_CUE) : r.start
@@ -1459,6 +1467,106 @@ def normalize_case(
     return "".join(chars) if chars is not None else None
 
 
+def _key_value_span(text: str, start: int, end: int) -> tuple[int, int]:
+    """The span of ``text[start:end]`` together with its key, if it has one.
+
+    For a value written as "uid=987654321098" or "aadhaar_no:987654321098"
+    the key and its separator are included; otherwise the span is returned
+    as it is.
+    """
+    if text[start - 1 : start] not in ("=", ":"):
+        return start, end
+    begin = key_start(text, start - 1)
+    return (start - 1 if begin is None else begin), end
+
+
+def _parts_outside(
+    r: RecognizerResult, text: str, cuts: list[tuple[int, int]]
+) -> list[RecognizerResult]:
+    """The pieces of *r* outside *cuts*, as results of the same type.
+
+    Each piece is trimmed to start and end with a letter or digit, and pieces
+    without a letter are dropped.
+    """
+    spans = []
+    pos = r.start
+    for cut_start, cut_end in sorted(cuts):
+        if cut_start > pos:
+            spans.append((pos, cut_start))
+        pos = max(pos, cut_end)
+    if pos < r.end:
+        spans.append((pos, r.end))
+
+    parts = []
+    for start, end in spans:
+        while start < end and not text[start].isalnum():
+            start += 1
+        while end > start and not text[end - 1].isalnum():
+            end -= 1
+        if any(c.isalpha() for c in text[start:end]):
+            parts.append(RecognizerResult(
+                entity_type=r.entity_type,
+                start=start,
+                end=end,
+                score=r.score,
+                analysis_explanation=r.analysis_explanation,
+                recognition_metadata=dict(r.recognition_metadata or {}),
+            ))
+    return parts
+
+
+def _key_value_cuts(
+    r: RecognizerResult, text: str, validated: list[tuple[int, int]]
+) -> list[tuple[int, int]] | None:
+    """The key=value pairs to cut out of a recovered result *r*.
+
+    Each validated entity *r* overlaps must be the value of a key=value pair
+    ("uid=987654321098"); the pair's span is returned for each.  None when *r*
+    overlaps any other validated entity, so that it is dropped as before.
+    """
+    cuts = []
+    for v_start, v_end in validated:
+        if not (r.start < v_end and r.end > v_start):
+            continue
+        if text[v_start - 1 : v_start] not in ("=", ":"):
+            return None
+        cuts.append(_key_value_span(text, v_start, v_end))
+    return cuts
+
+
+def _cut(
+    r: RecognizerResult, text: str, cuts: list[tuple[int, int]]
+) -> list[RecognizerResult]:
+    """*r* without the *cuts* it overlaps; *r* itself when it overlaps none."""
+    if any(r.start < end and r.end > start for start, end in cuts):
+        return _parts_outside(r, text, cuts)
+    return [r]
+
+
+def remove_allowed_overlaps(
+    results: list[RecognizerResult],
+    text: str,
+    allowed_spans: list[tuple[int, int]],
+) -> list[RecognizerResult]:
+    """Remove what overlaps an allow-listed entity, which stays unmasked.
+
+    A pattern entity overlapping one is dropped (the URL inside an allowed
+    email address).  An NER span instead keeps its parts outside the allowed
+    entity and that entity's key: NER covers whole spaCy tokens, and a name
+    written against a key=value pair ("Rahul Sharma&account=12345678901")
+    shares its token with the value, so dropping the span would expose it.
+    """
+    kept: list[RecognizerResult] = []
+    for r in results:
+        overlapping = [(s, e) for s, e in allowed_spans if r.start < e and r.end > s]
+        if not overlapping:
+            kept.append(r)
+        elif r.entity_type in _NER_ENTITY_TYPES:
+            cuts = [_key_value_span(text, s, e) for s, e in overlapping]
+            kept.extend(_parts_outside(r, text, cuts))
+    return kept
+
+
 def merge_recovered_results(
     primary: list[RecognizerResult],
     recovered: list[RecognizerResult],
@@ -1488,36 +1596,50 @@ def merge_recovered_results(
     as its surname.  Such pieces are widened over every primary NER span they
     overlap, so they never mask less than the primary pass did ("Anil d'souza"
     stays whole even if only "souza" survives the cut).
+
+    A recovered span that runs into the value of a key=value pair loses only
+    that pair: NER expands a tag to whole spaCy tokens, and a key=value pair is
+    one token, so "user=rahul uid=987654321098" comes back as "rahul
+    uid=987654321098" and must still mask "rahul" once the Aadhaar number is
+    found.  Whether the span is accepted is decided before the pair is cut,
+    exactly as when the value went undetected, and the parts left are widened
+    like the pieces above.  A span overlapping any other validated entity is
+    dropped.
     """
     validated = [
         (r.start, r.end) for r in primary if r.entity_type not in _NER_ENTITY_TYPES
     ]
 
-    def _overlaps_validated(start: int, end: int) -> bool:
-        return any(start < v_end and end > v_start for v_start, v_end in validated)
-
     accepted: list[RecognizerResult] = []
     pieces: list[RecognizerResult] = []
     leftovers: list[RecognizerResult] = []
-    for r in recovered:
-        if _overlaps_validated(r.start, r.end):
+    for found in recovered:
+        cuts = _key_value_cuts(found, text, validated)
+        if cuts is None:
             continue
-        if _recovery_allowed(text[r.start : r.end], r.entity_type):
-            accepted.append(r)
-        elif r.entity_type == "PERSON" and ordinary is not None:
-            for start, end in _name_runs(text, r.start, r.end, ordinary):
-                piece = RecognizerResult(
+        if _recovery_allowed(text[found.start : found.end], found.entity_type):
+            spans, are_pieces = [found], False
+        elif found.entity_type == "PERSON" and ordinary is not None:
+            spans = [
+                RecognizerResult(
                     entity_type="PERSON",
                     start=start,
                     end=end,
-                    score=r.score,
-                    analysis_explanation=r.analysis_explanation,
-                    recognition_metadata=dict(r.recognition_metadata or {}),
+                    score=found.score,
+                    analysis_explanation=found.analysis_explanation,
+                    recognition_metadata=dict(found.recognition_metadata or {}),
                 )
-                accepted.append(piece)
-                pieces.append(piece)
+                for start, end in _name_runs(text, found.start, found.end, ordinary)
+            ]
+            are_pieces = True
         else:
-            leftovers.append(r)
+            leftovers.extend(_cut(found, text, cuts))
+            continue
+        for span in spans:
+            parts = _cut(span, text, cuts)
+            accepted.extend(parts)
+            if are_pieces or not (len(parts) == 1 and parts[0] is span):
+                pieces.extend(parts)
 
     if ordinary is not None:
         persons = sorted(
