@@ -216,7 +216,7 @@ The library package provides the core PII detection and anonymization engine wit
 <p><em><strong>merge_address_entities()</strong></em> - combines adjacent LOCATION + IN_PIN_CODE into ADDRESS; a line break ends the address unless an indicator ("Address:", "Flat", "residing at") introduced it, so a list of cities on separate lines stays separate</p>
 <p><em><strong>remove_overlapping()</strong></em> - keeps highest-scoring non-overlapping matches</p>
 <p><strong>is_valid_datetime()</strong> - date format validation</p>
-<p>The keyword windows that relabel an entity are confined to its own line and sentence, plus a line directly above that introduces it (a "Label:" line, or a heading ending in the keyword such as "Correspondence Address"), so a keyword on one line of multi-line input never relabels an entity on another. Keywords further away may still widen an ADDRESS, which never exposes anything.</p></td>
+<p>The keyword windows that relabel an entity are confined to its own line and sentence, plus a line directly above that introduces it (a "Label:" line, or a heading of at most three words ending in the keyword such as "Correspondence Address"), so a keyword on one line of multi-line input never relabels an entity on another. Keywords further away may still widen an ADDRESS, which never exposes anything.</p></td>
 </tr>
 <tr>
 <td>nlp_engine.py</td>

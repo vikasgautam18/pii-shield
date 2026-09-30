@@ -92,7 +92,7 @@ _NER_RECOGNIZERS = {"SpacyRecognizer", "TransformersRecognizer", "StanzaRecogniz
 # Several steps relabel an entity from keywords near it.  A keyword in another
 # statement says nothing about the entity, so those windows stop at line breaks
 # and sentence ends.  A line directly above still counts when it introduces the
-# entity's line — a "Label:" line, or a heading ending in the keyword, see
+# entity's line — a "Label:" line, or a short heading ending in the keyword, see
 # ``text_lines.block_start``.  Steps that only widen a mask (address merging)
 # keep their wider windows, so bounding never unmasks anything.
 _TERMINATOR = re.compile(r"[.!?](?=[ \t])")

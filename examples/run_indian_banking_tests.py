@@ -331,6 +331,7 @@ class TestRunner:
         self.person_initials_results: list[dict] = []
         self.person_titles_results: list[dict] = []
         self.nrp_alignment_results: list[dict] = []
+        self.multiline_results: list[dict] = []
         self.geo_coordinate_results: list[dict] = []
         self.nrp_results: list[dict] = []
         self.us_entity_results: list[dict] = []
@@ -380,6 +381,55 @@ class TestRunner:
             missed_types=expected - detected,
             extra_types=detected - expected,
         )
+
+    def _check_expectations(self, cases: list[tuple]) -> list[dict]:
+        """Anonymize each case and check it against its expectations.
+
+        A case is ``(label, text, expected, must_mask, must_keep)``:
+        ``expected`` maps a value to its entity type, ``must_mask`` lists text
+        that must not survive in the output, and ``must_keep`` text that must.
+        """
+        def entity_type_of(mapping: dict, value: str) -> str:
+            # Prefer the entity that is exactly the value, else one containing it.
+            for exact in (True, False):
+                for placeholder, original in mapping.items():
+                    if (original == value) if exact else (value in original):
+                        return placeholder.strip("{}").rsplit("_", 1)[0]
+            return "(not detected)"
+
+        def show(value: str) -> str:
+            return value.replace("\n", " ⏎ ")
+
+        results = []
+        for label, text, expected, must_mask, must_keep in cases:
+            anon = self.client.anonymize_unique(text)
+            mapping = anon["entity_mapping"]
+            output = anon["anonymized_text"]
+            actual = {value: entity_type_of(mapping, value) for value in expected}
+            leaked = [s for s in must_mask if s in output]
+            lost = [s for s in must_keep if s not in output]
+            restored = self.client.deanonymize(anon["id"], output)
+            correct_type = actual == expected
+            round_trip = restored["text"] == text
+            shown = show(text)
+            results.append({
+                "label": label,
+                "text": shown[:90] + ("…" if len(shown) > 90 else ""),
+                "expected": "; ".join(f"{show(v)} → {t}" for v, t in expected.items()),
+                "actual": "; ".join(f"{show(v)} → {t}" for v, t in actual.items()),
+                "leaked": ", ".join(leaked) or "—",
+                "must_keep": ", ".join(repr(s) for s in must_keep) or "—",
+                "full_text": text,
+                "full_anonymized": output,
+                "mapping": mapping,
+                "restored": restored["text"],
+                "no_leak": not leaked,
+                "correct_type": correct_type,
+                "kept": not lost,
+                "round_trip": round_trip,
+                "passed": not leaked and correct_type and not lost and round_trip,
+            })
+        return results
 
     # ── Section runners ──────────────────────────────────────────────────
 
@@ -1704,6 +1754,103 @@ class TestRunner:
             f"{passed}/{len(self.nrp_alignment_results)} passed",
         )
 
+    def run_multiline_context(self) -> None:
+        """Test that context on one line does not leak into another line.
+
+        In forms, lists and chat messages every line is its own statement.  A
+        keyword on one line used to relabel an entity on the next: in the
+        two-line "residing at Mumbai." / "My name is Mr. R.K. Sharma." the word
+        "residing" turned "R.K." into a LOCATION, so the surname was never
+        joined to it and leaked.  A line that introduces the next one ("Aadhaar
+        number:", "Correspondence Address") still describes the value beneath
+        it, and an address wrapped over two lines must stay one address.
+        """
+        # (label, text, {value: expected entity type}, must stay masked,
+        #  must stay in the output)
+        cases = [
+            # A keyword on a neighbouring line must not relabel the entity.
+            ("Reported: location word on previous line",
+             "Customer RAJESH KUMAR SHARMA residing at Mumbai.\n"
+             "My name is Mr. R.K. Sharma.",
+             {"R.K. Sharma": "PERSON"}, ["Sharma", "SHARMA"], []),
+            ("Location label on previous line",
+             "Branch: Andheri West\nCustomer: Priya Menon",
+             {"Priya Menon": "PERSON", "Andheri West": "LOCATION"},
+             ["Priya", "Andheri"], []),
+            ("Form without colons",
+             "Branch Andheri West\nCustomer Priya Menon",
+             {"Priya Menon": "PERSON"}, ["Priya"], []),
+            ("IFSC on the next line",
+             "Mobile: 9876543210\nIFSC: SBIN0001234",
+             {"9876543210": "PHONE_NUMBER"}, ["9876543210", "SBIN0001234"], []),
+            ("Account word on previous line",
+             "Please update my account\n9876543210 is my new mobile",
+             {"9876543210": "PHONE_NUMBER"}, ["9876543210"], []),
+            ("Employer line after an address",
+             "Address: Flat 301, Kumar Pinnacle, Baner, Pune 411045\n"
+             "Employer: Infosys Technologies",
+             {"Infosys Technologies": "ORGANIZATION"},
+             ["Infosys", "Kumar Pinnacle", "411045"], ["\nEmployer: "]),
+            ("Aadhaar label wins over APAAR keyword elsewhere",
+             "Student: Ananya Rao\nAadhaar: 234567890123",
+             {"234567890123": "IN_AADHAAR", "Ananya Rao": "PERSON"},
+             ["Ananya", "234567890123"], ["\nAadhaar: "]),
+            ("Title-like surname ending a line",
+             "Surname: Kumari\nPriya Sharma called yesterday",
+             {"Priya Sharma": "PERSON"}, ["Kumari", "Priya", "Sharma"], []),
+            ("Name wrapped across lines",
+             "Beneficiary name: Sunita\nKumari",
+             {"Sunita": "PERSON", "Kumari": "PERSON"}, ["Sunita", "Kumari"], []),
+            ("Aadhaar followed by a numbered list",
+             "Aadhaar: 2345 6789 0123\n1. Submit the form",
+             {"2345 6789 0123": "IN_AADHAAR"}, ["2345", "6789 0123"],
+             ["\n1. Submit the form"]),
+            # A line that introduces the next one still counts.
+            ("Aadhaar label on the line above",
+             "Aadhaar number:\n234567890123",
+             {"234567890123": "IN_AADHAAR"}, ["234567890123"], []),
+            ("Account label on the line above",
+             "Account number:\n9876543210",
+             {"9876543210": "IN_BANK_ACCOUNT"}, ["9876543210"], []),
+            ("APAAR heading several lines up",
+             "APAAR details\nName: Ananya Rao\nDOB: 12/03/2008\nID: 123456789012",
+             {"123456789012": "IN_APAAR"}, ["123456789012", "Ananya"], []),
+            ("Customer ID heading without a colon",
+             "Customer ID\n123456789",
+             {"123456789": "CUSTOMER_ID"}, ["123456789"], []),
+            ("Address wrapped onto a second line",
+             "Address: Flat 301, Kumar Pinnacle,\nBaner, Pune 411045",
+             {"Baner": "ADDRESS"}, ["Kumar", "Baner", "Pune", "411045"], []),
+            ("Address under a heading",
+             "Correspondence Address\n"
+             "shivam residency, survey 45, kharadi, pune 411014",
+             {"kharadi": "ADDRESS"},
+             ["shivam", "residency", "kharadi", "411014"], []),
+            ("Aadhaar number wrapped across lines",
+             "Aadhaar: 2345 6789\n0123",
+             {"2345 6789\n0123": "IN_AADHAAR"}, ["2345", "0123"], []),
+            # Guards: separate lines must stay separate entities.
+            ("Guard: list of cities stays separate",
+             "Cities covered: Pune,\nMumbai,\nDelhi",
+             {"Pune": "LOCATION", "Mumbai": "LOCATION", "Delhi": "LOCATION"},
+             ["Pune", "Mumbai", "Delhi"], [",\n"]),
+            ("Guard: locations on consecutive lines",
+             "I visited Pune\nMumbai is next",
+             {"Pune": "LOCATION", "Mumbai": "LOCATION"},
+             ["Pune", "Mumbai"], ["\n"]),
+            ("Guard: name on a new line not merged into address",
+             "Customer residing at Mumbai\nMy name is Rahul",
+             {"Mumbai": "LOCATION", "Rahul": "PERSON"},
+             ["Mumbai", "Rahul"], ["\nMy name is "]),
+        ]
+
+        self.multiline_results = self._check_expectations(cases)
+        passed = sum(1 for r in self.multiline_results if r["passed"])
+        self._log(
+            "Multi-line Context",
+            f"{passed}/{len(self.multiline_results)} passed",
+        )
+
     def run_geo_coordinates(self) -> None:
         """Test detection and anonymization of geographic coordinates.
 
@@ -3001,6 +3148,7 @@ class TestRunner:
             ("Person Initials", self.run_person_initials),
             ("Person Titles", self.run_person_titles),
             ("NRP Alignment", self.run_nrp_alignment),
+            ("Multi-line Context", self.run_multiline_context),
             ("Geo-Coordinates", self.run_geo_coordinates),
             ("NRP Detection", self.run_nrp),
             ("US Entities", self.run_us_entities),
@@ -3087,6 +3235,56 @@ def _render_io_detail(
         w(f"<p><strong>{H(row_label)}:</strong> {H(row_value)}</p>")
 
     w("</details>")
+
+
+def _render_expectation_results(
+    w,
+    results: list[dict],
+    kept_label: str,
+    noun: str,
+    detail_heading: str,
+) -> None:
+    """Render the table and detail cards for ``TestRunner._check_expectations``."""
+    if not results:
+        return
+    w("<table><thead><tr><th>Test Case</th><th>Input (truncated)</th>"
+      "<th>Expected</th><th>Detected</th><th>No leak</th>"
+      f"<th>Correct type</th><th>{H(kept_label)}</th><th>Round-trip</th>"
+      "<th>Result</th></tr></thead><tbody>")
+    for r in results:
+        w(f'<tr><td>{H(r["label"])}</td>'
+          f'<td><small>{H(r["text"])}</small></td>'
+          f'<td><small>{H(r["expected"])}</small></td>'
+          f'<td><small>{H(r["actual"])}</small></td>'
+          f'<td>{_icon(r["no_leak"])}</td>'
+          f'<td>{_icon(r["correct_type"])}</td>'
+          f'<td>{_icon(r["kept"])}</td>'
+          f'<td>{_icon(r["round_trip"])}</td>'
+          f'<td>{_icon(r["passed"])}</td></tr>')
+    w("</tbody></table>")
+    passed = sum(1 for r in results if r["passed"])
+    w(f"<p><strong>{passed}/{len(results)}</strong> {H(noun)} tests passed.</p>")
+
+    w(f"<h3>{H(detail_heading)}</h3>")
+    for r in results:
+        _render_io_detail(
+            w,
+            label=r["label"],
+            passed=r["passed"],
+            badge=(
+                f'{_icon(r["no_leak"])} no leak &nbsp; '
+                f'{_icon(r["correct_type"])} correct type &nbsp; '
+                f'{_icon(r["kept"])} {H(kept_label.lower())} &nbsp; '
+                f'{_icon(r["round_trip"])} round-trip'
+            ),
+            record=r,
+            extra_rows=[
+                ("Expected", r["expected"]),
+                ("Detected", r["actual"]),
+                ("Leaked", r["leaked"]),
+                ("Must stay in output", r["must_keep"]),
+            ],
+        )
 
 
 def generate_html_report(runner: TestRunner, output_path: str) -> None:
@@ -4275,6 +4473,23 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
                 ],
             )
 
+    # ── 11h. Multi-line Input ───────────────────────────────────────────
+    w('<h2 id="multiline">11h. Multi-line Input</h2>')
+    w("<p>In forms, lists and chat messages every line is its own statement. "
+      "A keyword on one line used to relabel an entity on the next: in "
+      "<code>residing at Mumbai. ⏎ My name is Mr. R.K. Sharma.</code> the word "
+      "<code>residing</code> turned <code>R.K.</code> into a LOCATION, so the "
+      "surname was never joined to it and leaked. Keywords now count only on "
+      "the entity's own line and sentence, plus a line that introduces it "
+      "(<code>Aadhaar number:</code>, <code>Correspondence Address</code>). An "
+      "address wrapped over two lines stays one address, while a list of "
+      "cities stays separate. ⏎ marks a line break.</p>")
+    _render_expectation_results(
+        w, runner.multiline_results,
+        kept_label="Lines kept", noun="multi-line",
+        detail_heading="11h-i. Multi-line Input — Input / Output Detail",
+    )
+
     # ── 12. Geo-Coordinate Detection ────────────────────────────────────
     w('<h2 id="geo-coordinates">12. Geo-Coordinate Detection</h2>')
     w("<p>Verifies that geographic coordinates (latitude/longitude) in "
@@ -4489,6 +4704,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         ("Dotted initials tests", f"{sum(1 for r in runner.person_initials_results if r['passed'])}/{len(runner.person_initials_results)}"),
         ("Honorific title tests", f"{sum(1 for r in runner.person_titles_results if r['passed'])}/{len(runner.person_titles_results)}"),
         ("NRP alignment tests", f"{sum(1 for r in runner.nrp_alignment_results if r['passed'])}/{len(runner.nrp_alignment_results)}"),
+        ("Multi-line context tests", f"{sum(1 for r in runner.multiline_results if r['passed'])}/{len(runner.multiline_results)}"),
         ("Geo-coordinate tests", f"{sum(1 for r in runner.geo_coordinate_results if r['passed'])}/{len(runner.geo_coordinate_results)}"),
         ("NRP detection tests", f"{sum(1 for r in runner.nrp_results if r['passed'])}/{len(runner.nrp_results)}"),
         ("US entity tests", f"{sum(1 for r in runner.us_entity_results if r['passed'])}/{len(runner.us_entity_results)}"),

@@ -3,8 +3,8 @@
 In forms, lists and chat messages every line is its own statement.  A keyword
 on one line must not relabel an entity on another, and no NER entity may run
 across a line break.  A line that introduces the next one — a "Label:" line or
-a heading ending in the keyword — still counts, and keywords elsewhere may still
-widen an address, since masking more never exposes anything.
+a short heading ending in the keyword — still counts, and keywords elsewhere may
+still widen an address, since masking more never exposes anything.
 """
 
 import re
@@ -94,6 +94,22 @@ class TestLineHelpers:
         pos = text.index("Kumar")
         assert block_start(text, pos, keyword) == pos
 
+    @pytest.mark.parametrize(
+        ("line_above", "introduces"),
+        [
+            ("Account", True),
+            ("Bank account", True),
+            ("Savings bank account", True),
+            ("Details of bank account", False),
+            ("Please update my account", False),
+        ],
+    )
+    def test_only_short_headings_introduce_the_next_line(self, line_above, introduces):
+        text = f"{line_above}\n9876543210"
+        keyword = re.compile(r"(?i)\baccount\b")
+        pos = text.index("9876543210")
+        assert (block_start(text, pos, keyword) == 0) is introduces
+
 
 # ---------------------------------------------------------------------------
 # PERSON → LOCATION: location words only count on the entity's own line
@@ -139,6 +155,10 @@ class TestLocationContextStaysOnItsLine:
         text = "Correspondence Address\nKumar Pinnacle"
         assert self._type(text, "Kumar Pinnacle") == "LOCATION"
 
+    def test_sentence_ending_in_location_word_does_not_count(self):
+        text = "This is my new address\nRahul Sharma called"
+        assert self._type(text, "Rahul Sharma") == "PERSON"
+
     def test_abbreviations_do_not_end_the_sentence(self):
         text = "Flat 12, Hsg. Soc. Kumar Pinnacle"
         assert self._type(text, "Kumar Pinnacle") == "LOCATION"
@@ -165,6 +185,9 @@ class TestAccountCuesStayOnTheirLine:
 
     def test_account_heading_line_above(self):
         assert self._type("Bank account\n9876543210") == "IN_BANK_ACCOUNT"
+
+    def test_sentence_ending_in_account_word_on_previous_line(self):
+        assert self._type("Please update my account\n9876543210 is my new mobile") == "PHONE_NUMBER"
 
     def test_account_word_in_previous_sentence(self):
         assert self._type("I closed my old account. 9876543210 is my new mobile") == "PHONE_NUMBER"
