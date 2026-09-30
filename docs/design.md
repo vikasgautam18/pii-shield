@@ -205,7 +205,7 @@ The library package provides the core PII detection and anonymization engine wit
 <tr>
 <td>pipeline.py</td>
 <td><p>Shared post-processing logic:</p>
-<p><em><strong>normalize_case()</strong></em> / <em><strong>merge_recovered_results()</strong></em> - recover names from ALL-CAPS and all-lowercase text that cased NER models mislabel, truncate, or miss</p>
+<p><em><strong>normalize_case()</strong></em> / <em><strong>merge_recovered_results()</strong></em> - recover names from ALL-CAPS and all-lowercase text that cased NER models mislabel, truncate, or miss, and from mixed-case names such as "Venkata narasimha raju", where NER stops at the first uncased word. A recovered mixed-case span is kept only as PERSON and is cut at any lowercase word that spaCy tags as a verb, preposition, article, etc., that is ordinary vocabulary, or that is a relation word or title, so "Ramesh paid" and "Kavitha mother" never become a name; the kept part is widened over any overlapping first-pass entity, so it never masks less than that pass</p>
 <p><em><strong>split_at_line_breaks()</strong></em> - NER reads a line break as plain whitespace, so a name ending one line can swallow the next line's first word; NER spans are split so no entity crosses a line</p>
 <p><em><strong>prefer_line_context()</strong></em> - when a context-only ID (APAAR, PRAN, Customer ID) owes its score to a keyword on another line, a recognizer with its own keyword on the number's line decides the type</p>
 <p><em><strong>reclassify_person_as_location()</strong></em> - fixes spaCy misclassification of Indian places</p>

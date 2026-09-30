@@ -1000,6 +1000,188 @@ _COMMON_DOCUMENT_WORDS = frozenset({
 
 _LOWERCASE_WORDS = frozenset(_SPACY_STOP_WORDS) | _COMMON_DOCUMENT_WORDS
 
+# ---------------------------------------------------------------------------
+# Mixed-case names — "Venkata narasimha raju"
+# ---------------------------------------------------------------------------
+
+# Part-of-speech tags that never belong to a person's name.  A lowercase word
+# tagged with one of these is ordinary vocabulary ("paid", "bought", "from"),
+# whereas uncased name parts come back as PROPN, NOUN or ADJ ("kumar",
+# "raju", "narasimha").  Measured: in "Ramesh paid electricity bill" the
+# re-cased "Ramesh Paid" is tagged PERSON, and only the tag on "paid" (VERB)
+# tells it apart from "Rajesh kumar".
+_ORDINARY_POS = frozenset({
+    "VERB", "AUX", "ADP", "DET", "PRON", "CCONJ", "SCONJ", "PART", "ADV",
+    "INTJ", "NUM", "SYM",
+})
+
+# Relation and possession words that trail a first name in informal text
+# ("Kavitha mother is the joint holder", "Rahul laptop was stolen").  spaCy
+# tags them NOUN exactly like the uncased surnames "sharma" and "raju", so they
+# are listed.  Deliberately excludes words that are also Indian name parts
+# ("devi", "mani", "baby").
+_RELATION_WORDS = frozenset({
+    "mother", "father", "mom", "dad", "mum", "papa", "mummy", "son", "daughter",
+    "wife", "husband", "hubby", "brother", "sister", "bro", "sis", "uncle",
+    "aunt", "aunty", "auntie", "cousin", "nephew", "niece", "grandfather",
+    "grandmother", "grandpa", "grandma", "friend", "boss", "colleague",
+    "neighbour", "neighbor", "landlord", "tenant", "fiance", "fiancee",
+    "family", "kids", "children", "parents", "bhai", "bhaiya", "didi", "jiju",
+    "bhabhi", "ji", "sahab", "saab", "laptop", "car", "bike", "scooter",
+    "wallet", "purse", "bag", "wedding", "marriage", "birthday", "resume",
+    "school", "college",
+})
+
+# Honorifics that are also common name parts ("Sunita kumari", "Ravi shankar
+# pandit", "Venkata sri ram"); every other title is never part of a name.
+_NAME_PART_TITLES = frozenset({"kumari", "kum", "pandit", "sri", "shri"})
+
+# Letter runs with internal apostrophes, in any script: "d'souza", "martínez".
+_NAME_TOKEN = re.compile(r"[^\W\d_]+(?:['\u2019][^\W\d_]+)*")
+
+
+def ordinary_word_starts(doc) -> frozenset[int] | None:
+    """Start offsets of the tokens in a spaCy *doc* tagged as non-name words.
+
+    ``None`` when the NLP pipeline produced no part-of-speech tags; the
+    recovery steps then keep rejecting mixed-case spans, as they did before
+    tags were used.
+    """
+    if doc is None or not doc.has_annotation("POS"):
+        return None
+    return frozenset(t.idx for t in doc if t.pos_ in _ORDINARY_POS)
+
+
+def common_word_starts(
+    doc, english_words: frozenset[str] | None
+) -> frozenset[int]:
+    """Start offsets of common English words in *doc* not tagged as proper nouns.
+
+    *english_words* is the WordNet word list from spaCy's English lemmatizer.
+    It is too broad to veto name parts outright — "lakshmi", "krishna" and
+    "shah" are WordNet words too — so it only decides whether a single word
+    next to a name is worth a second NER pass (``needs_name_recovery``).
+    Without it, every word not tagged as a proper noun counts as common.
+    """
+    if doc is None or not doc.has_annotation("POS"):
+        return frozenset()
+    return frozenset(
+        t.idx for t in doc
+        if t.pos_ != "PROPN"
+        and (
+            english_words is None
+            or t.lower_ in english_words
+            or t.lemma_.lower() in english_words
+        )
+    )
+
+
+def _is_uncased_name_word(token: str, start: int, ordinary: frozenset[int]) -> bool:
+    """Whether a lowercase *token* at *start* could be an uncased name part."""
+    return (
+        len(token) >= 2
+        and token.islower()
+        and token not in _LOWERCASE_WORDS
+        and token not in _RELATION_WORDS
+        and (token not in _PERSON_TITLES or token in _NAME_PART_TITLES)
+        and start not in ordinary
+    )
+
+
+def _name_runs(
+    text: str, start: int, end: int, ordinary: frozenset[int]
+) -> list[tuple[int, int]]:
+    """Split ``text[start:end]`` at ordinary lowercase words.
+
+    Returns the pieces that contain at least one uncased name word — the only
+    part of a mixed-case span the recovery pass can add, since the correctly
+    cased words were already judged by the primary pass.  Words are letter runs
+    in any script with internal apostrophes ("d'souza", "martínez"), and
+    single letters ("r" in "Venkata r raju") stay inside a piece unless they
+    are ordinary words such as "a".
+    """
+    runs: list[tuple[int, int]] = []
+    run_start = run_end = None
+    has_name = False
+    for match in _NAME_TOKEN.finditer(text, start, end):
+        token = match.group(0)
+        single_letter = len(token) == 1 and (
+            text[match.end() : match.end() + 1] == "." or token not in _LOWERCASE_WORDS
+        )
+        if (
+            token.islower()
+            and not single_letter
+            and not _is_uncased_name_word(token, match.start(), ordinary)
+        ):
+            if run_start is not None and has_name:
+                runs.append((run_start, run_end))
+            run_start = run_end = None
+            has_name = False
+            continue
+        if run_start is None:
+            run_start = match.start()
+        run_end = match.end()
+        has_name = has_name or (token.islower() and not single_letter)
+    if run_start is not None and has_name:
+        runs.append((run_start, run_end))
+    return runs
+
+
+def _is_word_char(text: str, i: int) -> bool:
+    return 0 <= i < len(text) and (text[i].isalnum() or text[i] == "_")
+
+
+def _word_after(text: str, pos: int) -> tuple[str, int] | None:
+    """The word one space or tab after *pos*, with its start offset."""
+    if text[pos : pos + 1] not in (" ", "\t"):
+        return None
+    match = _ALPHA_RUN.match(text, pos + 1)
+    if match is None or _is_word_char(text, match.end()):
+        return None
+    return match.group(0), match.start()
+
+
+def _word_before(text: str, pos: int) -> tuple[str, int] | None:
+    """The word one space or tab before *pos*, with its start offset."""
+    end = pos - 1
+    if end < 1 or text[end] not in " \t":
+        return None
+    start = end
+    while start > 0 and text[start - 1].isascii() and text[start - 1].isalpha():
+        start -= 1
+    if start == end or _is_word_char(text, start - 1):
+        return None
+    return text[start:end], start
+
+
+def needs_name_recovery(
+    results: list[RecognizerResult],
+    text: str,
+    ordinary: frozenset[int] | None,
+    common: frozenset[int] = frozenset(),
+) -> bool:
+    """Whether an NER entity sits directly next to an uncased name word.
+
+    "Rajesh Kumar sharma submitted" has only one uncased word, too few for
+    ``_needs_recovery`` to pay for a second NER pass, but "sharma" right after
+    a detected name is the likely surname, so recovery is worth running.  A
+    common English word (*common*, see ``common_word_starts``) is not: "Kavitha
+    mother is the joint holder" must not re-case "mother" into a name.
+    """
+    if ordinary is None:
+        return False
+    for r in results:
+        if r.entity_type not in _NER_ENTITY_TYPES:
+            continue
+        for neighbour in (_word_after(text, r.end), _word_before(text, r.start)):
+            if (
+                neighbour
+                and neighbour[1] not in common
+                and _is_uncased_name_word(*neighbour, ordinary)
+            ):
+                return True
+    return False
+
 
 def _recovery_allowed(span: str, entity_type: str) -> bool:
     """Whether a span recovered from re-cased text may keep *entity_type*.
@@ -1010,9 +1192,11 @@ def _recovery_allowed(span: str, entity_type: str) -> bool:
     * all-lowercase — no capitalisation cue at all, so the model readily
       invents organisations out of ordinary noun phrases ("Internet Banking
       Password", "Credit Team").  Only PERSON is accepted.
-    * mixed — the primary pass already saw correct casing, so a differing
-      recovery is an artefact of re-casing ordinary words, e.g. "Kavitha
-      visited Contoso Bank" fusing into one PERSON.  Rejected.
+    * mixed — the correctly cased words were already judged by the primary
+      pass, so re-casing ordinary words only adds noise, e.g. "Kavitha visited
+      Contoso Bank" fusing into one PERSON.  Rejected here; for a PERSON,
+      ``merge_recovered_results`` may still keep the uncased name part
+      ("narasimha raju" in "Venkata narasimha raju").
     """
     has_upper = any(c.isupper() for c in span)
     has_lower = any(c.islower() for c in span)
@@ -1026,6 +1210,7 @@ def _recovery_allowed(span: str, entity_type: str) -> bool:
 def normalize_case(
     text: str,
     extra_skip: frozenset[str] = frozenset(),
+    force: bool = False,
 ) -> str | None:
     """Return *text* with badly-cased words re-cased, or ``None`` if unchanged.
 
@@ -1047,9 +1232,10 @@ def normalize_case(
     matters because ``InPanImprovedRecognizer`` matches case-sensitively.
 
     Returning ``None`` when nothing changed lets callers skip the second NER
-    pass entirely for normally-cased text.
+    pass entirely for normally-cased text.  *force* rewrites the text even when
+    ``_needs_recovery`` sees nothing to recover — see ``needs_name_recovery``.
     """
-    if not _needs_recovery(text, extra_skip):
+    if not force and not _needs_recovery(text, extra_skip):
         return None
     chars: list[str] | None = None
     for match in _ALPHA_RUN.finditer(text):
@@ -1081,6 +1267,7 @@ def merge_recovered_results(
     primary: list[RecognizerResult],
     recovered: list[RecognizerResult],
     text: str,
+    ordinary: frozenset[int] | None = None,
 ) -> list[RecognizerResult]:
     """Fold NER results recovered from re-cased text into *primary*.
 
@@ -1095,15 +1282,77 @@ def merge_recovered_results(
     NRP ("Internet Banking Password", "Credit Team"), while the genuine gain
     was entirely PERSON — all-caps input still carries word-boundary cues that
     lowercase lacks, so it stays eligible for the full set of NER types.
+
+    Mixed-case spans are accepted only as PERSON, and only the part holding an
+    uncased name word: "Venkata narasimha raju" is kept whole, while "Ramesh
+    paid" is cut at the verb and adds nothing.  *ordinary* holds the offsets
+    of words that cannot be name parts (``ordinary_word_starts``); without it,
+    mixed-case spans are rejected outright.  A lowercase entity the recovery
+    split off right after an accepted name ("Suresh babu" + "naidu") is taken
+    as its surname.  Such pieces are widened over every primary NER span they
+    overlap, so they never mask less than the primary pass did ("Anil d'souza"
+    stays whole even if only "souza" survives the cut).
     """
     validated = [
         (r.start, r.end) for r in primary if r.entity_type not in _NER_ENTITY_TYPES
     ]
-    accepted = [
-        r for r in recovered
-        if _recovery_allowed(text[r.start : r.end], r.entity_type)
-        and not any(r.start < end and r.end > start for start, end in validated)
-    ]
+
+    def _overlaps_validated(start: int, end: int) -> bool:
+        return any(start < v_end and end > v_start for v_start, v_end in validated)
+
+    accepted: list[RecognizerResult] = []
+    pieces: list[RecognizerResult] = []
+    leftovers: list[RecognizerResult] = []
+    for r in recovered:
+        if _overlaps_validated(r.start, r.end):
+            continue
+        if _recovery_allowed(text[r.start : r.end], r.entity_type):
+            accepted.append(r)
+        elif r.entity_type == "PERSON" and ordinary is not None:
+            for start, end in _name_runs(text, r.start, r.end, ordinary):
+                piece = RecognizerResult(
+                    entity_type="PERSON",
+                    start=start,
+                    end=end,
+                    score=r.score,
+                    analysis_explanation=r.analysis_explanation,
+                    recognition_metadata=dict(r.recognition_metadata or {}),
+                )
+                accepted.append(piece)
+                pieces.append(piece)
+        else:
+            leftovers.append(r)
+
+    if ordinary is not None:
+        persons = sorted(
+            (a for a in accepted if a.entity_type == "PERSON"), key=lambda a: a.start
+        )
+        for person in persons:
+            for r in sorted(leftovers, key=lambda r: r.start):
+                if (
+                    text[person.end : r.start] in (" ", "\t")
+                    and text[r.start : r.end].islower()
+                    and _name_runs(text, r.start, r.end, ordinary) == [(r.start, r.end)]
+                ):
+                    person.end = r.end
+                    if all(person is not p for p in pieces):
+                        pieces.append(person)
+
+    primary_ner = [r for r in primary if r.entity_type in _NER_ENTITY_TYPES]
+    for piece in pieces:
+        widened = True
+        while widened:
+            widened = False
+            for r in primary_ner:
+                if (
+                    r.start < piece.end
+                    and r.end > piece.start
+                    and (r.start < piece.start or r.end > piece.end)
+                ):
+                    piece.start = min(piece.start, r.start)
+                    piece.end = max(piece.end, r.end)
+                    widened = True
+
     if not accepted:
         return primary
     kept = [

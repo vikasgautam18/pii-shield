@@ -28,6 +28,7 @@ from pii_shield.nlp_engine import create_nlp_engine, get_nlp_engine_name
 from pii_shield.operator_config import ENCRYPTION_BACKEND, _DEFAULTS
 from pii_shield.pipeline import (
     _NER_ENTITY_TYPES,
+    common_word_starts,
     extend_person_over_initials,
     filter_attributive_nrp,
     filter_person_false_positives,
@@ -35,8 +36,10 @@ from pii_shield.pipeline import (
     merge_address_entities,
     merge_adjacent_person_tokens,
     merge_recovered_results,
+    needs_name_recovery,
     normalize_case,
     normalize_person_titles,
+    ordinary_word_starts,
     prefer_line_context,
     reclassify_person_as_location,
     reclassify_phone_as_bank_account,
@@ -105,6 +108,23 @@ def _get_fake_op():
         from pii_shield.operators.fake_data import FakeDataOperator
         _fake_op = FakeDataOperator()
     return _fake_op
+
+
+def _english_vocabulary(nlp_engine) -> frozenset[str] | None:
+    """Single-word WordNet lemmas from the English spaCy lemmatizer, if loaded.
+
+    The rule-based lemmatizer shipped with spaCy's English models carries the
+    WordNet word lists; ``None`` when the NLP engine has no such lemmatizer.
+    """
+    try:
+        lemmatizer = nlp_engine.nlp["en"].get_pipe("lemmatizer")
+        index = lemmatizer.lookups.get_table("lemma_index")
+    except Exception:
+        return None
+    words: set[str] = set()
+    for pos in ("noun", "verb", "adj", "adv"):
+        words.update(w for w in index.get(pos, []) if "_" not in w)
+    return frozenset(words) or None
 
 
 class PiiShieldEngine:
@@ -257,6 +277,10 @@ class PiiShieldEngine:
             if getattr(rec, "context", None)
         }
 
+        # Common English words decide whether a lone word next to a name is
+        # worth a second NER pass ("Kavitha mother is the joint holder").
+        self._english_words = _english_vocabulary(self._analyzer.nlp_engine)
+
         logger.info(
             "PiiShieldEngine ready (NLP engine: %s, threshold: %.2f)",
             get_nlp_engine_name(),
@@ -287,21 +311,39 @@ class PiiShieldEngine:
             self._score_threshold if score_threshold is None else score_threshold
         )
         try:
+            # Computed here rather than inside analyze() so the part-of-speech
+            # tags can be reused below without a second NLP pass.
+            nlp_artifacts = self._analyzer.nlp_engine.process_text(text, language)
             analyzer_results = self._analyzer.analyze(
                 text=text,
                 language=language,
                 score_threshold=threshold,
                 allow_list=merged_allow or None,
+                nlp_artifacts=nlp_artifacts,
             )
         except Exception as exc:
             raise DetectionError(f"PII detection failed: {exc}") from exc
 
+        # Words tagged as verbs, prepositions, ... are never part of a name, so
+        # case recovery may not glue them onto one ("Ramesh paid").
+        ordinary = ordinary_word_starts(nlp_artifacts.tokens)
+
         # Recover PII from badly-cased text.  Cased NER models mislabel or miss
-        # ALL-CAPS and all-lowercase names, so re-run NER only over a re-cased
-        # copy and merge what it finds.  The copy is the same length, so offsets
-        # map 1:1; the original text is never analysed differently, leaving
-        # case-sensitive recognizers (PAN, SWIFT) untouched.
-        normalized = normalize_case(text, self._normalize_skip)
+        # ALL-CAPS and all-lowercase names, and stop at the first uncased word
+        # of a mixed-case one ("Venkata narasimha raju"), so re-run NER only
+        # over a re-cased copy and merge what it finds.  The copy is the same
+        # length, so offsets map 1:1; the original text is never analysed
+        # differently, leaving case-sensitive recognizers (PAN, SWIFT) untouched.
+        normalized = normalize_case(
+            text,
+            self._normalize_skip,
+            force=needs_name_recovery(
+                analyzer_results,
+                text,
+                ordinary,
+                common_word_starts(nlp_artifacts.tokens, self._english_words),
+            ),
+        )
         if normalized is not None:
             try:
                 recovered = self._analyzer.analyze(
@@ -319,7 +361,7 @@ class PiiShieldEngine:
                 recovered = []
             if recovered:
                 analyzer_results = merge_recovered_results(
-                    analyzer_results, recovered, text
+                    analyzer_results, recovered, text, ordinary
                 )
 
         # Resolve honorific / professional titles ("CA Abhay", "Er. Ram"), which

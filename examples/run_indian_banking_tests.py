@@ -332,6 +332,7 @@ class TestRunner:
         self.person_titles_results: list[dict] = []
         self.nrp_alignment_results: list[dict] = []
         self.multiline_results: list[dict] = []
+        self.mixed_case_results: list[dict] = []
         self.geo_coordinate_results: list[dict] = []
         self.nrp_results: list[dict] = []
         self.us_entity_results: list[dict] = []
@@ -1851,6 +1852,99 @@ class TestRunner:
             f"{passed}/{len(self.multiline_results)} passed",
         )
 
+    def run_mixed_case_names(self) -> None:
+        """Test names typed with only the first word capitalised.
+
+        A cased NER model stops at the first uncased word, so in "My name is
+        Venkata narasimha raju." only "Venkata" was masked and the middle and
+        last names leaked.  The whole name must now be masked, while ordinary
+        words typed after a name ("Ramesh paid electricity bill") must stay.
+        """
+        cases = [
+            ("Reported: middle and last name lowercase",
+             "My name is Venkata narasimha raju.",
+             {"Venkata narasimha raju": "PERSON"},
+             ["Venkata", "narasimha", "raju"], []),
+            ("Three-part name at sentence start",
+             "Rajesh kumar sharma has applied for a home loan",
+             {"Rajesh kumar sharma": "PERSON"},
+             ["Rajesh", "kumar", "sharma"], ["has applied for a home loan"]),
+            ("Name after a role word",
+             "Customer Priya ramesh iyer called the branch yesterday",
+             {"Priya ramesh iyer": "PERSON"},
+             ["Priya", "ramesh", "iyer"], ["called the branch"]),
+            ("First name alone read as a place",
+             "Transfer INR 5,000 to Suresh babu naidu today",
+             {"Suresh babu naidu": "PERSON"},
+             ["Suresh", "babu", "naidu"], ["today"]),
+            ("Form field",
+             "Account holder: Sunita devi agarwal",
+             {"Sunita devi agarwal": "PERSON"},
+             ["Sunita", "devi", "agarwal"], ["Account holder: "]),
+            ("Signatory",
+             "The cheque was signed by Mohammed faisal khan",
+             {"Mohammed faisal khan": "PERSON"},
+             ["Mohammed", "faisal", "khan"], ["signed by "]),
+            ("Surname before a verb",
+             "Kavitha subramaniam opened a savings account",
+             {"Kavitha subramaniam": "PERSON"},
+             ["Kavitha", "subramaniam"], ["opened a savings account"]),
+            ("Only the surname lowercase",
+             "Rajesh Kumar sharma submitted his documents",
+             {"Rajesh Kumar sharma": "PERSON"},
+             ["Rajesh", "Kumar", "sharma"], ["submitted his documents"]),
+            ("Four-part name",
+             "Pamidighantam venkata subba rao is the nominee",
+             {"Pamidighantam venkata subba rao": "PERSON"},
+             ["Pamidighantam", "venkata", "subba", "rao"], ["is the nominee"]),
+            ("Name on a form line",
+             "Name: Venkata narasimha raju\nMobile: 9876543210",
+             {"Venkata narasimha raju": "PERSON", "9876543210": "PHONE_NUMBER"},
+             ["narasimha", "raju", "9876543210"], ["\nMobile: "]),
+            ("Two names joined by 'and'",
+             "Faisal ahmed and Sunil das visited today",
+             {"Faisal ahmed": "PERSON", "Sunil das": "PERSON"},
+             ["Faisal", "ahmed", "Sunil", "das"], [" and ", "visited today"]),
+            ("Surname with an apostrophe",
+             "Anil d'souza has a pending CIBIL dispute.",
+             {"Anil d'souza": "PERSON"},
+             ["Anil", "souza"], ["has a pending CIBIL dispute"]),
+            ("Accented surname",
+             "Sofía martínez opened an NRE account last week.",
+             {"Sofía martínez": "PERSON"},
+             ["Sofía", "martínez"], ["opened an NRE account"]),
+            # Guards: ordinary words typed after a name must stay unmasked.
+            ("Guard: verb after a name",
+             "Ramesh paid electricity bill using UPI",
+             {"Ramesh": "PERSON"}, ["Ramesh"], ["paid electricity bill using UPI"]),
+            ("Guard: relation word after a name",
+             "Kavitha mother is the joint holder.",
+             {"Kavitha": "PERSON"}, ["Kavitha"], ["mother is the joint holder"]),
+            ("Guard: title after a name",
+             "Rahul sir will call you back.",
+             {"Rahul": "PERSON"}, ["Rahul"], ["sir will call you back"]),
+            ("Guard: booking sentence",
+             "Meera booked movie tickets for Sunday",
+             {"Meera": "PERSON"}, ["Meera"], ["booked movie tickets for"]),
+            ("Guard: shopping sentence",
+             "Rahul bought new shoes from the mall",
+             {"Rahul": "PERSON"}, ["Rahul"], ["bought new shoes from the mall"]),
+            ("Guard: prose next to a bank name",
+             "NOTE: Kavitha visited Contoso Bank yesterday",
+             {"Kavitha": "PERSON"}, ["Kavitha"], ["visited"]),
+            ("Guard: correctly cased name unchanged",
+             "My name is Venkata Narasimha Raju.",
+             {"Venkata Narasimha Raju": "PERSON"},
+             ["Venkata", "Narasimha", "Raju"], []),
+        ]
+
+        self.mixed_case_results = self._check_expectations(cases)
+        passed = sum(1 for r in self.mixed_case_results if r["passed"])
+        self._log(
+            "Mixed-case Names",
+            f"{passed}/{len(self.mixed_case_results)} passed",
+        )
+
     def run_geo_coordinates(self) -> None:
         """Test detection and anonymization of geographic coordinates.
 
@@ -3149,6 +3243,7 @@ class TestRunner:
             ("Person Titles", self.run_person_titles),
             ("NRP Alignment", self.run_nrp_alignment),
             ("Multi-line Context", self.run_multiline_context),
+            ("Mixed-case Names", self.run_mixed_case_names),
             ("Geo-Coordinates", self.run_geo_coordinates),
             ("NRP Detection", self.run_nrp),
             ("US Entities", self.run_us_entities),
@@ -4490,6 +4585,23 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         detail_heading="11h-i. Multi-line Input — Input / Output Detail",
     )
 
+    # ── 11i. Mixed-case Names ───────────────────────────────────────────
+    w('<h2 id="mixed-case">11i. Mixed-case Names</h2>')
+    w("<p>Names are often typed with only the first word capitalised. A cased "
+      "NER model stops at the first uncased word, so in <code>My name is "
+      "Venkata narasimha raju.</code> only <code>Venkata</code> was masked and "
+      "the middle and last names leaked. The case-recovery pass, which re-runs "
+      "NER over a re-cased copy, now keeps such names as PERSON, cut at any "
+      "lowercase word that is a verb, preposition, article, common "
+      "vocabulary or a relation word, so ordinary words typed after a name "
+      "(<code>Ramesh paid electricity bill</code>, <code>Kavitha mother is the "
+      "joint holder</code>) are not masked.</p>")
+    _render_expectation_results(
+        w, runner.mixed_case_results,
+        kept_label="Context kept", noun="mixed-case name",
+        detail_heading="11i-i. Mixed-case Names — Input / Output Detail",
+    )
+
     # ── 12. Geo-Coordinate Detection ────────────────────────────────────
     w('<h2 id="geo-coordinates">12. Geo-Coordinate Detection</h2>')
     w("<p>Verifies that geographic coordinates (latitude/longitude) in "
@@ -4705,6 +4817,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         ("Honorific title tests", f"{sum(1 for r in runner.person_titles_results if r['passed'])}/{len(runner.person_titles_results)}"),
         ("NRP alignment tests", f"{sum(1 for r in runner.nrp_alignment_results if r['passed'])}/{len(runner.nrp_alignment_results)}"),
         ("Multi-line context tests", f"{sum(1 for r in runner.multiline_results if r['passed'])}/{len(runner.multiline_results)}"),
+        ("Mixed-case name tests", f"{sum(1 for r in runner.mixed_case_results if r['passed'])}/{len(runner.mixed_case_results)}"),
         ("Geo-coordinate tests", f"{sum(1 for r in runner.geo_coordinate_results if r['passed'])}/{len(runner.geo_coordinate_results)}"),
         ("NRP detection tests", f"{sum(1 for r in runner.nrp_results if r['passed'])}/{len(runner.nrp_results)}"),
         ("US entity tests", f"{sum(1 for r in runner.us_entity_results if r['passed'])}/{len(runner.us_entity_results)}"),
