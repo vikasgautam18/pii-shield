@@ -655,18 +655,26 @@ def normalize_person_titles(
 
 _MERGEABLE_TYPES = {"LOCATION", "IN_PIN_CODE"}
 
-_ADDRESS_GLUE = re.compile(
-    r"(?i)^[\s,]*"
-    r"(?:(?:branch|road|street|marg|lane|chowk|nagar|colony|layout|sector"
-    r"|area|vihar|puram|enclave|kunj|bagh|garden|park|avenue|block"
-    r"|phase|extension|ext|east|west|north|south|nr|near|opp|behind"
-    r"|plot|no|number|floor|building|tower|complex|apartment|society"
-    r"|village|taluka|tehsil|mandal|district|city|town)[\s,]*)*$"
-)
+# Words that may sit between two parts of one address ("MG Road branch,
+# Bangalore"); a gap holding only these and separators always merges.
+_ADDRESS_GLUE_WORDS = frozenset({
+    "branch", "road", "street", "marg", "lane", "chowk", "nagar", "colony",
+    "layout", "sector", "area", "vihar", "puram", "enclave", "kunj", "bagh",
+    "garden", "park", "avenue", "block", "phase", "extension", "ext", "east",
+    "west", "north", "south", "nr", "near", "opp", "behind", "plot", "no",
+    "number", "floor", "building", "tower", "complex", "apartment", "society",
+    "village", "taluka", "tehsil", "mandal", "district", "city", "town",
+})
 
-_ADDRESS_LOOSE_GLUE = re.compile(
-    r"^[\s,]*(?:[A-Za-z0-9\-]+[\s,]*)*$"
-)
+# Separators inside an address.  "." is one because of abbreviations ("no.",
+# "Opp."); a "." that ends a sentence stops the merge before the gap is read.
+_GAP_SEPARATORS = re.compile(r"[\s,.]+")
+
+# What an address introduced by an indicator may hold between two detected
+# parts: words NER missed ("Baner"), numbers, "45/2", "#12".  A single character
+# class, so it runs in linear time: the nested pattern it replaces backtracked
+# exponentially on a long word followed by any other character.
+_ADDRESS_LOOSE_GLUE = re.compile(r"[A-Za-z0-9\-/#\s,.]*")
 
 _ADDRESS_INDICATOR = re.compile(
     r"(?i)\b(?:address|residing\s+at|residence|lives?\s+at|located\s+at"
@@ -675,7 +683,7 @@ _ADDRESS_INDICATOR = re.compile(
 
 _ADDRESS_INDICATOR_WINDOW = 80
 
-_SENTENCE_BOUNDARY = re.compile(r"[.;!?\u2014]")  # includes em-dash —
+_BREAK_MARK = re.compile(r"[.;!?\u2014]")  # includes em-dash —
 
 _MAX_MERGE_GAP = 50
 
@@ -690,6 +698,43 @@ _ADDRESS_CONTEXT_TYPES = frozenset({"ORGANIZATION", "NRP"})
 # recognizer for these, so they are absorbed from the text immediately before an
 # address group rather than detected independently.
 _UNIT_NUMBER_TOKEN = re.compile(r"[A-Za-z]{0,2}-?\d{1,5}[A-Za-z]?\Z")
+
+# House numbers written in parts: "12-3-456", "45/2".
+_MULTI_PART_NUMBER = re.compile(
+    r"[A-Za-z]{0,2}-?\d{1,5}[A-Za-z]?(?:[-/]\d{1,5}[A-Za-z]?)+\Z"
+)
+
+# Dates and year ranges ("12/05", "2024-25") look like multi-part house
+# numbers, so those are absorbed only after a unit label ("H.No. 12-3-456") or
+# inside an address an indicator introduced.
+_NUMBER_IN_PARTS = re.compile(r"\d[-/]\d")
+
+# Floor numbers: "2nd", "11th".
+_ORDINAL_TOKEN = re.compile(r"(?i)\d{1,3}(?:st|nd|rd|th)\Z")
+
+# Words that name a unit or a part of one: "Flat no. 302", "H.No. 12",
+# "B Wing", "3rd Floor", "Survey No. 45/2", "5th Cross", "Shop 4, Opp.".
+_UNIT_LABELS = frozenset({
+    "flat", "no", "nos", "number", "house", "h", "plot", "door", "d", "block",
+    "blk", "wing", "floor", "flr", "apt", "apartment", "unit", "room", "shop",
+    "suite", "tower", "bldg", "building", "qtr", "quarter", "survey", "sy",
+    "gali", "ward", "sector", "phase", "stage", "cross", "main", "street",
+    "lane", "road", "opp",
+})
+
+# "no" names a unit only before a number: "Flat no. 302", but never "there is
+# no Prestige Towers".
+_NUMBER_LABELS = frozenset({"no", "nos", "number"})
+
+# NER sometimes tags a unit label on its own ("Flat" as LOCATION); such an
+# entity is absorbed with the rest.  A date ("12/05/2024") keeps its own label.
+_UNIT_LABEL_TYPES = frozenset({"LOCATION", "ORGANIZATION", "NRP", "PERSON"})
+
+_UNIT_WORD = re.compile(r"[A-Za-z0-9\-/]+")
+
+# How far before an address its unit designators may start ("Flat No. 1203,
+# B Wing, 12th Floor, Tower C, " is 45 characters).
+_MAX_UNIT_SPAN = 60
 
 
 def _has_address_indicator(text: str, pos: int) -> bool:
@@ -726,7 +771,9 @@ def _absorb_unit_number(text: str, start: int) -> int:
     """Extend *start* left over a flat/unit number such as ``F3003,``.
 
     Returns the original *start* when the preceding token is not a unit number,
-    so ordinary words are never swallowed into the address.
+    so ordinary words are never swallowed into the address.  Only decides
+    whether a lone building name follows a unit number; an address absorbs its
+    full unit designation with ``_absorb_unit_designators``.
     """
     sep = start
     while sep > 0 and text[sep - 1] in " ,":
@@ -746,6 +793,149 @@ def _absorb_unit_number(text: str, start: int) -> int:
     return tok
 
 
+def _has_sentence_break(text: str, start: int, end: int) -> bool:
+    """Whether a sentence ends inside ``text[start:end]``.
+
+    ";", "!", "?" and "—" always end one.  A "." ends one only when whitespace
+    or the end of the text follows it and it does not close an abbreviation
+    (see ``_is_sentence_end``), so "Flat no. 302" and "Opp. City Mall" are not
+    split.
+    """
+    for match in _BREAK_MARK.finditer(text, start, end):
+        i = match.start()
+        if text[i] != ".":
+            return True
+        if text[i + 1 : i + 2].strip():
+            continue  # inside a word: "H.No", "1.5"
+        if not text[i - 1 : i].isalnum() or _is_sentence_end(text, i):
+            return True
+    return False
+
+
+def _is_address_glue(gap: str) -> bool:
+    """Whether *gap* holds only separators and address words ("branch, ")."""
+    return all(
+        word.lower() in _ADDRESS_GLUE_WORDS
+        for word in _GAP_SEPARATORS.split(gap)
+        if word
+    )
+
+
+def _unit_token_kind(token: str) -> str | None:
+    """Classify a word written before an address.
+
+    Returns "value" for a unit number, floor or block letter ("302",
+    "12-3-456", "2nd", "C"), "label" for a word naming one ("Flat", "No",
+    "Wing"), and None for anything else.  A hyphenated word takes the kinds of
+    its parts ("B-Wing" is a value).
+    """
+    if (
+        _UNIT_NUMBER_TOKEN.fullmatch(token)
+        or _MULTI_PART_NUMBER.fullmatch(token)
+        or _ORDINAL_TOKEN.fullmatch(token)
+        or (len(token) == 1 and token.isupper())
+    ):
+        return "value"
+    if token.lower() in _UNIT_LABELS:
+        return "label"
+    parts = [part for part in token.split("-") if part]
+    if len(parts) > 1:
+        kinds = [_unit_token_kind(part) for part in parts]
+        if None not in kinds:
+            return "value" if "value" in kinds else "label"
+    return None
+
+
+def _is_unit_designation(span: str) -> bool:
+    """Whether *span* holds only unit numbers and labels ("Flat", "C 23")."""
+    words = _UNIT_WORD.findall(span)
+    return bool(words) and all(_unit_token_kind(w) is not None for w in words)
+
+
+def _unit_word_before(text: str, pos: int) -> str:
+    """The word before *pos*, skipping spaces, dots and "#" ("No" in "H.No. 12")."""
+    end = pos
+    while end > 0 and text[end - 1] in " \t.#":
+        end -= 1
+    begin = end
+    while begin > 0 and (text[begin - 1].isalnum() or text[begin - 1] == "-"):
+        begin -= 1
+    return text[begin:end]
+
+
+def _opens_with_unit_value(text: str, pos: int) -> bool:
+    """Whether the text at *pos* opens with a unit number or letter ("No. 45/2")."""
+    for match in _UNIT_WORD.finditer(text, pos, pos + _MAX_UNIT_SPAN):
+        kind = _unit_token_kind(match.group())
+        if kind != "label":
+            return kind == "value"
+    return False
+
+
+def _absorb_unit_designators(
+    text: str, start: int, taken: list[RecognizerResult]
+) -> int:
+    """Extend *start* left over the unit designators written before an address.
+
+    In "Flat no. 302, C 23, Prestige Towers" the flat number, block letter and
+    their labels have no recognizer, so the words directly before the address
+    are absorbed while each is a unit number, floor, block letter or unit label
+    (see ``_unit_token_kind``).  Nothing is absorbed unless one of them, or the
+    start of the address itself ("Door" before "No. 45/2"), is a number or
+    letter, and "no" counts only before a number, so "the unit" or "there is
+    no" is never swallowed.  A line break is crossed only after a comma in an
+    address an indicator introduced.
+
+    A word another entity in *taken* covers is absorbed only when that entity
+    is itself just a unit designation ("Flat" tagged LOCATION); otherwise the
+    walk stops, so the "T" of "Contoso Bank T" before "Nagar" is left alone.
+    """
+    new_start = start
+    has_value = _opens_with_unit_value(text, start)
+    while True:
+        sep = new_start
+        while sep > 0 and new_start - sep < 4 and text[sep - 1] in " \t\r\n,.#":
+            sep -= 1
+        gap = text[sep:new_start]
+        if not gap:
+            break  # a word must be separated from what follows it
+        if "\n" in gap and not (
+            gap.lstrip(" \t").startswith(",") and _has_address_indicator(text, sep)
+        ):
+            break
+        tok = sep
+        while tok > 0 and (text[tok - 1].isalnum() or text[tok - 1] in "-/"):
+            tok -= 1
+        token = text[tok:sep]
+        kind = _unit_token_kind(token) if token else None
+        if kind is None or start - tok > _MAX_UNIT_SPAN:
+            break
+        if tok and text[tok - 1] not in " \t\r\n(,.#":
+            break
+        if text[tok - 1 : tok] == "." and text[tok - 2 : tok - 1].isdigit():
+            break  # a decimal such as "5.30", not a unit number
+        if token.lower() in _NUMBER_LABELS:
+            following = _UNIT_WORD.match(text, new_start)
+            if not following or not any(c.isdigit() for c in following.group()):
+                break
+        if _NUMBER_IN_PARTS.search(token) and not (
+            _unit_token_kind(_unit_word_before(text, tok)) == "label"
+            or _has_address_indicator(text, tok)
+        ):
+            break
+        covering = [r for r in taken if r.start < sep and r.end > tok]
+        if any(
+            r.entity_type not in _UNIT_LABEL_TYPES
+            or r.end > new_start
+            or not _is_unit_designation(text[r.start : r.end])
+            for r in covering
+        ):
+            break
+        new_start = min([tok] + [r.start for r in covering])
+        has_value = has_value or kind == "value"
+    return new_start if has_value else start
+
+
 def merge_address_entities(
     results: list[RecognizerResult],
     text: str,
@@ -762,8 +952,10 @@ def merge_address_entities(
     short comma-separated tokens — this handles locality names the NER
     missed (e.g. "Baner" between "Kumar Pinnacle" and "Pune 411045").  In that
     context ORGANIZATION / NRP spans also count as address components, a lone
-    such span is promoted to ADDRESS, and a leading flat/unit number is
-    absorbed so it is not left exposed.
+    such span is promoted to ADDRESS, and the unit designators written before
+    the address ("Flat no. 302, C 23,") are absorbed so they are not left
+    exposed.  A "." ends an address only when it ends a sentence, not when it
+    closes an abbreviation such as "no." or "Opp.".
 
     Keywords may come from another line or sentence when they only widen the
     address, since that never exposes anything, but they do not relabel an
@@ -814,11 +1006,13 @@ def merge_address_entities(
         curr: RecognizerResult,
     ) -> bool:
         gap = text[prev.end : curr.start]
-        if len(gap) > _MAX_MERGE_GAP or _SENTENCE_BOUNDARY.search(gap):
+        if len(gap) > _MAX_MERGE_GAP or _has_sentence_break(
+            text, prev.end, curr.start
+        ):
             return False
         introduced = _has_address_indicator(text, first.start)
         crosses_line = "\n" in gap
-        if _ADDRESS_GLUE.match(gap):
+        if _is_address_glue(gap):
             # Only separators and address words in between, so leaving them
             # out exposes nothing.
             return not crosses_line or (
@@ -827,7 +1021,7 @@ def merge_address_entities(
         if crosses_line and curr.entity_type == "PERSON":
             return False
         return (introduced or _has_address_indicator(text, prev.start)) and bool(
-            _ADDRESS_LOOSE_GLUE.match(gap)
+            _ADDRESS_LOOSE_GLUE.fullmatch(gap)
         )
 
     groups: list[list[RecognizerResult]] = [[mergeable[0]]]
@@ -846,7 +1040,9 @@ def merge_address_entities(
         start = group[0].start
         end = group[-1].end
         if _has_address_indicator(text, start) or len(group) > 1:
-            start = _absorb_unit_number(text, start)
+            in_group = {id(r) for r in group}
+            taken = [r for r in results if id(r) not in in_group]
+            start = _absorb_unit_designators(text, start, taken)
         score = min(r.score for r in group)
         addr = RecognizerResult(
             entity_type="ADDRESS",

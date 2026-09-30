@@ -333,6 +333,7 @@ class TestRunner:
         self.nrp_alignment_results: list[dict] = []
         self.multiline_results: list[dict] = []
         self.mixed_case_results: list[dict] = []
+        self.address_units_results: list[dict] = []
         self.geo_coordinate_results: list[dict] = []
         self.nrp_results: list[dict] = []
         self.us_entity_results: list[dict] = []
@@ -1945,6 +1946,106 @@ class TestRunner:
             f"{passed}/{len(self.mixed_case_results)} passed",
         )
 
+    def run_address_units(self) -> None:
+        """Test that the whole unit designation lands inside the ADDRESS.
+
+        Flat numbers, block letters and their labels have no recognizer, and
+        the "." of "no." was read as the end of a sentence, so "my address is
+        Flat no. 302, C 23, Prestige Towers, Bangalore." left "no. 302, C"
+        exposed.  The whole designation must now be masked, while "no" in an
+        ordinary sentence, a date and a separate sentence stay as they were.
+        """
+        cases = [
+            ("Reported: flat number and block",
+             "my address is Flat no. 302, C 23, Prestige Towers, Bangalore.",
+             {"Flat no. 302, C 23": "ADDRESS"},
+             ["Flat", "302", "C 23", "Prestige", "Bangalore"], ["my address is "]),
+            ("Hyphenated block number",
+             "My address is Flat No. 302, C-23, Prestige Towers, Bangalore.",
+             {"Flat No. 302, C-23": "ADDRESS"},
+             ["Flat", "302", "C-23", "Prestige"], ["My address is "]),
+            ("Address followed by another sentence",
+             "Send it to Flat no. 302, C 23, Prestige Towers, Bangalore. My mobile is 9876543210.",
+             {"Flat no. 302, C 23": "ADDRESS", "9876543210": "PHONE_NUMBER"},
+             ["Flat", "302", "C 23", "9876543210"], ["Send it to ", ". My mobile is "]),
+            ("Hyderabad house number",
+             "Residing at H.No. 12-3-456, Street No. 5, Banjara Hills, Hyderabad 500034",
+             {"H.No. 12-3-456": "ADDRESS"},
+             ["H.No", "12-3-456", "Street No. 5", "Banjara"], ["Residing at "]),
+            ("Door number with a slash",
+             "Correspondence address: Door No. 45/2, 3rd Cross, Jayanagar 4th Block, Bangalore 560011",
+             {"Door No. 45/2": "ADDRESS"},
+             ["Door", "45/2", "3rd Cross", "Jayanagar"], ["Correspondence address: "]),
+            ("Floor and wing",
+             "Address: D.No. 45/2, 2nd Floor, B Wing, Lodha Park, Worli, Mumbai 400018",
+             {"D.No. 45/2, 2nd Floor, B Wing": "ADDRESS"},
+             ["D.No", "45/2", "2nd Floor", "B Wing", "Lodha"], ["Address: "]),
+            ("Plot and sector",
+             "Please update my address to Plot No. 17, Sector 21, Kharghar, Navi Mumbai 410210",
+             {"Plot No. 17": "ADDRESS"},
+             ["Plot", "17", "Sector 21", "Kharghar"], ["Please update my address to "]),
+            ("Flat and tower letters",
+             "Deliver the cheque book to Flat 5B, Tower C, DLF Phase 2, Gurgaon",
+             {"Flat 5B, Tower C": "ADDRESS"},
+             ["Flat", "5B", "Tower C", "DLF"], ["Deliver the cheque book to "]),
+            ("Abbreviated apartment",
+             "I live in Apt. 1204, Lodha Bellissimo, Worli, Mumbai",
+             {"Apt. 1204": "ADDRESS"},
+             ["Apt", "1204", "Lodha", "Worli"], ["I live in "]),
+            ("House number and floor",
+             "Address: #302, 2nd Floor, Brigade Road, Bangalore",
+             {"302, 2nd Floor": "ADDRESS"},
+             ["302", "2nd Floor", "Brigade"], ["Address: "]),
+            ("Room in a chawl",
+             "My address is Room no. 4, Sai Kripa Chawl, Dharavi, Mumbai",
+             {"Room no. 4": "ADDRESS"},
+             ["Room", "no. 4", "Sai Kripa", "Dharavi"], ["My address is "]),
+            ("House number and sector",
+             "New address: House No. 221, Sector 15, Chandigarh 160015.",
+             {"House No. 221": "ADDRESS"},
+             ["House", "221", "Sector 15", "160015"], ["New address: "]),
+            ("Shop opposite a landmark",
+             "Address: Shop 4, Opp. City Mall, MG Road, Pune 411001",
+             {"Shop 4, Opp. City Mall": "ADDRESS"},
+             ["Shop", "Opp", "City Mall", "411001"], ["Address: "]),
+            ("Unit designation wrapped over lines",
+             "Address: Flat no. 302,\nC 23, Prestige Towers,\nBangalore 560001",
+             {"Flat no. 302,\nC 23": "ADDRESS"},
+             ["Flat", "302", "C 23", "Prestige", "560001"], ["Address: "]),
+            # Guards: "no", dates and separate sentences stay as they were.
+            ("Guard: order number",
+             "Order no. 12345 shipped to Bangalore yesterday.",
+             {"Bangalore": "LOCATION"},
+             ["Bangalore"], ["Order no. 12345 shipped to", "yesterday"]),
+            ("Guard: meeting room",
+             "Room no. 4 is booked for the meeting in Mumbai.",
+             {"Mumbai": "LOCATION"},
+             ["Mumbai"], ["Room no. 4 is booked for the meeting in"]),
+            ("Guard: flat rent",
+             "My flat rent of 25000 is due in Pune.",
+             {"Pune": "LOCATION"},
+             ["Pune"], ["My flat rent of 25000 is due in"]),
+            ("Guard: 'no' before a building name",
+             "There is no Prestige Towers, Bangalore in our records.",
+             {"Bangalore": "LOCATION"},
+             ["Prestige", "Bangalore"], ["There is no ", "in our records"]),
+            ("Guard: date before an address",
+             "Delivered on 12/05/2024, Prestige Towers, Bangalore.",
+             {"12/05/2024": "DATE_TIME", "Prestige Towers, Bangalore": "ADDRESS"},
+             ["12/05/2024", "Prestige"], ["Delivered on "]),
+            ("Guard: separate sentences",
+             "I live in Pune. Mumbai is where I work.",
+             {"Pune": "LOCATION", "Mumbai": "LOCATION"},
+             ["Pune", "Mumbai"], ["I live in ", " is where I work."]),
+        ]
+
+        self.address_units_results = self._check_expectations(cases)
+        passed = sum(1 for r in self.address_units_results if r["passed"])
+        self._log(
+            "Address Units",
+            f"{passed}/{len(self.address_units_results)} passed",
+        )
+
     def run_geo_coordinates(self) -> None:
         """Test detection and anonymization of geographic coordinates.
 
@@ -3244,6 +3345,7 @@ class TestRunner:
             ("NRP Alignment", self.run_nrp_alignment),
             ("Multi-line Context", self.run_multiline_context),
             ("Mixed-case Names", self.run_mixed_case_names),
+            ("Address Units", self.run_address_units),
             ("Geo-Coordinates", self.run_geo_coordinates),
             ("NRP Detection", self.run_nrp),
             ("US Entities", self.run_us_entities),
@@ -4602,6 +4704,24 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         detail_heading="11i-i. Mixed-case Names — Input / Output Detail",
     )
 
+    # ── 11j. Address Units ──────────────────────────────────────────────
+    w('<h2 id="address-units">11j. Address Units</h2>')
+    w("<p>Flat numbers, block letters and their labels (<code>Flat no. 302, "
+      "C 23</code>, <code>H.No. 12-3-456</code>, <code>2nd Floor, B Wing</code>) "
+      "have no recognizer. Only the single number directly before an address "
+      "was absorbed, and the <code>.</code> of <code>no.</code> was read as the "
+      "end of a sentence, so <code>my address is Flat no. 302, C 23, Prestige "
+      "Towers, Bangalore.</code> left <code>no. 302, C</code> exposed. The whole "
+      "unit designation is now absorbed into the ADDRESS, while <code>no</code> "
+      "in an ordinary sentence (<code>Order no. 12345</code>), a date before an "
+      "address and separate sentences stay as they were. ⏎ marks a line "
+      "break.</p>")
+    _render_expectation_results(
+        w, runner.address_units_results,
+        kept_label="Context kept", noun="address unit",
+        detail_heading="11j-i. Address Units — Input / Output Detail",
+    )
+
     # ── 12. Geo-Coordinate Detection ────────────────────────────────────
     w('<h2 id="geo-coordinates">12. Geo-Coordinate Detection</h2>')
     w("<p>Verifies that geographic coordinates (latitude/longitude) in "
@@ -4818,6 +4938,7 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         ("NRP alignment tests", f"{sum(1 for r in runner.nrp_alignment_results if r['passed'])}/{len(runner.nrp_alignment_results)}"),
         ("Multi-line context tests", f"{sum(1 for r in runner.multiline_results if r['passed'])}/{len(runner.multiline_results)}"),
         ("Mixed-case name tests", f"{sum(1 for r in runner.mixed_case_results if r['passed'])}/{len(runner.mixed_case_results)}"),
+        ("Address unit tests", f"{sum(1 for r in runner.address_units_results if r['passed'])}/{len(runner.address_units_results)}"),
         ("Geo-coordinate tests", f"{sum(1 for r in runner.geo_coordinate_results if r['passed'])}/{len(runner.geo_coordinate_results)}"),
         ("NRP detection tests", f"{sum(1 for r in runner.nrp_results if r['passed'])}/{len(runner.nrp_results)}"),
         ("US entity tests", f"{sum(1 for r in runner.us_entity_results if r['passed'])}/{len(runner.us_entity_results)}"),

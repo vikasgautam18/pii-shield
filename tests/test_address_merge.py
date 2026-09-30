@@ -165,9 +165,9 @@ class TestMergeAddressUnit:
         merged = _merge_address_entities(results, text)
         addrs = [r for r in merged if r.entity_type == "ADDRESS"]
         assert len(addrs) == 1
-        # Starts at the flat number "501" (14), not "Kumar Pinnacle" (19) — a
-        # unit number left outside the ADDRESS span would leak.
-        assert addrs[0].start == 14
+        # Starts at "Flat" (9), not "Kumar Pinnacle" (19) — a unit number or
+        # its label left outside the ADDRESS span would leak.
+        assert addrs[0].start == 9
         assert addrs[0].end == 53
 
     def test_loose_glue_without_indicator_no_merge(self):

@@ -213,7 +213,7 @@ The library package provides the core PII detection and anonymization engine wit
 <p><em><strong>extend_person_over_initials()</strong></em> - dotted initials end the entity in cased NER models, so "Mr. R.K. Sharma" would otherwise leak the surname</p>
 <p><em><strong>normalize_person_titles()</strong></em> - Indian honorifics and professional prefixes: "CA Abhay" is tagged ORGANIZATION and "Er." becomes a PERSON of its own; titles are trimmed and the name forced to PERSON</p>
 <p><em><strong>filter_attributive_nrp()</strong></em> - NRP is personal data only when it describes a person; "South Indian branches" describes a thing and is not redacted</p>
-<p><em><strong>merge_address_entities()</strong></em> - combines adjacent LOCATION + IN_PIN_CODE into ADDRESS; a line break ends the address unless an indicator ("Address:", "Flat", "residing at") introduced it, so a list of cities on separate lines stays separate</p>
+<p><em><strong>merge_address_entities()</strong></em> - combines adjacent LOCATION + IN_PIN_CODE into ADDRESS; a line break ends the address unless an indicator ("Address:", "Flat", "residing at") introduced it, so a list of cities on separate lines stays separate. The unit designation written before an address ("Flat no. 302, C 23," "H.No. 12-3-456," "2nd Floor, B Wing,") has no recognizer, so it is absorbed word by word while each word is a unit number, floor, block letter or unit label and one of them is a number or letter; "no" counts only before a number, a year range or date ("2024-25") only after a unit label or indicator, and the walk stops at any other entity. A "." splits an address only when it ends a sentence, not when it closes an abbreviation ("no.", "Opp.", "Soc."); the pattern for words between address parts is a single character class, so it runs in linear time on any input</p>
 <p><em><strong>remove_overlapping()</strong></em> - keeps highest-scoring non-overlapping matches</p>
 <p><strong>is_valid_datetime()</strong> - date format validation</p>
 <p>The keyword windows that relabel an entity are confined to its own line and sentence, plus a line directly above that introduces it (a "Label:" line, or a heading of at most three words ending in the keyword such as "Correspondence Address"), so a keyword on one line of multi-line input never relabels an entity on another. Keywords further away may still widen an ADDRESS, which never exposes anything.</p></td>
@@ -1650,7 +1650,7 @@ These recognizers are **kept** at startup after non-India country-specific recog
 
 | Entity Type | Source | Created By | Notes |
 |----|----|----|----|
-| ADDRESS | Pipeline | merge_address_entities() | Merges adjacent LOCATION + IN_PIN_CODE entities (gap ≤ 50 chars of address-like text); spans lines only inside an address introduced by an indicator |
+| ADDRESS | Pipeline | merge_address_entities() | Merges adjacent LOCATION + IN_PIN_CODE entities (gap ≤ 50 chars of address-like text) and absorbs the unit designation before them ("Flat no. 302, C 23,"); spans lines only inside an address introduced by an indicator |
 
 #### A.4 Anonymization Strategies per Entity Type
 

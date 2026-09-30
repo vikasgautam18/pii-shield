@@ -222,7 +222,7 @@ class TestAddressMergeAcrossLines:
         results = _address_results(text, ["Kumar Pinnacle", "Baner", "Pune"], "411045")
         results.append(_result(text, "Infosys Technologies", "ORGANIZATION"))
         assert _spans(text, merge_address_entities(results, text)) == [
-            ("301, Kumar Pinnacle, Baner, Pune 411045", "ADDRESS"),
+            ("Flat 301, Kumar Pinnacle, Baner, Pune 411045", "ADDRESS"),
             ("Infosys Technologies", "ORGANIZATION"),
         ]
 
@@ -258,7 +258,7 @@ class TestAddressMergeAcrossLines:
         text = "Address: Flat 301, Kumar Pinnacle,\nBaner, Pune 411045"
         results = _address_results(text, ["Kumar Pinnacle", "Baner", "Pune"], "411045")
         assert _spans(text, merge_address_entities(results, text)) == [
-            ("301, Kumar Pinnacle,\nBaner, Pune 411045", "ADDRESS"),
+            ("Flat 301, Kumar Pinnacle,\nBaner, Pune 411045", "ADDRESS"),
         ]
 
     def test_wrapped_address_masks_missed_locality_on_next_line(self):
@@ -266,7 +266,7 @@ class TestAddressMergeAcrossLines:
         text = "Address: Flat 301, Kumar Pinnacle,\nBaner, Aundh, Pune 411045"
         results = _address_results(text, ["Kumar Pinnacle", "Baner", "Pune"], "411045")
         assert _spans(text, merge_address_entities(results, text)) == [
-            ("301, Kumar Pinnacle,\nBaner, Aundh, Pune 411045", "ADDRESS"),
+            ("Flat 301, Kumar Pinnacle,\nBaner, Aundh, Pune 411045", "ADDRESS"),
         ]
 
     def test_address_under_label_one_part_per_line(self):
@@ -280,7 +280,7 @@ class TestAddressMergeAcrossLines:
         text = "Address: Flat 301, Kumar Pinnacle, Pune 411045\nMumbai office will call you"
         results = _address_results(text, ["Kumar Pinnacle", "Pune", "Mumbai"], "411045")
         assert _spans(text, merge_address_entities(results, text)) == [
-            ("301, Kumar Pinnacle, Pune 411045", "ADDRESS"), ("Mumbai", "LOCATION"),
+            ("Flat 301, Kumar Pinnacle, Pune 411045", "ADDRESS"), ("Mumbai", "LOCATION"),
         ]
 
     def test_unit_number_at_start_of_line_is_absorbed(self):
