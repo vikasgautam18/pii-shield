@@ -44,6 +44,11 @@ global_allow_list:
   - GPS
   - gps
   - Gps
+  # Business-segment acronyms — market categories, not named organisations
+  - SME
+  - SMEs
+  - MSME
+  - MSMEs
   - CKYC
   - ckyc
   - CERSAI

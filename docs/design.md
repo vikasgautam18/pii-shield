@@ -67,7 +67,6 @@ This document is intended for:
 | **Document** | **Location** | **Description** |
 |----|----|----|
 | Prerequisites Guide | docs/prerequisites.md | Complete list of software, NLP models, environment variables, Azure roles, and RBAC requirements. |
-| Add a Recognizer Guide | docs/add-a-recognizer.md | How to add regex, context-only, Python, runtime, and built-in recognizer customizations. |
 | Azure Deployment Guide | infra/README.md | Step-by-step instructions for Terraform provisioning, ACR builds, Container Apps deployment, and Grafana dashboard setup. |
 | Architecture Diagrams | docs/architecture.drawio | draw.io component diagram — local Docker Compose topology. |
 | Azure Architecture Diagram | docs/architecture-azure.drawio | draw.io deployment diagram — Azure Container Apps, Redis, ACR, App Insights, Managed Grafana. |
@@ -206,10 +205,23 @@ The library package provides the core PII detection and anonymization engine wit
 <tr>
 <td>pipeline.py</td>
 <td><p>Shared post-processing logic:</p>
+<p><em><strong>normalize_case()</strong></em> / <em><strong>merge_recovered_results()</strong></em> - recover names from ALL-CAPS and all-lowercase text that cased NER models mislabel, truncate, or miss, and from mixed-case names such as "Venkata narasimha raju", where NER stops at the first uncased word. A recovered mixed-case span is kept only as PERSON and is cut at any lowercase word that spaCy tags as a verb, preposition, article, etc., that is ordinary vocabulary, or that is a relation word or title, so "Ramesh paid" and "Kavitha mother" never become a name; the kept part is widened over any overlapping first-pass entity, so it never masks less than that pass. A recovered span that runs into the value of a key=value pair ("user=rahul uid=987654321098") loses only that pair, so the name beside it stays masked once the value is found</p>
+<p><em><strong>split_at_line_breaks()</strong></em> - NER reads a line break as plain whitespace, so a name ending one line can swallow the next line's first word; NER spans are split so no entity crosses a line</p>
+<p><em><strong>prefer_line_context()</strong></em> - when a context-only ID (APAAR, PRAN, Customer ID) owes its score to a keyword on another line, a recognizer with its own keyword on the number's line decides the type</p>
 <p><em><strong>reclassify_person_as_location()</strong></em> - fixes spaCy misclassification of Indian places</p>
-<p><em><strong>merge_address_entities()</strong></em> - combines adjacent LOCATION + IN_PIN_CODE into ADDRESS</p>
+<p><em><strong>reclassify_phone_as_bank_account()</strong></em> - a bare run of 9–18 digits is a valid bank account number and, when it also forms a mobile ("9876543210") or a landline without its leading 0 ("5498721032"), a valid phone number; the nearest account/phone cue decides, and a "+91" or "91" country code, leading 0 or separator always means a phone</p>
+<p><em><strong>extend_person_over_initials()</strong></em> - dotted initials end the entity in cased NER models, so "Mr. R.K. Sharma" would otherwise leak the surname</p>
+<p><em><strong>normalize_person_titles()</strong></em> - Indian honorifics and professional prefixes: "CA Abhay" is tagged ORGANIZATION and "Er." becomes a PERSON of its own; titles are trimmed and the name forced to PERSON</p>
+<p><em><strong>filter_attributive_nrp()</strong></em> - NRP is personal data only when it describes a person; "South Indian branches" describes a thing and is not redacted</p>
+<p><em><strong>merge_address_entities()</strong></em> - combines adjacent LOCATION + IN_PIN_CODE into ADDRESS; a line break ends the address unless an indicator ("Address:", "Flat", "residing at") introduced it, so a list of cities on separate lines stays separate. The unit designation written before an address ("Flat no. 302, C 23," "H.No. 12-3-456," "2nd Floor, B Wing,") has no recognizer, so it is absorbed word by word while each word is a unit number, floor, block letter or unit label and one of them is a number or letter; "no" counts only before a number, a year range or date ("2024-25") only after a unit label or indicator, and the walk stops at any other entity. A "." splits an address only when it ends a sentence, not when it closes an abbreviation ("no.", "Opp.", "Soc."); the pattern for words between address parts is a single character class, so it runs in linear time on any input</p>
 <p><em><strong>remove_overlapping()</strong></em> - keeps highest-scoring non-overlapping matches</p>
-<p><strong>is_valid_datetime()</strong> - date format validation</p></td>
+<p><em><strong>remove_allowed_overlaps()</strong></em> - an entity of an allow-listed type stays unmasked, so whatever overlaps it is removed (the URL inside an allowed email address); an NER span instead keeps its parts outside the allowed entity and its key, because NER covers whole spaCy tokens and a name written against a key=value pair ("Rahul Sharma&amp;account=12345678901") shares its token with the value</p>
+<p><strong>is_valid_datetime()</strong> - date format validation</p>
+<p>The keyword windows that relabel an entity are confined to its own line and sentence, plus a line directly above that introduces it (a "Label:" line, or a heading of at most three words ending in the keyword such as "Correspondence Address"), so a keyword on one line of multi-line input never relabels an entity on another. Keywords further away may still widen an ADDRESS, which never exposes anything.</p></td>
+</tr>
+<tr>
+<td>context_enhancer.py</td>
+<td><strong>KeyValueContextEnhancer</strong> — Presidio's LemmaContextAwareEnhancer, extended to count the key of a key=value pair as a context word. spaCy keeps a URL or a pair written without spaces ("https://api.com?aadhaar=987654321098", "aadhaar:987654321098") as one token, so the key was never a word of its own.</td>
 </tr>
 <tr>
 <td>nlp_engine.py</td>
@@ -409,7 +421,7 @@ The FastAPI app uses the ASGI lifespan protocol so that all warm-up work complet
 
 \- Creates the NLP engine via `create_nlp_engine()` (selects spaCy / Stanza / Transformers / ONNX based on `NLP_ENGINE`).
 
-\- Builds an `AnalyzerEngine` with `supported_languages=["en"]` and a `LemmaContextAwareEnhancer` configured for whole-word context matching (`context_similarity_factor=0.45`, `context_suffix_count=5`).
+\- Builds an `AnalyzerEngine` with `supported_languages=["en"]` and a `KeyValueContextEnhancer` (a `LemmaContextAwareEnhancer` that also reads the key of a key=value pair) configured for whole-word context matching (`context_similarity_factor=0.45`, `context_suffix_count=5`).
 
 \- Removes the recognizers listed in `DISABLED_RECOGNIZERS` (default 9: `InAadhaar`, `Nhs`, `UsBank`, `SgFin`, `AuAbn`, `AuAcn`, `AuTfn`, `AuMedicare`, `MedicalLicense`) — non-Indian recognizers replaced by improved local equivalents.
 
@@ -518,6 +530,8 @@ The engine is configured with a single supported language (English) and a defaul
 
 A noteworthy aspect of the analyzer is its use of a custom-tuned LemmaContextAwareEnhancer. This is the component responsible for boosting a recognizer's confidence when context keywords are found near a candidate match. PII Shield configures the enhancer with a context similarity factor of 0.45 (overridable via the CONTEXT_SIMILARITY_FACTOR environment variable) and a context suffix count of 5, and — when the installed Presidio version supports it — switches the enhancer into whole_word matching mode. The whole-word mode is important: the default substring matching can produce surprising false positives, such as a US "ABA routing number" context word matching the substring "aba" inside the city name "Ahmedabad". A try/except fallback keeps older Presidio versions working without the flag.
 
+The enhancer reads its context words from spaCy's tokens, and spaCy keeps a URL, or a key=value pair written without spaces, as a single token. In "https://api.com?aadhaar=987654321098" or "aadhaar:987654321098" the key is therefore never a word of its own, and whole-word matching cannot find "aadhaar" inside the longer token, so an Aadhaar number without separators kept its base score of 0.30 and fell below the threshold. PII Shield therefore uses KeyValueContextEnhancer (context_enhancer.py), a subclass that, for a match starting inside a token, also counts the words of the key directly before it ("aadhaar_no=" gives "aadhaar" and "no", "aadhaarNumber=" gives "aadhaar" and "number"). Only the key of the value's own pair counts, and it is matched against each recognizer's own context list with the usual boost, so "&pan=" supports the PAN after it but not an Aadhaar number elsewhere in the URL, and keys that are not context words ("txn_id=", "ref=") change nothing.
+
 Three classes of recognizer modification are applied at engine startup. First, a configurable list of country-specific recognizers is removed from the registry to prevent false positives on Indian data. The default removal set includes Presidio's original InAadhaarRecognizer (which is replaced by an improved version that handles separators), NhsRecognizer, UsBankRecognizer, SgFinRecognizer, the four Australian recognizers (AuAbnRecognizer, AuAcnRecognizer, AuTfnRecognizer, AuMedicareRecognizer), and MedicalLicenseRecognizer. Operators can extend or override this list via the DISABLED_RECOGNIZERS environment variable.
 
 Second, the engine registers a curated set of custom and bundled recognizers covering Indian and universal entity types — these are detailed in the next section.
@@ -534,7 +548,7 @@ The library can be grouped by purpose.
 
 Indian identity numbers. InAadhaarImprovedRecognizer replaces Presidio's built-in InAadhaarRecognizer, supporting the three common Aadhaar formats — space-separated (9876 5432 1098), hyphen-separated (9876-5432-1098), and unseparated (987654321098) — and enforcing the rule that the leading digit must be in the range 2–9 (UIDAI does not issue numbers starting with 0 or 1). The separated variants score 0.85; the bare twelve-digit variant scores 0.30 and so requires nearby context such as aadhaar, uidai, or uid to clear the threshold. InDrivingLicenseRecognizer matches the standard SS RR YYYY NNNNNNN driving-licence format across all 36 Indian state and UT codes, with three variants for space, hyphen, and unseparated forms. InPanRecognizer (a Presidio built-in retained at startup) detects Permanent Account Numbers in the canonical AAAAA9999A shape. InPassportRecognizer, InVehicleRegistrationRecognizer, and InVoterRecognizer are likewise retained Presidio built-ins, registered with enriched context vocabulary supplied via recognizer_contexts.yml.
 
-Indian financial and tax identifiers. InGstinRecognizer (a retained built-in) detects GST identification numbers. InBankAccountRecognizer detects bank-account numbers (9–18 digits) using context keywords such as IFSC, NEFT, RTGS, and Indian bank names; the base score is intentionally kept very low (0.10) so that bare numeric strings are only classified as IN_BANK_ACCOUNT in the presence of those keywords. UsBankAccountRecognizer mirrors this design for US accounts (8–17 digits) using US-specific bank names and payment terms; the deliberately matched base scores mean that context — not pattern — decides whether a numeric string is classified as Indian or US in ambiguous cases. InCkycRecognizer covers Central KYC identifiers in both the standard 14-digit form and the prefixed forms (L, S, or O followed by 14 digits) used for simplified-measures, small-account, and OTP-based eKYC respectively. InPranRecognizer covers Permanent Retirement Account Numbers issued under the National Pension System; because PRAN is also 12 digits and would otherwise be indistinguishable from Aadhaar, the recognizer uses a low base score (0.15) and an analyze() override that elevates the score to 0.95 when context words such as pran, nps, pension, or pfrda appear in the text — letting context decide the overlap rather than score alone.
+Indian financial and tax identifiers. InGstinRecognizer (a retained built-in) detects GST identification numbers. InBankAccountRecognizer detects bank-account numbers (9–18 digits) using context keywords such as IFSC, NEFT, RTGS, and Indian bank names; the base score is intentionally kept very low (0.10) so that bare numeric strings are only classified as IN_BANK_ACCOUNT in the presence of those keywords. UsBankAccountRecognizer mirrors this design for US accounts (8–17 digits) using US-specific bank names and payment terms; the deliberately matched base scores mean that context — not pattern — decides whether a numeric string is classified as Indian or US in ambiguous cases. InCkycRecognizer covers Central KYC identifiers in both the standard 14-digit form and the prefixed forms (L, S, or O followed by 14 digits) used for simplified-measures, small-account, and OTP-based eKYC respectively. InPranRecognizer covers Permanent Retirement Account Numbers issued under the National Pension System; because PRAN is also 12 digits and would otherwise be indistinguishable from Aadhaar, the recognizer uses a low base score (0.15) and an analyze() override that elevates the score to 0.95 when context words such as pran, nps, pension, or pfrda appear in the text — letting context decide the overlap rather than score alone. When the keyword is only on another line, a recognizer with its own keyword on the number's line (for example an Aadhaar label) decides the type instead.
 
 Indian education and customer identifiers. InApaarRecognizer handles APAAR student IDs (One Nation, One Student ID), again 12 digits and again using a context-boosted analyze() override (boost on apaar, student, digilocker, abc, etc.) to disambiguate from Aadhaar. CustomerIdRecognizer handles 9-digit banking customer identifiers, similarly using context (customer id, cif, net banking, welcome kit, etc.) to distinguish them from generic numeric strings or bank-account fragments.
 
@@ -1631,11 +1645,11 @@ These recognizers are **kept** at startup after non-India country-specific recog
 | IN_PHONE | Custom regex | InPhoneRecognizer | +91 / 0-prefix mobile and landline numbers |
 | IN_PIN_CODE | Custom regex | InPinCodeRecognizer | 6-digit Indian postal code with boundary checks |
 | IN_UPI_ID | Custom regex | InUpiIdRecognizer | UPI VPA format (user@bank) |
-| IN_APAAR | Custom regex + context | InApaarRecognizer | 12-digit APAAR student-ID; base score 0.10 elevated to 0.95 on context match |
+| IN_APAAR | Custom regex + context | InApaarRecognizer | 12-digit APAAR student-ID; base score 0.15 elevated to 0.95 on context match; a keyword only on another line yields to a competing recognizer with a keyword on the number's line |
 | IN_BANK_ACCOUNT | Custom regex | InBankAccountRecognizer | 9-18 digit Indian bank account numbers |
 | IN_CKYC | Custom regex | InCkycRecognizer | 14-digit Central KYC identifier |
-| IN_PRAN | Custom regex + context | InPranRecognizer | 12-digit PRAN (Permanent Retirement Account Number); context-elevated |
-| CUSTOMER_ID | Custom regex + context | CustomerIdRecognizer | Generic alphanumeric customer/account IDs; context-elevated to 0.95 when keywords match |
+| IN_PRAN | Custom regex + context | InPranRecognizer | 12-digit PRAN (Permanent Retirement Account Number); context-elevated, yielding like IN_APAAR to a line-local keyword of another type |
+| CUSTOMER_ID | Custom regex + context | CustomerIdRecognizer | Generic alphanumeric customer/account IDs; context-elevated to 0.95 when keywords match, yielding like IN_APAAR to a line-local keyword of another type |
 | GEO_COORDINATE | Custom regex | GeoCoordinateRecognizer | Latitude/longitude in decimal-degree, labelled, cardinal, or DMS notation |
 | US_BANK_ACCOUNT | Custom regex | UsBankAccountRecognizer | 8-17 digit US bank account numbers (replaces Presidio's stricter UsBankRecognizer) |
 
@@ -1643,7 +1657,7 @@ These recognizers are **kept** at startup after non-India country-specific recog
 
 | Entity Type | Source | Created By | Notes |
 |----|----|----|----|
-| ADDRESS | Pipeline | merge_address_entities() | Merges adjacent LOCATION + IN_PIN_CODE entities (gap ≤ 50 chars of address-like text) |
+| ADDRESS | Pipeline | merge_address_entities() | Merges adjacent LOCATION + IN_PIN_CODE entities (gap ≤ 50 chars of address-like text) and absorbs the unit designation before them ("Flat no. 302, C 23,"); spans lines only inside an address introduced by an indicator |
 
 #### A.4 Anonymization Strategies per Entity Type
 

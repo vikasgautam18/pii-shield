@@ -11,27 +11,41 @@ No dependencies on FastAPI, Redis, OpenTelemetry, or any I/O layer.
 import hashlib
 import logging
 import os
+import re
 import time
 from collections import Counter
 
 from pathlib import Path
 
 from presidio_analyzer import AnalyzerEngine, RecognizerResult
-from presidio_analyzer.context_aware_enhancers import LemmaContextAwareEnhancer
 
 from pii_shield.context_config import apply_recognizer_contexts, load_recognizer_contexts
+from pii_shield.context_enhancer import KeyValueContextEnhancer
 from pii_shield.errors import DetectionError, InvalidInputError
 from pii_shield.models import AnonymizeResult, AnonymizeStats, DetectedEntity, EntityConfig
 from pii_shield.observability import Event, EventHook, emit
 from pii_shield.nlp_engine import create_nlp_engine, get_nlp_engine_name
 from pii_shield.operator_config import ENCRYPTION_BACKEND, _DEFAULTS
 from pii_shield.pipeline import (
+    _NER_ENTITY_TYPES,
+    common_word_starts,
+    extend_person_over_initials,
+    filter_attributive_nrp,
     filter_person_false_positives,
     is_valid_datetime,
     merge_address_entities,
     merge_adjacent_person_tokens,
+    merge_recovered_results,
+    needs_name_recovery,
+    normalize_case,
+    normalize_person_titles,
+    ordinary_word_starts,
+    prefer_line_context,
     reclassify_person_as_location,
+    reclassify_phone_as_bank_account,
+    remove_allowed_overlaps,
     remove_overlapping,
+    split_at_line_breaks,
 )
 from pii_shield.recognizers import (
     CustomerIdRecognizer,
@@ -97,6 +111,23 @@ def _get_fake_op():
     return _fake_op
 
 
+def _english_vocabulary(nlp_engine) -> frozenset[str] | None:
+    """Single-word WordNet lemmas from the English spaCy lemmatizer, if loaded.
+
+    The rule-based lemmatizer shipped with spaCy's English models carries the
+    WordNet word lists; ``None`` when the NLP engine has no such lemmatizer.
+    """
+    try:
+        lemmatizer = nlp_engine.nlp["en"].get_pipe("lemmatizer")
+        index = lemmatizer.lookups.get_table("lemma_index")
+    except Exception:
+        return None
+    words: set[str] = set()
+    for pos in ("noun", "verb", "adj", "adv"):
+        words.update(w for w in index.get(pos, []) if "_" not in w)
+    return frozenset(words) or None
+
+
 class PiiShieldEngine:
     """Core PII detection and anonymization engine.
 
@@ -132,14 +163,15 @@ class PiiShieldEngine:
             "context_suffix_count": 5,
         }
         # whole_word matching avoids substring false positives
-        # (e.g. "ahmedabad" matching US context "aba")
+        # (e.g. "ahmedabad" matching US context "aba").  The key of a
+        # "key=value" pair inside a URL counts as context too.
         try:
-            enhancer = LemmaContextAwareEnhancer(
+            enhancer = KeyValueContextEnhancer(
                 **enhancer_kwargs, context_matching_mode="whole_word",
             )
         except TypeError:
             # Older presidio-analyzer (<2.2.36) lacks context_matching_mode
-            enhancer = LemmaContextAwareEnhancer(**enhancer_kwargs)
+            enhancer = KeyValueContextEnhancer(**enhancer_kwargs)
         self._analyzer = AnalyzerEngine(
             nlp_engine=nlp_engine,
             supported_languages=["en"],
@@ -211,6 +243,12 @@ class PiiShieldEngine:
                     exc_info=True,
                 )
 
+        # Allow-listed acronyms must survive ALL-CAPS normalisation unchanged,
+        # so "IFSC" is never rewritten to the name-like token "Ifsc".
+        self._normalize_skip = frozenset(
+            w.upper() for w in self._global_allow_list if w.isalpha()
+        )
+
         # Apply recognizer context words from YAML config
         ctx_path = context_file or os.getenv(
             "RECOGNIZER_CONTEXTS_FILE", "config/recognizer_contexts.yml"
@@ -228,6 +266,22 @@ class PiiShieldEngine:
                 logger.warning("Recognizer contexts file not found: %s", ctx_path)
             except Exception:
                 logger.warning("Failed to load recognizer contexts from %s", ctx_path, exc_info=True)
+
+        # Each recognizer's context words (after the YAML overrides above), used
+        # to tell which recognizer has a keyword on a disputed number's line.
+        self._context_patterns = {
+            rec.name: re.compile(
+                r"(?i)(?<!\w)(?:"
+                + "|".join(re.escape(w) for w in sorted(rec.context, key=len, reverse=True))
+                + r")(?!\w)"
+            )
+            for rec in self._analyzer.registry.recognizers
+            if getattr(rec, "context", None)
+        }
+
+        # Common English words decide whether a lone word next to a name is
+        # worth a second NER pass ("Kavitha mother is the joint holder").
+        self._english_words = _english_vocabulary(self._analyzer.nlp_engine)
 
         logger.info(
             "PiiShieldEngine ready (NLP engine: %s, threshold: %.2f)",
@@ -259,14 +313,77 @@ class PiiShieldEngine:
             self._score_threshold if score_threshold is None else score_threshold
         )
         try:
+            # Computed here rather than inside analyze() so the part-of-speech
+            # tags can be reused below without a second NLP pass.
+            nlp_artifacts = self._analyzer.nlp_engine.process_text(text, language)
             analyzer_results = self._analyzer.analyze(
                 text=text,
                 language=language,
                 score_threshold=threshold,
                 allow_list=merged_allow or None,
+                nlp_artifacts=nlp_artifacts,
             )
         except Exception as exc:
             raise DetectionError(f"PII detection failed: {exc}") from exc
+
+        # Words tagged as verbs, prepositions, ... are never part of a name, so
+        # case recovery may not glue them onto one ("Ramesh paid").
+        ordinary = ordinary_word_starts(nlp_artifacts.tokens)
+
+        # Recover PII from badly-cased text.  Cased NER models mislabel or miss
+        # ALL-CAPS and all-lowercase names, and stop at the first uncased word
+        # of a mixed-case one ("Venkata narasimha raju"), so re-run NER only
+        # over a re-cased copy and merge what it finds.  The copy is the same
+        # length, so offsets map 1:1; the original text is never analysed
+        # differently, leaving case-sensitive recognizers (PAN, SWIFT) untouched.
+        normalized = normalize_case(
+            text,
+            self._normalize_skip,
+            force=needs_name_recovery(
+                analyzer_results,
+                text,
+                ordinary,
+                common_word_starts(nlp_artifacts.tokens, self._english_words),
+            ),
+        )
+        if normalized is not None:
+            try:
+                recovered = self._analyzer.analyze(
+                    text=normalized,
+                    language=language,
+                    entities=sorted(_NER_ENTITY_TYPES),
+                    score_threshold=threshold,
+                    allow_list=merged_allow or None,
+                )
+            except Exception:
+                logger.warning(
+                    "Case-recovery pass failed; using primary results only",
+                    exc_info=True,
+                )
+                recovered = []
+            if recovered:
+                analyzer_results = merge_recovered_results(
+                    analyzer_results, recovered, text, ordinary
+                )
+
+        # Resolve honorific / professional titles ("CA Abhay", "Er. Ram"), which
+        # NER labels ORGANIZATION or splits into a title-only span.  This runs
+        # before the allow-list filters so that an app allow-listing
+        # ORGANIZATION does not end up exempting a person's name.
+        analyzer_results = normalize_person_titles(analyzer_results, text)
+
+        # NER reads a line break as plain whitespace, so a name ending one line
+        # can swallow the first word of the next.  Keep every NER span on its
+        # own line before any later step reasons about the words inside it.
+        # Splitting after the title step keeps a surname that doubles as a
+        # title ("Sunita\nKumari") from being dropped as a stray title.
+        analyzer_results = split_at_line_breaks(analyzer_results, text, merged_allow)
+
+        # A context-only ID whose keyword sits on another line yields to a
+        # recognizer with its own keyword on the number's line.
+        analyzer_results = prefer_line_context(
+            analyzer_results, text, self._context_patterns
+        )
 
         # Filter entity types in allow-list (and suppress overlapping entities)
         if entity_type_allow_list:
@@ -277,12 +394,10 @@ class PiiShieldEngine:
                     allowed_spans.append((r.start, r.end))
                 else:
                     kept.append(r)
-            # Remove entities that overlap with allowed spans (e.g., URL inside EMAIL)
+            # Remove entities that overlap with allowed spans (e.g., URL inside
+            # EMAIL); NER spans keep their parts outside them.
             if allowed_spans:
-                analyzer_results = [
-                    r for r in kept
-                    if not any(r.start < end and r.end > start for start, end in allowed_spans)
-                ]
+                analyzer_results = remove_allowed_overlaps(kept, text, allowed_spans)
             else:
                 analyzer_results = kept
 
@@ -298,10 +413,7 @@ class PiiShieldEngine:
                 else:
                     kept.append(r)
             if allowed_spans:
-                analyzer_results = [
-                    r for r in kept
-                    if not any(r.start < end and r.end > start for start, end in allowed_spans)
-                ]
+                analyzer_results = remove_allowed_overlaps(kept, text, allowed_spans)
             else:
                 analyzer_results = kept
 
@@ -319,13 +431,26 @@ class PiiShieldEngine:
         # Extend PERSON spans to adjacent capitalized name tokens NER may have missed
         analyzer_results = merge_adjacent_person_tokens(analyzer_results, text)
 
+        # Dotted initials end the entity in cased NER ("R.K." from "R.K.
+        # Sharma"), so pull the following surname back into the span.
+        analyzer_results = extend_person_over_initials(analyzer_results, text)
+
         # Drop sentence-initial PERSON false positives (e.g. "Email me ...")
         analyzer_results = filter_person_false_positives(analyzer_results, text)
 
         # Merge adjacent LOCATION / IN_PIN_CODE entities into ADDRESS
         analyzer_results = merge_address_entities(analyzer_results, text)
 
+        # Drop NRP that describes a thing rather than a person ("South Indian
+        # branches").  Runs after address merging so a building name already
+        # promoted to ADDRESS is not affected.
+        analyzer_results = filter_attributive_nrp(analyzer_results, text)
+
         results = remove_overlapping(analyzer_results)
+
+        # A bare 10-digit number matches both the Indian mobile and bank
+        # account patterns; resolve it from the nearest surrounding cue.
+        results = reclassify_phone_as_bank_account(results, text)
 
         # Positive inclusion filter: keep ONLY the requested entity types.
         if entity_type_include_list is not None:

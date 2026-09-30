@@ -325,6 +325,16 @@ class TestRunner:
         self.hash_phone_with_flag: list[dict] = []
         self.mixed_strategy_results: list[dict] = []
         self.address_indicator_results: list[dict] = []
+        self.case_robustness_results: list[dict] = []
+        self.address_completeness_results: list[dict] = []
+        self.account_phone_results: list[dict] = []
+        self.person_initials_results: list[dict] = []
+        self.person_titles_results: list[dict] = []
+        self.nrp_alignment_results: list[dict] = []
+        self.multiline_results: list[dict] = []
+        self.mixed_case_results: list[dict] = []
+        self.address_units_results: list[dict] = []
+        self.key_value_results: list[dict] = []
         self.geo_coordinate_results: list[dict] = []
         self.nrp_results: list[dict] = []
         self.us_entity_results: list[dict] = []
@@ -374,6 +384,55 @@ class TestRunner:
             missed_types=expected - detected,
             extra_types=detected - expected,
         )
+
+    def _check_expectations(self, cases: list[tuple]) -> list[dict]:
+        """Anonymize each case and check it against its expectations.
+
+        A case is ``(label, text, expected, must_mask, must_keep)``:
+        ``expected`` maps a value to its entity type, ``must_mask`` lists text
+        that must not survive in the output, and ``must_keep`` text that must.
+        """
+        def entity_type_of(mapping: dict, value: str) -> str:
+            # Prefer the entity that is exactly the value, else one containing it.
+            for exact in (True, False):
+                for placeholder, original in mapping.items():
+                    if (original == value) if exact else (value in original):
+                        return placeholder.strip("{}").rsplit("_", 1)[0]
+            return "(not detected)"
+
+        def show(value: str) -> str:
+            return value.replace("\n", " ⏎ ")
+
+        results = []
+        for label, text, expected, must_mask, must_keep in cases:
+            anon = self.client.anonymize_unique(text)
+            mapping = anon["entity_mapping"]
+            output = anon["anonymized_text"]
+            actual = {value: entity_type_of(mapping, value) for value in expected}
+            leaked = [s for s in must_mask if s in output]
+            lost = [s for s in must_keep if s not in output]
+            restored = self.client.deanonymize(anon["id"], output)
+            correct_type = actual == expected
+            round_trip = restored["text"] == text
+            shown = show(text)
+            results.append({
+                "label": label,
+                "text": shown[:90] + ("…" if len(shown) > 90 else ""),
+                "expected": "; ".join(f"{show(v)} → {t}" for v, t in expected.items()),
+                "actual": "; ".join(f"{show(v)} → {t}" for v, t in actual.items()),
+                "leaked": ", ".join(leaked) or "—",
+                "must_keep": ", ".join(repr(s) for s in must_keep) or "—",
+                "full_text": text,
+                "full_anonymized": output,
+                "mapping": mapping,
+                "restored": restored["text"],
+                "no_leak": not leaked,
+                "correct_type": correct_type,
+                "kept": not lost,
+                "round_trip": round_trip,
+                "passed": not leaked and correct_type and not lost and round_trip,
+            })
+        return results
 
     # ── Section runners ──────────────────────────────────────────────────
 
@@ -1109,6 +1168,968 @@ class TestRunner:
         self._log(
             "Address Indicator",
             f"{passed}/{len(self.address_indicator_results)} passed",
+        )
+
+    def run_case_robustness(self) -> None:
+        """Test that PII is detected regardless of how the text is cased.
+
+        Cased NER models (dslim/bert-base-NER and its ONNX derivatives) rely on
+        capitalisation, so ALL-CAPS names come back mislabelled ORGANIZATION or
+        truncated, and all-lowercase names are missed outright — a silent leak.
+        Each name is sent in Title, UPPER and lower casing and must be found as
+        PERSON every time, with the round-trip restoring the original casing.
+
+        Also guards the two precision risks of case recovery: case-sensitive
+        identifiers (PAN, IFSC) must survive, and ordinary prose must not gain
+        spurious entities from re-casing.
+        """
+        name_cases = [
+            ("Three-part name", "Rajesh Kumar Sharma", "{} residing at Kanakia Zen World has some concerns"),
+            ("Two-part name", "Sanjay Gupta", "Cheque issued by {} bounced due to insufficient funds"),
+            ("South Indian name", "Priya Venkatesan", "Applicant {} signed the form at the Mumbai branch"),
+            ("Name before PAN", "Anil Deshmukh", "The account holder is {} and the PAN is ABCPS1234K"),
+            ("Name in request", "Meera Nair", "Kindly update the records for {} before Friday"),
+        ]
+
+        for label, name, template in name_cases:
+            for casing, transform in (
+                ("Title", lambda s: s),
+                ("UPPER", str.upper),
+                ("lower", str.lower),
+            ):
+                text = transform(template.format(name))
+                anon = self.client.anonymize_unique(text)
+                mapping = anon["entity_mapping"]
+
+                persons = " ".join(
+                    v.lower() for k, v in mapping.items() if "PERSON" in k
+                ).strip()
+                expected = transform(name).lower()
+                detected = bool(persons) and all(
+                    part in persons for part in expected.split()
+                )
+                # The bug being guarded against: the name coming back as an
+                # organisation/location rather than a person.
+                mislabelled = any(
+                    any(part in v.lower() for part in expected.split())
+                    and ("ORGANIZATION" in k or "NRP" in k)
+                    for k, v in mapping.items()
+                )
+                restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+                exact = restored["text"] == text
+
+                self.case_robustness_results.append({
+                    "label": f"{label} ({casing})",
+                    "text": text[:80] + ("…" if len(text) > 80 else ""),
+                    "anonymized": anon["anonymized_text"][:80]
+                    + ("…" if len(anon["anonymized_text"]) > 80 else ""),
+                    "full_text": text,
+                    "full_anonymized": anon["anonymized_text"],
+                    "mapping": mapping,
+                    "restored": restored["text"],
+                    "detected": detected,
+                    "not_mislabelled": not mislabelled,
+                    "round_trip": exact,
+                    "passed": detected and not mislabelled and exact,
+                })
+
+        # Case-sensitive identifiers must survive re-casing untouched.
+        guard_text = (
+            "THE ACCOUNT HOLDER IS SUNITA KRISHNAN AND HER PAN IS ABCPS1234K, "
+            "IFSC SBIN0001234"
+        )
+        anon = self.client.anonymize_unique(guard_text)
+        mapping = anon["entity_mapping"]
+        pan_ok = any("IN_PAN" in k and v == "ABCPS1234K" for k, v in mapping.items())
+        ifsc_ok = any("IN_IFSC" in k and v == "SBIN0001234" for k, v in mapping.items())
+        restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+        self.case_robustness_results.append({
+            "label": "ALL-CAPS preserves PAN + IFSC",
+            "text": guard_text[:80] + "…",
+            "anonymized": anon["anonymized_text"][:80] + "…",
+            "full_text": guard_text,
+            "full_anonymized": anon["anonymized_text"],
+            "mapping": mapping,
+            "restored": restored["text"],
+            "detected": pan_ok and ifsc_ok,
+            "not_mislabelled": True,
+            "round_trip": restored["text"] == guard_text,
+            "passed": pan_ok and ifsc_ok and restored["text"] == guard_text,
+        })
+
+        # Normally-cased prose must not gain entities from case recovery.
+        for label, text, forbidden in (
+            (
+                "Cased prose keeps org separate",
+                "Kavitha visited Contoso Bank in Chennai.",
+                "kavitha visited contoso bank",
+            ),
+            (
+                "Lowercase prose without PII",
+                "the loan application is still pending approval from the credit team",
+                "credit team",
+            ),
+            (
+                "Lowercase prose without PII (banking)",
+                "please reset my internet banking password immediately",
+                "internet banking password",
+            ),
+        ):
+            anon = self.client.anonymize_unique(text)
+            mapping = anon["entity_mapping"]
+            # No entity may span the whole forbidden phrase.
+            clean = not any(v.lower() == forbidden for v in mapping.values())
+            restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+            self.case_robustness_results.append({
+                "label": label,
+                "text": text[:80] + ("…" if len(text) > 80 else ""),
+                "anonymized": anon["anonymized_text"][:80]
+                + ("…" if len(anon["anonymized_text"]) > 80 else ""),
+                "full_text": text,
+                "full_anonymized": anon["anonymized_text"],
+                "mapping": mapping,
+                "restored": restored["text"],
+                "detected": clean,
+                "not_mislabelled": clean,
+                "round_trip": restored["text"] == text,
+                "passed": clean and restored["text"] == text,
+            })
+
+        passed = sum(1 for r in self.case_robustness_results if r["passed"])
+        self._log(
+            "Case Robustness",
+            f"{passed}/{len(self.case_robustness_results)} passed",
+        )
+
+    def run_address_completeness(self) -> None:
+        """Test that the whole address lands inside one ADDRESS span.
+
+        A flat/unit number left outside the span (``F3003``, ``A-101``, the
+        ``12`` of ``12 MG Road``) is an exposed identifier, and a building name
+        alone never merged because NER tags it LOCATION, ORGANIZATION or NRP
+        interchangeably.  Each case asserts the fragments that must be covered
+        and, where relevant, that nothing outside an address is swallowed.
+        """
+        test_cases = [
+            {
+                "label": "Flat number + society, no city",
+                "text": "Rajesh Sharma residing at F3003, Kanakia Zen World has some concerns",
+                "must_cover": ["F3003", "Kanakia Zen"],
+                "must_not_cover": [],
+            },
+            {
+                "label": "Flat number + society + city + PIN",
+                "text": (
+                    "Rajesh Sharma residing at F3003, Kanakia Zen World, "
+                    "Kandivali East, Mumbai 400101"
+                ),
+                "must_cover": ["F3003", "Kanakia Zen World", "Mumbai", "400101"],
+                "must_not_cover": [],
+            },
+            {
+                "label": "Hyphenated unit number",
+                "text": "He lives at A-101, Prestige Shantiniketan, Whitefield, Bengaluru 560048",
+                "must_cover": ["A-101", "Prestige Shantiniketan", "560048"],
+                "must_not_cover": [],
+            },
+            {
+                "label": "Flat keyword + tower",
+                "text": "Address: Flat 302, Tower B, Lodha Amara, Thane West, Mumbai 400604",
+                "must_cover": ["302", "Lodha Amara", "400604"],
+                "must_not_cover": [],
+            },
+            {
+                "label": "House number before road",
+                "text": "Send it to 12 MG Road, Bengaluru 560001",
+                "must_cover": ["12", "MG Road", "560001"],
+                "must_not_cover": [],
+            },
+            {
+                "label": "Society name in ALL-CAPS",
+                "text": "RESIDING AT F3003, KANAKIA ZEN WORLD, MUMBAI 400101",
+                "must_cover": ["F3003", "KANAKIA ZEN WORLD"],
+                "must_not_cover": [],
+            },
+        ]
+
+        for tc in test_cases:
+            anon = self.client.anonymize_unique(tc["text"])
+            mapping = anon["entity_mapping"]
+            address_values = [
+                v for k, v in mapping.items() if "ADDRESS" in k or "LOCATION" in k
+            ]
+            covered = " | ".join(address_values)
+
+            missing = [f for f in tc["must_cover"] if f.lower() not in covered.lower()]
+            leaked = [
+                f for f in tc["must_not_cover"] if f.lower() in covered.lower()
+            ]
+            restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+
+            self.address_completeness_results.append({
+                "label": tc["label"],
+                "text": tc["text"][:80] + ("…" if len(tc["text"]) > 80 else ""),
+                "address": covered[:80] + ("…" if len(covered) > 80 else "") or "—",
+                "missing": ", ".join(missing) or "—",
+                "full_text": tc["text"],
+                "full_anonymized": anon["anonymized_text"],
+                "mapping": mapping,
+                "restored": restored["text"],
+                "complete": not missing,
+                "no_overreach": not leaked,
+                "round_trip": restored["text"] == tc["text"],
+                "passed": not missing and not leaked and restored["text"] == tc["text"],
+            })
+
+        # Outside address context, ordinary ORGANIZATION / LOCATION mentions
+        # must keep their own type rather than being folded into an address.
+        for label, text, phrase in (
+            ("Employer is not an address", "She works at Contoso Manufacturing on weekdays", "Contoso Manufacturing"),
+            ("Sponsor is not an address", "The Kanakia Zen group sponsors the event", "Kanakia Zen"),
+        ):
+            anon = self.client.anonymize_unique(text)
+            mapping = anon["entity_mapping"]
+            not_address = not any(
+                "ADDRESS" in k and phrase.lower() in v.lower()
+                for k, v in mapping.items()
+            )
+            restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+            self.address_completeness_results.append({
+                "label": label,
+                "text": text[:80] + ("…" if len(text) > 80 else ""),
+                "address": "— (expected none)",
+                "missing": "—",
+                "full_text": text,
+                "full_anonymized": anon["anonymized_text"],
+                "mapping": mapping,
+                "restored": restored["text"],
+                "complete": not_address,
+                "no_overreach": not_address,
+                "round_trip": restored["text"] == text,
+                "passed": not_address and restored["text"] == text,
+            })
+
+        passed = sum(1 for r in self.address_completeness_results if r["passed"])
+        self._log(
+            "Address Completeness",
+            f"{passed}/{len(self.address_completeness_results)} passed",
+        )
+
+    def run_account_phone_disambiguation(self) -> None:
+        """Test that a bare number is classified as an account or a phone.
+
+        A bare run of 9-18 digits is a valid Indian bank account number, and
+        the phone recognizer claims the same digits whenever they also form a
+        mobile ("9876543210") or a landline without its leading 0
+        ("5498721032").  Scores cannot separate them: the phone pattern scores
+        0.60 against the account pattern's 0.10, and "number" sits in the
+        phone recognizer's context list, so "bank account number" boosts the
+        phone score to 1.00.  Only the surrounding words carry the answer.
+        """
+        cases = [
+            ("Bank account number", "His bank account number is 9876543210",
+             "9876543210", "IN_BANK_ACCOUNT"),
+            ("Account number, no bank word", "His account number is 9876543210",
+             "9876543210", "IN_BANK_ACCOUNT"),
+            ("A/C abbreviation", "Credit A/C no 9876543210 today",
+             "9876543210", "IN_BANK_ACCOUNT"),
+            ("IFSC follows the digits", "Transfer to 9876543210 IFSC SBIN0001234",
+             "9876543210", "IN_BANK_ACCOUNT"),
+            ("NEFT follows the digits", "NEFT credit to 9876543210 via RTGS today",
+             "9876543210", "IN_BANK_ACCOUNT"),
+            ("Mobile cue", "His mobile number is 9876543210",
+             "9876543210", "PHONE_NUMBER"),
+            ("No cue at all", "Call me on 9876543210",
+             "9876543210", "PHONE_NUMBER"),
+            ("Account word AFTER a phone", "Call me on 9876543210 for account queries",
+             "9876543210", "PHONE_NUMBER"),
+            ("+91 prefix stays a phone", "Contact him at +91 98765 43210",
+             "+91 98765 43210", "PHONE_NUMBER"),
+            ("Leading zero stays a phone", "Reach me on 09876543210",
+             "09876543210", "PHONE_NUMBER"),
+            ("12-digit account", "His bank account number is 123456789012",
+             "123456789012", "IN_BANK_ACCOUNT"),
+            ("Nearest cue wins (account)",
+             "His bank account number is 9876543210 and mobile is 9123456780",
+             "9876543210", "IN_BANK_ACCOUNT"),
+            ("Nearest cue wins (mobile)",
+             "His bank account number is 9876543210 and mobile is 9123456780",
+             "9123456780", "PHONE_NUMBER"),
+            ("Reported: landline-shaped account number",
+             "My Account number is 5498721032.",
+             "5498721032", "IN_BANK_ACCOUNT"),
+            ("11-digit account number", "My account number is 54987210321.",
+             "54987210321", "IN_BANK_ACCOUNT"),
+            ("Landline-shaped account, then mobile",
+             "My account number is 5498721032 and my mobile is 9876543210",
+             "5498721032", "IN_BANK_ACCOUNT"),
+            ("Landline-shaped phone", "My phone number is 5498721032.",
+             "5498721032", "PHONE_NUMBER"),
+            ("Helpline after an account word", "Account helpline 9876543210",
+             "9876543210", "PHONE_NUMBER"),
+        ]
+
+        for label, text, value, expected in cases:
+            anon = self.client.anonymize_unique(text)
+            mapping = anon["entity_mapping"]
+            actual = next(
+                (
+                    k.strip("{}").rsplit("_", 1)[0]
+                    for k, v in mapping.items()
+                    if v == value
+                ),
+                "(not detected)",
+            )
+            restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+            passed = actual == expected and restored["text"] == text
+            self.account_phone_results.append({
+                "label": label,
+                "text": text[:80] + ("…" if len(text) > 80 else ""),
+                "value": value,
+                "expected": expected,
+                "actual": actual,
+                "full_text": text,
+                "full_anonymized": anon["anonymized_text"],
+                "mapping": mapping,
+                "restored": restored["text"],
+                "correct_type": actual == expected,
+                "round_trip": restored["text"] == text,
+                "passed": passed,
+            })
+
+        passed = sum(1 for r in self.account_phone_results if r["passed"])
+        self._log(
+            "Account vs Phone",
+            f"{passed}/{len(self.account_phone_results)} passed",
+        )
+
+    def run_person_initials(self) -> None:
+        """Test that a surname after dotted initials is not left exposed.
+
+        Cased NER models end the entity at dotted initials: queried directly,
+        "Mr. R.K. Sharma" returns only ``PERSON 'R.K.'`` and the surname is
+        never detected.  The same name without periods returns one complete
+        span, which isolates the periods as the trigger.
+        """
+        cases = [
+            ("Two initials + surname", "Mr. R.K. Sharma has written a complaint",
+             "R.K. Sharma"),
+            ("No title, two initials", "R.K. Sharma has written a complaint",
+             "R.K. Sharma"),
+            ("Three initials + two names", "Dr. A.P.J. Abdul Kalam visited the branch",
+             "A.P.J. Abdul Kalam"),
+            ("Single initial + surname", "Ms. S. Iyer called the branch", "S. Iyer"),
+            ("Spaced initials", "Cheque signed by R. K. Sharma today", "R. K. Sharma"),
+            ("Three spaced initials", "Report by A. P. J. Kalam filed today",
+             "A. P. J. Kalam"),
+            ("Initials mid-sentence", "Complaint filed by R.K. Sharma yesterday",
+             "R.K. Sharma"),
+            ("Undotted initials", "The cheque was signed by R K Sharma", "R K Sharma"),
+            ("Ordinary name unaffected", "Mr. Rajesh Sharma has written a complaint",
+             "Rajesh Sharma"),
+        ]
+
+        for label, text, expected in cases:
+            anon = self.client.anonymize_unique(text)
+            mapping = anon["entity_mapping"]
+            persons = [v for k, v in mapping.items() if "PERSON" in k]
+            captured = expected in persons
+            # The surname must not survive in the anonymized output.
+            surname = expected.split()[-1]
+            leaked = surname in anon["anonymized_text"]
+            restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+            self.person_initials_results.append({
+                "label": label,
+                "text": text[:80] + ("…" if len(text) > 80 else ""),
+                "expected": expected,
+                "actual": ", ".join(persons) or "(none)",
+                "full_text": text,
+                "full_anonymized": anon["anonymized_text"],
+                "mapping": mapping,
+                "restored": restored["text"],
+                "full_span": captured,
+                "no_leak": not leaked,
+                "round_trip": restored["text"] == text,
+                "passed": captured and not leaked and restored["text"] == text,
+            })
+
+        # Guard: an unrelated capitalised word after initials must not be eaten.
+        guard = "Send it to A.B. Next week we will follow up"
+        anon = self.client.anonymize_unique(guard)
+        mapping = anon["entity_mapping"]
+        over_reach = any("Next" in v for v in mapping.values())
+        restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+        self.person_initials_results.append({
+            "label": "Guard: clause after initials not absorbed",
+            "text": guard,
+            "expected": "'Next' must not be part of a name",
+            "actual": ", ".join(mapping.values()) or "(none)",
+            "full_text": guard,
+            "full_anonymized": anon["anonymized_text"],
+            "mapping": mapping,
+            "restored": restored["text"],
+            "full_span": not over_reach,
+            "no_leak": not over_reach,
+            "round_trip": restored["text"] == guard,
+            "passed": not over_reach and restored["text"] == guard,
+        })
+
+        passed = sum(1 for r in self.person_initials_results if r["passed"])
+        self._log(
+            "Person Initials",
+            f"{passed}/{len(self.person_initials_results)} passed",
+        )
+
+    def run_person_titles(self) -> None:
+        """Test Indian honorific and professional prefixes.
+
+        Only the Western titles were known to the pipeline.  "CA Abhay Sharma"
+        and "CS Priya" came back as ORGANIZATION — still redacted by default,
+        but leaked outright for an app allow-listing ORGANIZATION — while
+        "Er. Ram" tagged the abbreviation itself as PERSON and left a stray
+        "." entity behind.  Titles stay outside the span, matching the
+        existing behaviour for "Mr. Rajesh Sharma".
+        """
+        cases = [
+            ("Dr.", "Dr. Ajay has approved the loan", "Ajay"),
+            ("Er.", "Er. Ram has approved the loan", "Ram"),
+            ("CA (no dot)", "CA Abhay has approved the loan", "Abhay"),
+            ("CA + surname", "CA Abhay Sharma has approved the loan", "Abhay Sharma"),
+            ("CS (no dot)", "CS Priya has approved the loan", "Priya"),
+            ("Adv.", "Adv. Meera has approved the loan", "Meera"),
+            ("Prof.", "Prof. Anil has approved the loan", "Anil"),
+            ("Shri", "Shri Ramesh has approved the loan", "Ramesh"),
+            ("Smt.", "Smt. Kavita has approved the loan", "Kavita"),
+            ("Capt.", "Capt. Vikram has approved the loan", "Vikram"),
+            ("Col.", "Col. Rana has approved the loan", "Rana"),
+            ("Pt.", "Pt. Ravi has approved the loan", "Ravi"),
+            ("Justice", "Justice Khanna has approved the loan", "Khanna"),
+            ("Stacked titles", "Lt. Col. Vikram Rana called", "Vikram Rana"),
+            ("Title + full name", "Er. Ram Kumar filed the report", "Ram Kumar"),
+        ]
+
+        for label, text, expected_name in cases:
+            anon = self.client.anonymize_unique(text)
+            mapping = anon["entity_mapping"]
+            persons = [v for k, v in mapping.items() if "PERSON" in k]
+            as_person = expected_name in persons
+            # No entity may be a bare title or a lone punctuation mark.
+            junk = [
+                v for v in mapping.values()
+                if not v.strip() or not any(c.isalnum() for c in v)
+            ]
+            name_leaked = expected_name.split()[0] in anon["anonymized_text"]
+            restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+            self.person_titles_results.append({
+                "label": label,
+                "text": text[:80] + ("…" if len(text) > 80 else ""),
+                "expected": expected_name,
+                "actual": ", ".join(f"{k.strip('{}')}={v}" for k, v in mapping.items())
+                or "(none)",
+                "full_text": text,
+                "full_anonymized": anon["anonymized_text"],
+                "mapping": mapping,
+                "restored": restored["text"],
+                "as_person": as_person,
+                "no_junk": not junk,
+                "round_trip": restored["text"] == text,
+                "passed": (
+                    as_person and not junk and not name_leaked
+                    and restored["text"] == text
+                ),
+            })
+
+        # Control: a genuine organisation must keep its own type.
+        control = "Contoso Manufacturing has approved the loan"
+        anon = self.client.anonymize_unique(control)
+        mapping = anon["entity_mapping"]
+        still_org = any("ORGANIZATION" in k for k in mapping)
+        restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+        self.person_titles_results.append({
+            "label": "Control: real organisation unaffected",
+            "text": control,
+            "expected": "ORGANIZATION",
+            "actual": ", ".join(f"{k.strip('{}')}={v}" for k, v in mapping.items())
+            or "(none)",
+            "full_text": control,
+            "full_anonymized": anon["anonymized_text"],
+            "mapping": mapping,
+            "restored": restored["text"],
+            "as_person": still_org,
+            "no_junk": True,
+            "round_trip": restored["text"] == control,
+            "passed": still_org and restored["text"] == control,
+        })
+
+        passed = sum(1 for r in self.person_titles_results if r["passed"])
+        self._log(
+            "Person Titles",
+            f"{passed}/{len(self.person_titles_results)} passed",
+        )
+
+    def run_nrp_alignment(self) -> None:
+        """Test that NRP fires only when the demonym describes a person.
+
+        NRP (nationality / religious / political group) is personal data only
+        when it describes a person.  The NER model emits it for any demonym, so
+        aggregate business language — "South Indian branches", "Indian banking
+        sector" — was redacted even though it identifies nobody.  Used
+        predicatively ("the customer is Indian") or before a singular person
+        noun ("a Muslim woman") it describes an individual and must stay.
+        """
+        descriptive = [
+            ("Branches, not a person",
+             "Our South Indian branches have shown 20% growth this quarter."),
+            ("Region, not a person",
+             "The North Indian region has the highest loan disbursement."),
+            ("Sector, not a person",
+             "Indian banking sector is growing rapidly."),
+            ("Generic customer segment",
+             "South Indian customers prefer mobile banking."),
+            ("Market, not a person",
+             "The South Indian market has high potential for home loans."),
+            ("Areas, not a person",
+             "South Indian rural areas need more ATM coverage."),
+            ("Business segment",
+             "The bank is targeting South Indian SME customers."),
+            ("Loans, not a person",
+             "South Indian agriculture loans are performing well."),
+            ("Portfolio, not a person",
+             "The South Indian credit card portfolio is expanding."),
+            ("Customer segment (NRI)",
+             "South Indian NRI customers are our focus segment."),
+            ("Adoption rate, not a person",
+             "The South Indian digital banking adoption is high."),
+            ("Services, not a person",
+             "South Indian wealth management services are in demand."),
+        ]
+
+        for label, text in descriptive:
+            anon = self.client.anonymize_unique(text)
+            mapping = anon["entity_mapping"]
+            nrp = [v for k, v in mapping.items() if "NRP" in k]
+            unchanged = anon["anonymized_text"] == text
+            restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+            self.nrp_alignment_results.append({
+                "label": label,
+                "text": text[:80] + ("…" if len(text) > 80 else ""),
+                "expectation": "no redaction",
+                "nrp": ", ".join(nrp) or "—",
+                "full_text": text,
+                "full_anonymized": anon["anonymized_text"],
+                "mapping": mapping,
+                "restored": restored["text"],
+                "as_expected": unchanged,
+                "round_trip": restored["text"] == text,
+                "passed": unchanged and restored["text"] == text,
+            })
+
+        personal = [
+            ("Predicate position", "The customer is Indian and lives in Mumbai.", "Indian"),
+            ("End of sentence", "He is a South Indian Hindu.", "South Indian Hindu"),
+            ("Before a preposition", "Rajesh is a Tamil Brahmin from Chennai.", "Tamil Brahmin"),
+            ("Singular person noun", "The applicant is a Muslim woman aged 34.", "Muslim"),
+            ("Attributive, no copula", "The Muslim woman filed a complaint.", "Muslim"),
+            ("Religious role noun",
+             "Indian national and Buddhist devotee Rahul Verma opened an account.",
+             "Buddhist"),
+            ("Label value", "Nationality: Indian", "Indian"),
+            ("Singular customer", "A South Indian customer raised the issue.", "South Indian"),
+            ("Occupation after copula (Tamil)",
+             "The account holder is a Tamil speaker from Coimbatore.", "Tamil"),
+            ("Occupation after copula (Punjabi)",
+             "The borrower is a Punjabi farmer seeking a crop loan.", "Punjabi"),
+            ("Occupation after copula (Gujarati)",
+             "He is a Gujarati businessman with three accounts.", "Gujarati"),
+            ("Caste + occupation", "He is a Rajput landowner from Rajasthan.", "Rajput"),
+        ]
+
+        for label, text, expected_nrp in personal:
+            anon = self.client.anonymize_unique(text)
+            mapping = anon["entity_mapping"]
+            nrp = [v for k, v in mapping.items() if "NRP" in k]
+            detected = any(expected_nrp in v for v in nrp)
+            restored = self.client.deanonymize(anon["id"], anon["anonymized_text"])
+            self.nrp_alignment_results.append({
+                "label": f"{label} (must stay NRP)",
+                "text": text[:80] + ("…" if len(text) > 80 else ""),
+                "expectation": f"NRP '{expected_nrp}'",
+                "nrp": ", ".join(nrp) or "—",
+                "full_text": text,
+                "full_anonymized": anon["anonymized_text"],
+                "mapping": mapping,
+                "restored": restored["text"],
+                "as_expected": detected,
+                "round_trip": restored["text"] == text,
+                "passed": detected and restored["text"] == text,
+            })
+
+        passed = sum(1 for r in self.nrp_alignment_results if r["passed"])
+        self._log(
+            "NRP Alignment",
+            f"{passed}/{len(self.nrp_alignment_results)} passed",
+        )
+
+    def run_multiline_context(self) -> None:
+        """Test that context on one line does not leak into another line.
+
+        In forms, lists and chat messages every line is its own statement.  A
+        keyword on one line used to relabel an entity on the next: in the
+        two-line "residing at Mumbai." / "My name is Mr. R.K. Sharma." the word
+        "residing" turned "R.K." into a LOCATION, so the surname was never
+        joined to it and leaked.  A line that introduces the next one ("Aadhaar
+        number:", "Correspondence Address") still describes the value beneath
+        it, and an address wrapped over two lines must stay one address.
+        """
+        # (label, text, {value: expected entity type}, must stay masked,
+        #  must stay in the output)
+        cases = [
+            # A keyword on a neighbouring line must not relabel the entity.
+            ("Reported: location word on previous line",
+             "Customer RAJESH KUMAR SHARMA residing at Mumbai.\n"
+             "My name is Mr. R.K. Sharma.",
+             {"R.K. Sharma": "PERSON"}, ["Sharma", "SHARMA"], []),
+            ("Location label on previous line",
+             "Branch: Andheri West\nCustomer: Priya Menon",
+             {"Priya Menon": "PERSON", "Andheri West": "LOCATION"},
+             ["Priya", "Andheri"], []),
+            ("Form without colons",
+             "Branch Andheri West\nCustomer Priya Menon",
+             {"Priya Menon": "PERSON"}, ["Priya"], []),
+            ("IFSC on the next line",
+             "Mobile: 9876543210\nIFSC: SBIN0001234",
+             {"9876543210": "PHONE_NUMBER"}, ["9876543210", "SBIN0001234"], []),
+            ("Account word on previous line",
+             "Please update my account\n9876543210 is my new mobile",
+             {"9876543210": "PHONE_NUMBER"}, ["9876543210"], []),
+            ("Employer line after an address",
+             "Address: Flat 301, Kumar Pinnacle, Baner, Pune 411045\n"
+             "Employer: Infosys Technologies",
+             {"Infosys Technologies": "ORGANIZATION"},
+             ["Infosys", "Kumar Pinnacle", "411045"], ["\nEmployer: "]),
+            ("Aadhaar label wins over APAAR keyword elsewhere",
+             "Student: Ananya Rao\nAadhaar: 234567890123",
+             {"234567890123": "IN_AADHAAR", "Ananya Rao": "PERSON"},
+             ["Ananya", "234567890123"], ["\nAadhaar: "]),
+            ("Title-like surname ending a line",
+             "Surname: Kumari\nPriya Sharma called yesterday",
+             {"Priya Sharma": "PERSON"}, ["Kumari", "Priya", "Sharma"], []),
+            ("Name wrapped across lines",
+             "Beneficiary name: Sunita\nKumari",
+             {"Sunita": "PERSON", "Kumari": "PERSON"}, ["Sunita", "Kumari"], []),
+            ("Aadhaar followed by a numbered list",
+             "Aadhaar: 2345 6789 0123\n1. Submit the form",
+             {"2345 6789 0123": "IN_AADHAAR"}, ["2345", "6789 0123"],
+             ["\n1. Submit the form"]),
+            # A line that introduces the next one still counts.
+            ("Aadhaar label on the line above",
+             "Aadhaar number:\n234567890123",
+             {"234567890123": "IN_AADHAAR"}, ["234567890123"], []),
+            ("Account label on the line above",
+             "Account number:\n9876543210",
+             {"9876543210": "IN_BANK_ACCOUNT"}, ["9876543210"], []),
+            ("APAAR heading several lines up",
+             "APAAR details\nName: Ananya Rao\nDOB: 12/03/2008\nID: 123456789012",
+             {"123456789012": "IN_APAAR"}, ["123456789012", "Ananya"], []),
+            ("Customer ID heading without a colon",
+             "Customer ID\n123456789",
+             {"123456789": "CUSTOMER_ID"}, ["123456789"], []),
+            ("Address wrapped onto a second line",
+             "Address: Flat 301, Kumar Pinnacle,\nBaner, Pune 411045",
+             {"Baner": "ADDRESS"}, ["Kumar", "Baner", "Pune", "411045"], []),
+            ("Address under a heading",
+             "Correspondence Address\n"
+             "shivam residency, survey 45, kharadi, pune 411014",
+             {"kharadi": "ADDRESS"},
+             ["shivam", "residency", "kharadi", "411014"], []),
+            ("Aadhaar number wrapped across lines",
+             "Aadhaar: 2345 6789\n0123",
+             {"2345 6789\n0123": "IN_AADHAAR"}, ["2345", "0123"], []),
+            # Guards: separate lines must stay separate entities.
+            ("Guard: list of cities stays separate",
+             "Cities covered: Pune,\nMumbai,\nDelhi",
+             {"Pune": "LOCATION", "Mumbai": "LOCATION", "Delhi": "LOCATION"},
+             ["Pune", "Mumbai", "Delhi"], [",\n"]),
+            ("Guard: locations on consecutive lines",
+             "I visited Pune\nMumbai is next",
+             {"Pune": "LOCATION", "Mumbai": "LOCATION"},
+             ["Pune", "Mumbai"], ["\n"]),
+            ("Guard: name on a new line not merged into address",
+             "Customer residing at Mumbai\nMy name is Rahul",
+             {"Mumbai": "LOCATION", "Rahul": "PERSON"},
+             ["Mumbai", "Rahul"], ["\nMy name is "]),
+        ]
+
+        self.multiline_results = self._check_expectations(cases)
+        passed = sum(1 for r in self.multiline_results if r["passed"])
+        self._log(
+            "Multi-line Context",
+            f"{passed}/{len(self.multiline_results)} passed",
+        )
+
+    def run_mixed_case_names(self) -> None:
+        """Test names typed with only the first word capitalised.
+
+        A cased NER model stops at the first uncased word, so in "My name is
+        Venkata narasimha raju." only "Venkata" was masked and the middle and
+        last names leaked.  The whole name must now be masked, while ordinary
+        words typed after a name ("Ramesh paid electricity bill") must stay.
+        """
+        cases = [
+            ("Reported: middle and last name lowercase",
+             "My name is Venkata narasimha raju.",
+             {"Venkata narasimha raju": "PERSON"},
+             ["Venkata", "narasimha", "raju"], []),
+            ("Three-part name at sentence start",
+             "Rajesh kumar sharma has applied for a home loan",
+             {"Rajesh kumar sharma": "PERSON"},
+             ["Rajesh", "kumar", "sharma"], ["has applied for a home loan"]),
+            ("Name after a role word",
+             "Customer Priya ramesh iyer called the branch yesterday",
+             {"Priya ramesh iyer": "PERSON"},
+             ["Priya", "ramesh", "iyer"], ["called the branch"]),
+            ("First name alone read as a place",
+             "Transfer INR 5,000 to Suresh babu naidu today",
+             {"Suresh babu naidu": "PERSON"},
+             ["Suresh", "babu", "naidu"], ["today"]),
+            ("Form field",
+             "Account holder: Sunita devi agarwal",
+             {"Sunita devi agarwal": "PERSON"},
+             ["Sunita", "devi", "agarwal"], ["Account holder: "]),
+            ("Signatory",
+             "The cheque was signed by Mohammed faisal khan",
+             {"Mohammed faisal khan": "PERSON"},
+             ["Mohammed", "faisal", "khan"], ["signed by "]),
+            ("Surname before a verb",
+             "Kavitha subramaniam opened a savings account",
+             {"Kavitha subramaniam": "PERSON"},
+             ["Kavitha", "subramaniam"], ["opened a savings account"]),
+            ("Only the surname lowercase",
+             "Rajesh Kumar sharma submitted his documents",
+             {"Rajesh Kumar sharma": "PERSON"},
+             ["Rajesh", "Kumar", "sharma"], ["submitted his documents"]),
+            ("Four-part name",
+             "Pamidighantam venkata subba rao is the nominee",
+             {"Pamidighantam venkata subba rao": "PERSON"},
+             ["Pamidighantam", "venkata", "subba", "rao"], ["is the nominee"]),
+            ("Name on a form line",
+             "Name: Venkata narasimha raju\nMobile: 9876543210",
+             {"Venkata narasimha raju": "PERSON", "9876543210": "PHONE_NUMBER"},
+             ["narasimha", "raju", "9876543210"], ["\nMobile: "]),
+            ("Two names joined by 'and'",
+             "Faisal ahmed and Sunil das visited today",
+             {"Faisal ahmed": "PERSON", "Sunil das": "PERSON"},
+             ["Faisal", "ahmed", "Sunil", "das"], [" and ", "visited today"]),
+            ("Surname with an apostrophe",
+             "Anil d'souza has a pending CIBIL dispute.",
+             {"Anil d'souza": "PERSON"},
+             ["Anil", "souza"], ["has a pending CIBIL dispute"]),
+            ("Accented surname",
+             "Sofía martínez opened an NRE account last week.",
+             {"Sofía martínez": "PERSON"},
+             ["Sofía", "martínez"], ["opened an NRE account"]),
+            # Guards: ordinary words typed after a name must stay unmasked.
+            ("Guard: verb after a name",
+             "Ramesh paid electricity bill using UPI",
+             {"Ramesh": "PERSON"}, ["Ramesh"], ["paid electricity bill using UPI"]),
+            ("Guard: relation word after a name",
+             "Kavitha mother is the joint holder.",
+             {"Kavitha": "PERSON"}, ["Kavitha"], ["mother is the joint holder"]),
+            ("Guard: title after a name",
+             "Rahul sir will call you back.",
+             {"Rahul": "PERSON"}, ["Rahul"], ["sir will call you back"]),
+            ("Guard: booking sentence",
+             "Meera booked movie tickets for Sunday",
+             {"Meera": "PERSON"}, ["Meera"], ["booked movie tickets for"]),
+            ("Guard: shopping sentence",
+             "Rahul bought new shoes from the mall",
+             {"Rahul": "PERSON"}, ["Rahul"], ["bought new shoes from the mall"]),
+            ("Guard: prose next to a bank name",
+             "NOTE: Kavitha visited Contoso Bank yesterday",
+             {"Kavitha": "PERSON"}, ["Kavitha"], ["visited"]),
+            ("Guard: correctly cased name unchanged",
+             "My name is Venkata Narasimha Raju.",
+             {"Venkata Narasimha Raju": "PERSON"},
+             ["Venkata", "Narasimha", "Raju"], []),
+        ]
+
+        self.mixed_case_results = self._check_expectations(cases)
+        passed = sum(1 for r in self.mixed_case_results if r["passed"])
+        self._log(
+            "Mixed-case Names",
+            f"{passed}/{len(self.mixed_case_results)} passed",
+        )
+
+    def run_address_units(self) -> None:
+        """Test that the whole unit designation lands inside the ADDRESS.
+
+        Flat numbers, block letters and their labels have no recognizer, and
+        the "." of "no." was read as the end of a sentence, so "my address is
+        Flat no. 302, C 23, Prestige Towers, Bangalore." left "no. 302, C"
+        exposed.  The whole designation must now be masked, while "no" in an
+        ordinary sentence, a date and a separate sentence stay as they were.
+        """
+        cases = [
+            ("Reported: flat number and block",
+             "my address is Flat no. 302, C 23, Prestige Towers, Bangalore.",
+             {"Flat no. 302, C 23": "ADDRESS"},
+             ["Flat", "302", "C 23", "Prestige", "Bangalore"], ["my address is "]),
+            ("Hyphenated block number",
+             "My address is Flat No. 302, C-23, Prestige Towers, Bangalore.",
+             {"Flat No. 302, C-23": "ADDRESS"},
+             ["Flat", "302", "C-23", "Prestige"], ["My address is "]),
+            ("Address followed by another sentence",
+             "Send it to Flat no. 302, C 23, Prestige Towers, Bangalore. My mobile is 9876543210.",
+             {"Flat no. 302, C 23": "ADDRESS", "9876543210": "PHONE_NUMBER"},
+             ["Flat", "302", "C 23", "9876543210"], ["Send it to ", ". My mobile is "]),
+            ("Hyderabad house number",
+             "Residing at H.No. 12-3-456, Street No. 5, Banjara Hills, Hyderabad 500034",
+             {"H.No. 12-3-456": "ADDRESS"},
+             ["H.No", "12-3-456", "Street No. 5", "Banjara"], ["Residing at "]),
+            ("Door number with a slash",
+             "Correspondence address: Door No. 45/2, 3rd Cross, Jayanagar 4th Block, Bangalore 560011",
+             {"Door No. 45/2": "ADDRESS"},
+             ["Door", "45/2", "3rd Cross", "Jayanagar"], ["Correspondence address: "]),
+            ("Floor and wing",
+             "Address: D.No. 45/2, 2nd Floor, B Wing, Lodha Park, Worli, Mumbai 400018",
+             {"D.No. 45/2, 2nd Floor, B Wing": "ADDRESS"},
+             ["D.No", "45/2", "2nd Floor", "B Wing", "Lodha"], ["Address: "]),
+            ("Plot and sector",
+             "Please update my address to Plot No. 17, Sector 21, Kharghar, Navi Mumbai 410210",
+             {"Plot No. 17": "ADDRESS"},
+             ["Plot", "17", "Sector 21", "Kharghar"], ["Please update my address to "]),
+            ("Flat and tower letters",
+             "Deliver the cheque book to Flat 5B, Tower C, DLF Phase 2, Gurgaon",
+             {"Flat 5B, Tower C": "ADDRESS"},
+             ["Flat", "5B", "Tower C", "DLF"], ["Deliver the cheque book to "]),
+            ("Abbreviated apartment",
+             "I live in Apt. 1204, Lodha Bellissimo, Worli, Mumbai",
+             {"Apt. 1204": "ADDRESS"},
+             ["Apt", "1204", "Lodha", "Worli"], ["I live in "]),
+            ("House number and floor",
+             "Address: #302, 2nd Floor, Brigade Road, Bangalore",
+             {"302, 2nd Floor": "ADDRESS"},
+             ["302", "2nd Floor", "Brigade"], ["Address: "]),
+            ("Room in a chawl",
+             "My address is Room no. 4, Sai Kripa Chawl, Dharavi, Mumbai",
+             {"Room no. 4": "ADDRESS"},
+             ["Room", "no. 4", "Sai Kripa", "Dharavi"], ["My address is "]),
+            ("House number and sector",
+             "New address: House No. 221, Sector 15, Chandigarh 160015.",
+             {"House No. 221": "ADDRESS"},
+             ["House", "221", "Sector 15", "160015"], ["New address: "]),
+            ("Shop opposite a landmark",
+             "Address: Shop 4, Opp. City Mall, MG Road, Pune 411001",
+             {"Shop 4, Opp. City Mall": "ADDRESS"},
+             ["Shop", "Opp", "City Mall", "411001"], ["Address: "]),
+            ("Unit designation wrapped over lines",
+             "Address: Flat no. 302,\nC 23, Prestige Towers,\nBangalore 560001",
+             {"Flat no. 302,\nC 23": "ADDRESS"},
+             ["Flat", "302", "C 23", "Prestige", "560001"], ["Address: "]),
+            # Guards: "no", dates and separate sentences stay as they were.
+            ("Guard: order number",
+             "Order no. 12345 shipped to Bangalore yesterday.",
+             {"Bangalore": "LOCATION"},
+             ["Bangalore"], ["Order no. 12345 shipped to", "yesterday"]),
+            ("Guard: meeting room",
+             "Room no. 4 is booked for the meeting in Mumbai.",
+             {"Mumbai": "LOCATION"},
+             ["Mumbai"], ["Room no. 4 is booked for the meeting in"]),
+            ("Guard: flat rent",
+             "My flat rent of 25000 is due in Pune.",
+             {"Pune": "LOCATION"},
+             ["Pune"], ["My flat rent of 25000 is due in"]),
+            ("Guard: 'no' before a building name",
+             "There is no Prestige Towers, Bangalore in our records.",
+             {"Bangalore": "LOCATION"},
+             ["Prestige", "Bangalore"], ["There is no ", "in our records"]),
+            ("Guard: date before an address",
+             "Delivered on 12/05/2024, Prestige Towers, Bangalore.",
+             {"12/05/2024": "DATE_TIME", "Prestige Towers, Bangalore": "ADDRESS"},
+             ["12/05/2024", "Prestige"], ["Delivered on "]),
+            ("Guard: separate sentences",
+             "I live in Pune. Mumbai is where I work.",
+             {"Pune": "LOCATION", "Mumbai": "LOCATION"},
+             ["Pune", "Mumbai"], ["I live in ", " is where I work."]),
+        ]
+
+        self.address_units_results = self._check_expectations(cases)
+        passed = sum(1 for r in self.address_units_results if r["passed"])
+        self._log(
+            "Address Units",
+            f"{passed}/{len(self.address_units_results)} passed",
+        )
+
+    def run_key_value_context(self) -> None:
+        """Test that the key of a key=value pair counts as a context word.
+
+        spaCy keeps a URL, and a key=value pair written without spaces, as one
+        token, so in "https://api.com?aadhaar=987654321098&pan=ABCPK1234L" the
+        key "aadhaar" was never seen as context.  An Aadhaar number without
+        separators scores below the threshold without it, so it leaked while
+        the PAN next to it was masked.  Keys that are not context words
+        ("txn_id=") must change nothing.
+        """
+        cases = [
+            ("Reported: Aadhaar in a URL query",
+             "my website is https://api.com?aadhaar=987654321098&pan=ABCPK1234L.",
+             {"987654321098": "IN_AADHAAR", "ABCPK1234L": "IN_PAN"},
+             ["987654321098", "ABCPK1234L"], ["my website is ", "?aadhaar=", "&pan="]),
+            ("Key=value in plain text",
+             "aadhaar=987654321098",
+             {"987654321098": "IN_AADHAAR"}, ["987654321098"], ["aadhaar="]),
+            ("Key:value without a space",
+             "Aadhaar:987654321098, PAN:ABCPK1234L",
+             {"987654321098": "IN_AADHAAR", "ABCPK1234L": "IN_PAN"},
+             ["987654321098", "ABCPK1234L"], ["Aadhaar:", ", PAN:"]),
+            ("camelCase key",
+             "aadhaarNumber=987654321098",
+             {"987654321098": "IN_AADHAAR"}, ["987654321098"], ["aadhaarNumber="]),
+            ("snake_case key in a request line",
+             "GET /kyc?aadhaar_no=987654321098&mobile=9876543210 HTTP/1.1",
+             {"987654321098": "IN_AADHAAR", "9876543210": "PHONE_NUMBER"},
+             ["987654321098", "9876543210"],
+             ["GET /kyc?aadhaar_no=", "&mobile=", " HTTP/1.1"]),
+            ("UID key in a URL",
+             "https://api.com?uid=987654321098",
+             {"987654321098": "IN_AADHAAR"}, ["987654321098"], ["?uid="]),
+            ("Form-encoded body",
+             "pan=ABCPK1234L&aadhaar=987654321098",
+             {"ABCPK1234L": "IN_PAN", "987654321098": "IN_AADHAAR"},
+             ["ABCPK1234L", "987654321098"], ["pan=", "&aadhaar="]),
+            ("Query string with a name",
+             "POST /kyc?name=rahul&aadhaar=987654321098 HTTP/1.1",
+             {"rahul": "PERSON", "987654321098": "IN_AADHAAR"},
+             ["rahul", "987654321098"], ["POST /kyc?name=", "&aadhaar=", " HTTP/1.1"]),
+            ("Log line with a name",
+             "log: user=rahul uid=987654321098 status=ok",
+             {"rahul": "PERSON", "987654321098": "IN_AADHAAR"},
+             ["rahul", "987654321098"], ["log: user=", " uid=", " status=ok"]),
+            ("ALL-CAPS log line",
+             "LOG: USER=RAHUL UID=987654321098 STATUS=OK",
+             {"RAHUL": "PERSON", "987654321098": "IN_AADHAAR"},
+             ["RAHUL", "987654321098"], ["LOG: USER=", " UID=", " STATUS=OK"]),
+            ("Baseline: key as a separate word",
+             "My aadhaar is 987654321098",
+             {"987654321098": "IN_AADHAAR"}, ["987654321098"], ["My aadhaar is "]),
+            # Guards: keys that are not context words change nothing.
+            ("Guard: transaction id",
+             "txn_id=987654321098&amount=500",
+             {}, [], ["txn_id=987654321098&amount=500"]),
+            ("Guard: order number",
+             "Order 987654321098 dispatched today",
+             {}, [], ["Order 987654321098 dispatched today"]),
+            ("Guard: URL without IDs",
+             "Search https://example.com/search?q=account&page=2 for help",
+             {"https://example.com/search?q=account&page=2": "URL"},
+             ["example.com"], ["Search ", " for help"]),
+        ]
+
+        self.key_value_results = self._check_expectations(cases)
+        passed = sum(1 for r in self.key_value_results if r["passed"])
+        self._log(
+            "Key-value Context",
+            f"{passed}/{len(self.key_value_results)} passed",
         )
 
     def run_geo_coordinates(self) -> None:
@@ -2402,6 +3423,16 @@ class TestRunner:
             ("LLM Sandwich", self.run_llm_sandwich),
             ("Structured Data", self.run_structured_data),
             ("Address Indicator", self.run_address_indicator),
+            ("Case Robustness", self.run_case_robustness),
+            ("Address Completeness", self.run_address_completeness),
+            ("Account vs Phone", self.run_account_phone_disambiguation),
+            ("Person Initials", self.run_person_initials),
+            ("Person Titles", self.run_person_titles),
+            ("NRP Alignment", self.run_nrp_alignment),
+            ("Multi-line Context", self.run_multiline_context),
+            ("Mixed-case Names", self.run_mixed_case_names),
+            ("Address Units", self.run_address_units),
+            ("Key-value Context", self.run_key_value_context),
             ("Geo-Coordinates", self.run_geo_coordinates),
             ("NRP Detection", self.run_nrp),
             ("US Entities", self.run_us_entities),
@@ -2440,6 +3471,104 @@ def _icon3(val: float) -> str:
 
 def _status_class(ok: bool) -> str:
     return "pass" if ok else "fail"
+
+
+def _render_io_detail(
+    w,
+    label: str,
+    passed: bool,
+    badge: str,
+    record: dict,
+    extra_rows: list[tuple[str, str]] | None = None,
+) -> None:
+    """Render one collapsible card with the exact input/output text pair.
+
+    ``record`` must carry ``full_text``, ``full_anonymized``, ``mapping`` and
+    ``restored``; the summary tables above truncate, so this is where the
+    untruncated pair lives.
+    """
+    cls = "pass" if passed else "fail"
+    w(f'<details class="scenario-card {cls}">')
+    w(f"<summary>{H(label)} &nbsp; {_icon(passed)} &nbsp; "
+      f"<small>{badge}</small></summary>")
+    w(f'<div class="text-block"><strong>Input:</strong><br>'
+      f'<pre style="white-space:pre-wrap;margin:0;">{H(record["full_text"])}</pre></div>')
+    w(f'<div class="text-block"><strong>Output (anonymized):</strong><br>'
+      f'<pre style="white-space:pre-wrap;margin:0;">{H(record["full_anonymized"])}</pre></div>')
+
+    mapping = record.get("mapping") or {}
+    if mapping:
+        w("<table><thead><tr><th>Placeholder</th><th>Original</th>"
+          "</tr></thead><tbody>")
+        for placeholder, original in mapping.items():
+            w(f"<tr><td><code>{H(placeholder)}</code></td>"
+              f"<td>{H(original)}</td></tr>")
+        w("</tbody></table>")
+    else:
+        w("<p><em>No entities detected.</em></p>")
+
+    restored = record.get("restored", "")
+    exact = restored == record["full_text"]
+    colour = "#d4edda" if exact else "#f8d7da"
+    w("<div class=\"text-block\"><strong>De-anonymized (round-trip):</strong><br>"
+      f'<pre style="background:{colour};padding:8px;border-radius:4px;'
+      f'white-space:pre-wrap;margin:0;">{H(restored)}</pre></div>')
+    w(f"<p>{'✅ Exact match' if exact else '❌ Mismatch'}</p>")
+
+    for row_label, row_value in extra_rows or []:
+        w(f"<p><strong>{H(row_label)}:</strong> {H(row_value)}</p>")
+
+    w("</details>")
+
+
+def _render_expectation_results(
+    w,
+    results: list[dict],
+    kept_label: str,
+    noun: str,
+    detail_heading: str,
+) -> None:
+    """Render the table and detail cards for ``TestRunner._check_expectations``."""
+    if not results:
+        return
+    w("<table><thead><tr><th>Test Case</th><th>Input (truncated)</th>"
+      "<th>Expected</th><th>Detected</th><th>No leak</th>"
+      f"<th>Correct type</th><th>{H(kept_label)}</th><th>Round-trip</th>"
+      "<th>Result</th></tr></thead><tbody>")
+    for r in results:
+        w(f'<tr><td>{H(r["label"])}</td>'
+          f'<td><small>{H(r["text"])}</small></td>'
+          f'<td><small>{H(r["expected"])}</small></td>'
+          f'<td><small>{H(r["actual"])}</small></td>'
+          f'<td>{_icon(r["no_leak"])}</td>'
+          f'<td>{_icon(r["correct_type"])}</td>'
+          f'<td>{_icon(r["kept"])}</td>'
+          f'<td>{_icon(r["round_trip"])}</td>'
+          f'<td>{_icon(r["passed"])}</td></tr>')
+    w("</tbody></table>")
+    passed = sum(1 for r in results if r["passed"])
+    w(f"<p><strong>{passed}/{len(results)}</strong> {H(noun)} tests passed.</p>")
+
+    w(f"<h3>{H(detail_heading)}</h3>")
+    for r in results:
+        _render_io_detail(
+            w,
+            label=r["label"],
+            passed=r["passed"],
+            badge=(
+                f'{_icon(r["no_leak"])} no leak &nbsp; '
+                f'{_icon(r["correct_type"])} correct type &nbsp; '
+                f'{_icon(r["kept"])} {H(kept_label.lower())} &nbsp; '
+                f'{_icon(r["round_trip"])} round-trip'
+            ),
+            record=r,
+            extra_rows=[
+                ("Expected", r["expected"]),
+                ("Detected", r["actual"]),
+                ("Leaked", r["leaked"]),
+                ("Must stay in output", r["must_keep"]),
+            ],
+        )
 
 
 def generate_html_report(runner: TestRunner, output_path: str) -> None:
@@ -3370,6 +4499,335 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         w(f"<p><strong>{addr_passed}/{len(runner.address_indicator_results)}</strong> "
           f"address indicator tests passed.</p>")
 
+    # ── 11b. Case Robustness (ALL-CAPS / lowercase) ─────────────────────
+    w('<h2 id="case-robustness">11b. Case Robustness</h2>')
+    w("<p>Cased NER models rely on capitalisation, so ALL-CAPS names come back "
+      "mislabelled <code>ORGANIZATION</code> or truncated, and all-lowercase "
+      "names are missed outright. Each name is sent in Title, UPPER and lower "
+      "casing and must be detected as <code>PERSON</code> every time, with the "
+      "round-trip restoring the original casing. The final rows guard the "
+      "precision risks: case-sensitive identifiers (PAN, IFSC) must survive, "
+      "and ordinary prose must not gain spurious entities.</p>")
+
+    if runner.case_robustness_results:
+        w("<table><thead><tr><th>Test Case</th><th>Input (truncated)</th>"
+          "<th>Anonymized</th><th>Detected?</th><th>Correct type?</th>"
+          "<th>Round-trip</th><th>Result</th></tr></thead><tbody>")
+        for r in runner.case_robustness_results:
+            w(f'<tr><td>{H(r["label"])}</td>'
+              f'<td><small>{H(r["text"])}</small></td>'
+              f'<td><small>{H(r["anonymized"])}</small></td>'
+              f'<td>{_icon(r["detected"])}</td>'
+              f'<td>{_icon(r["not_mislabelled"])}</td>'
+              f'<td>{_icon(r["round_trip"])}</td>'
+              f'<td>{_icon(r["passed"])}</td></tr>')
+        w("</tbody></table>")
+        case_passed = sum(1 for r in runner.case_robustness_results if r["passed"])
+        w(f"<p><strong>{case_passed}/{len(runner.case_robustness_results)}</strong> "
+          f"case robustness tests passed.</p>")
+
+        w("<h3>11b-i. Case Robustness — Input / Output Detail</h3>")
+        for r in runner.case_robustness_results:
+            _render_io_detail(
+                w,
+                label=r["label"],
+                passed=r["passed"],
+                badge=(
+                    f'{_icon(r["detected"])} detected &nbsp; '
+                    f'{_icon(r["not_mislabelled"])} type &nbsp; '
+                    f'{_icon(r["round_trip"])} round-trip'
+                ),
+                record=r,
+            )
+
+    # ── 11c. Address Completeness ───────────────────────────────────────
+    w('<h2 id="address-completeness">11c. Address Completeness</h2>')
+    w("<p>A flat/unit number left outside the <code>ADDRESS</code> span "
+      "(<code>F3003</code>, <code>A-101</code>, the <code>12</code> of "
+      "<code>12 MG Road</code>) is an exposed identifier. These cases assert "
+      "every address fragment lands inside the span, and that ordinary "
+      "organisation mentions outside address context are not folded in.</p>")
+
+    if runner.address_completeness_results:
+        w("<table><thead><tr><th>Test Case</th><th>Input (truncated)</th>"
+          "<th>Address captured</th><th>Missing</th><th>Complete?</th>"
+          "<th>No over-reach</th><th>Round-trip</th><th>Result</th>"
+          "</tr></thead><tbody>")
+        for r in runner.address_completeness_results:
+            w(f'<tr><td>{H(r["label"])}</td>'
+              f'<td><small>{H(r["text"])}</small></td>'
+              f'<td><small>{H(r["address"])}</small></td>'
+              f'<td><small>{H(r["missing"])}</small></td>'
+              f'<td>{_icon(r["complete"])}</td>'
+              f'<td>{_icon(r["no_overreach"])}</td>'
+              f'<td>{_icon(r["round_trip"])}</td>'
+              f'<td>{_icon(r["passed"])}</td></tr>')
+        w("</tbody></table>")
+        ac_passed = sum(1 for r in runner.address_completeness_results if r["passed"])
+        w(f"<p><strong>{ac_passed}/{len(runner.address_completeness_results)}</strong> "
+          f"address completeness tests passed.</p>")
+
+        w("<h3>11c-i. Address Completeness — Input / Output Detail</h3>")
+        for r in runner.address_completeness_results:
+            _render_io_detail(
+                w,
+                label=r["label"],
+                passed=r["passed"],
+                badge=(
+                    f'{_icon(r["complete"])} complete &nbsp; '
+                    f'{_icon(r["no_overreach"])} no over-reach &nbsp; '
+                    f'{_icon(r["round_trip"])} round-trip'
+                ),
+                record=r,
+                extra_rows=[("Missing fragments", r["missing"])],
+            )
+
+    # ── 11d. Account Number vs Phone Number ─────────────────────────────
+    w('<h2 id="account-phone">11d. Account Number vs Phone Number</h2>')
+    w("<p>A bare run of 9-18 digits is a valid Indian bank account number, "
+      "and the phone recognizer claims the same digits whenever they also form "
+      "a mobile (<code>9876543210</code>) or a landline without its leading 0 "
+      "(<code>5498721032</code>). Scores cannot separate them — the phone "
+      "pattern scores 0.60 against the account pattern's 0.10, and "
+      "<code>number</code> sits in the phone recognizer's context list, so "
+      "<em>bank account number</em> boosts the phone score to 1.00. The "
+      "nearest surrounding cue decides, with transfer markers (IFSC, NEFT) "
+      "also counting when they follow the digits.</p>")
+
+    if runner.account_phone_results:
+        w("<table><thead><tr><th>Test Case</th><th>Input (truncated)</th>"
+          "<th>Value</th><th>Expected</th><th>Actual</th><th>Round-trip</th>"
+          "<th>Result</th></tr></thead><tbody>")
+        for r in runner.account_phone_results:
+            w(f'<tr><td>{H(r["label"])}</td>'
+              f'<td><small>{H(r["text"])}</small></td>'
+              f'<td><code>{H(r["value"])}</code></td>'
+              f'<td><code>{H(r["expected"])}</code></td>'
+              f'<td><code>{H(r["actual"])}</code></td>'
+              f'<td>{_icon(r["round_trip"])}</td>'
+              f'<td>{_icon(r["passed"])}</td></tr>')
+        w("</tbody></table>")
+        ap_passed = sum(1 for r in runner.account_phone_results if r["passed"])
+        w(f"<p><strong>{ap_passed}/{len(runner.account_phone_results)}</strong> "
+          f"account/phone disambiguation tests passed.</p>")
+
+        w("<h3>11d-i. Account vs Phone — Input / Output Detail</h3>")
+        for r in runner.account_phone_results:
+            _render_io_detail(
+                w,
+                label=r["label"],
+                passed=r["passed"],
+                badge=(
+                    f'{_icon(r["correct_type"])} type &nbsp; '
+                    f'{_icon(r["round_trip"])} round-trip'
+                ),
+                record=r,
+                extra_rows=[
+                    ("Value under test", r["value"]),
+                    ("Expected type", r["expected"]),
+                    ("Actual type", r["actual"]),
+                ],
+            )
+
+    # ── 11e. Names With Dotted Initials ─────────────────────────────────
+    w('<h2 id="person-initials">11e. Names With Dotted Initials</h2>')
+    w("<p>Cased NER models end the entity at dotted initials: queried "
+      "directly, <code>Mr. R.K. Sharma</code> returns only "
+      "<code>PERSON 'R.K.'</code> and the surname is never detected, leaking "
+      "it. The same name without periods returns one complete span, which "
+      "isolates the periods as the trigger.</p>")
+
+    if runner.person_initials_results:
+        w("<table><thead><tr><th>Test Case</th><th>Input (truncated)</th>"
+          "<th>Expected span</th><th>Detected</th><th>Full span?</th>"
+          "<th>No leak</th><th>Round-trip</th><th>Result</th>"
+          "</tr></thead><tbody>")
+        for r in runner.person_initials_results:
+            w(f'<tr><td>{H(r["label"])}</td>'
+              f'<td><small>{H(r["text"])}</small></td>'
+              f'<td><small>{H(r["expected"])}</small></td>'
+              f'<td><small>{H(r["actual"])}</small></td>'
+              f'<td>{_icon(r["full_span"])}</td>'
+              f'<td>{_icon(r["no_leak"])}</td>'
+              f'<td>{_icon(r["round_trip"])}</td>'
+              f'<td>{_icon(r["passed"])}</td></tr>')
+        w("</tbody></table>")
+        pi_passed = sum(1 for r in runner.person_initials_results if r["passed"])
+        w(f"<p><strong>{pi_passed}/{len(runner.person_initials_results)}</strong> "
+          f"initials tests passed.</p>")
+
+        w("<h3>11e-i. Dotted Initials — Input / Output Detail</h3>")
+        for r in runner.person_initials_results:
+            _render_io_detail(
+                w,
+                label=r["label"],
+                passed=r["passed"],
+                badge=(
+                    f'{_icon(r["full_span"])} full span &nbsp; '
+                    f'{_icon(r["no_leak"])} no leak &nbsp; '
+                    f'{_icon(r["round_trip"])} round-trip'
+                ),
+                record=r,
+                extra_rows=[("Expected span", r["expected"])],
+            )
+
+    # ── 11f. Honorific and Professional Titles ──────────────────────────
+    w('<h2 id="person-titles">11f. Honorific and Professional Titles</h2>')
+    w("<p>Only the Western titles were known to the pipeline. "
+      "<code>CA Abhay Sharma</code> and <code>CS Priya</code> came back as "
+      "<code>ORGANIZATION</code> — still redacted by default, but leaked "
+      "outright for an app allow-listing ORGANIZATION — while "
+      "<code>Er. Ram</code> tagged the abbreviation itself as PERSON and left "
+      "a stray <code>.</code> entity behind. Titles stay outside the span, "
+      "matching the existing behaviour for <code>Mr. Rajesh Sharma</code>.</p>")
+
+    if runner.person_titles_results:
+        w("<table><thead><tr><th>Title</th><th>Input (truncated)</th>"
+          "<th>Expected name</th><th>Entities</th><th>Is PERSON?</th>"
+          "<th>No junk span</th><th>Round-trip</th><th>Result</th>"
+          "</tr></thead><tbody>")
+        for r in runner.person_titles_results:
+            w(f'<tr><td>{H(r["label"])}</td>'
+              f'<td><small>{H(r["text"])}</small></td>'
+              f'<td><small>{H(r["expected"])}</small></td>'
+              f'<td><small>{H(r["actual"])}</small></td>'
+              f'<td>{_icon(r["as_person"])}</td>'
+              f'<td>{_icon(r["no_junk"])}</td>'
+              f'<td>{_icon(r["round_trip"])}</td>'
+              f'<td>{_icon(r["passed"])}</td></tr>')
+        w("</tbody></table>")
+        pt_passed = sum(1 for r in runner.person_titles_results if r["passed"])
+        w(f"<p><strong>{pt_passed}/{len(runner.person_titles_results)}</strong> "
+          f"title tests passed.</p>")
+
+        w("<h3>11f-i. Titles — Input / Output Detail</h3>")
+        for r in runner.person_titles_results:
+            _render_io_detail(
+                w,
+                label=r["label"],
+                passed=r["passed"],
+                badge=(
+                    f'{_icon(r["as_person"])} PERSON &nbsp; '
+                    f'{_icon(r["no_junk"])} no junk &nbsp; '
+                    f'{_icon(r["round_trip"])} round-trip'
+                ),
+                record=r,
+                extra_rows=[("Expected name", r["expected"])],
+            )
+
+    # ── 11g. NRP Alignment ──────────────────────────────────────────────
+    w('<h2 id="nrp-alignment">11g. NRP Alignment</h2>')
+    w("<p>NRP (nationality / religious / political group) is personal data only "
+      "when it describes a <em>person</em>. The NER model emits it for any "
+      "demonym, so aggregate business language — <code>South Indian "
+      "branches</code>, <code>Indian banking sector</code> — was redacted even "
+      "though it identifies nobody. Used predicatively (<code>the customer is "
+      "Indian</code>) or before a singular person noun (<code>a Muslim "
+      "woman</code>) it describes an individual and must stay.</p>")
+
+    if runner.nrp_alignment_results:
+        w("<table><thead><tr><th>Test Case</th><th>Input (truncated)</th>"
+          "<th>Expectation</th><th>NRP detected</th><th>As expected?</th>"
+          "<th>Round-trip</th><th>Result</th></tr></thead><tbody>")
+        for r in runner.nrp_alignment_results:
+            w(f'<tr><td>{H(r["label"])}</td>'
+              f'<td><small>{H(r["text"])}</small></td>'
+              f'<td><small>{H(r["expectation"])}</small></td>'
+              f'<td><small>{H(r["nrp"])}</small></td>'
+              f'<td>{_icon(r["as_expected"])}</td>'
+              f'<td>{_icon(r["round_trip"])}</td>'
+              f'<td>{_icon(r["passed"])}</td></tr>')
+        w("</tbody></table>")
+        na_passed = sum(1 for r in runner.nrp_alignment_results if r["passed"])
+        w(f"<p><strong>{na_passed}/{len(runner.nrp_alignment_results)}</strong> "
+          f"NRP alignment tests passed.</p>")
+
+        w("<h3>11g-i. NRP Alignment — Input / Output Detail</h3>")
+        for r in runner.nrp_alignment_results:
+            _render_io_detail(
+                w,
+                label=r["label"],
+                passed=r["passed"],
+                badge=(
+                    f'{_icon(r["as_expected"])} as expected &nbsp; '
+                    f'{_icon(r["round_trip"])} round-trip'
+                ),
+                record=r,
+                extra_rows=[
+                    ("Expectation", r["expectation"]),
+                    ("NRP detected", r["nrp"]),
+                ],
+            )
+
+    # ── 11h. Multi-line Input ───────────────────────────────────────────
+    w('<h2 id="multiline">11h. Multi-line Input</h2>')
+    w("<p>In forms, lists and chat messages every line is its own statement. "
+      "A keyword on one line used to relabel an entity on the next: in "
+      "<code>residing at Mumbai. ⏎ My name is Mr. R.K. Sharma.</code> the word "
+      "<code>residing</code> turned <code>R.K.</code> into a LOCATION, so the "
+      "surname was never joined to it and leaked. Keywords now count only on "
+      "the entity's own line and sentence, plus a line that introduces it "
+      "(<code>Aadhaar number:</code>, <code>Correspondence Address</code>). An "
+      "address wrapped over two lines stays one address, while a list of "
+      "cities stays separate. ⏎ marks a line break.</p>")
+    _render_expectation_results(
+        w, runner.multiline_results,
+        kept_label="Lines kept", noun="multi-line",
+        detail_heading="11h-i. Multi-line Input — Input / Output Detail",
+    )
+
+    # ── 11i. Mixed-case Names ───────────────────────────────────────────
+    w('<h2 id="mixed-case">11i. Mixed-case Names</h2>')
+    w("<p>Names are often typed with only the first word capitalised. A cased "
+      "NER model stops at the first uncased word, so in <code>My name is "
+      "Venkata narasimha raju.</code> only <code>Venkata</code> was masked and "
+      "the middle and last names leaked. The case-recovery pass, which re-runs "
+      "NER over a re-cased copy, now keeps such names as PERSON, cut at any "
+      "lowercase word that is a verb, preposition, article, common "
+      "vocabulary or a relation word, so ordinary words typed after a name "
+      "(<code>Ramesh paid electricity bill</code>, <code>Kavitha mother is the "
+      "joint holder</code>) are not masked.</p>")
+    _render_expectation_results(
+        w, runner.mixed_case_results,
+        kept_label="Context kept", noun="mixed-case name",
+        detail_heading="11i-i. Mixed-case Names — Input / Output Detail",
+    )
+
+    # ── 11j. Address Units ──────────────────────────────────────────────
+    w('<h2 id="address-units">11j. Address Units</h2>')
+    w("<p>Flat numbers, block letters and their labels (<code>Flat no. 302, "
+      "C 23</code>, <code>H.No. 12-3-456</code>, <code>2nd Floor, B Wing</code>) "
+      "have no recognizer. Only the single number directly before an address "
+      "was absorbed, and the <code>.</code> of <code>no.</code> was read as the "
+      "end of a sentence, so <code>my address is Flat no. 302, C 23, Prestige "
+      "Towers, Bangalore.</code> left <code>no. 302, C</code> exposed. The whole "
+      "unit designation is now absorbed into the ADDRESS, while <code>no</code> "
+      "in an ordinary sentence (<code>Order no. 12345</code>), a date before an "
+      "address and separate sentences stay as they were. ⏎ marks a line "
+      "break.</p>")
+    _render_expectation_results(
+        w, runner.address_units_results,
+        kept_label="Context kept", noun="address unit",
+        detail_heading="11j-i. Address Units — Input / Output Detail",
+    )
+
+    # ── 11k. Key-value Context ──────────────────────────────────────────
+    w('<h2 id="key-value">11k. Key-value Context</h2>')
+    w("<p>Context words are read from spaCy's tokens, and spaCy keeps a URL, "
+      "or a key=value pair written without spaces, as one token. In "
+      "<code>https://api.com?aadhaar=987654321098&amp;pan=ABCPK1234L</code> the "
+      "key <code>aadhaar</code> was never seen as context, so the Aadhaar "
+      "number, which scores below the threshold without it, leaked while the "
+      "PAN next to it was masked. The key directly before a value now counts "
+      "as a context word (<code>aadhaar_no=</code>, <code>aadhaarNumber=</code>, "
+      "<code>Aadhaar:</code>), while keys that are not context words "
+      "(<code>txn_id=</code>) change nothing.</p>")
+    _render_expectation_results(
+        w, runner.key_value_results,
+        kept_label="Context kept", noun="key-value context",
+        detail_heading="11k-i. Key-value Context — Input / Output Detail",
+    )
+
     # ── 12. Geo-Coordinate Detection ────────────────────────────────────
     w('<h2 id="geo-coordinates">12. Geo-Coordinate Detection</h2>')
     w("<p>Verifies that geographic coordinates (latitude/longitude) in "
@@ -3578,6 +5036,16 @@ def generate_html_report(runner: TestRunner, output_path: str) -> None:
         ("ComplianceApp RT (full)", f"{comp_full_exact}/{total_scenarios}"),
         ("CustomerSupportApp RT", f"{supp_default_exact}/{total_scenarios}"),
         ("Address indicator tests", f"{addr_passed}/{len(runner.address_indicator_results)}"),
+        ("Case robustness tests", f"{sum(1 for r in runner.case_robustness_results if r['passed'])}/{len(runner.case_robustness_results)}"),
+        ("Address completeness tests", f"{sum(1 for r in runner.address_completeness_results if r['passed'])}/{len(runner.address_completeness_results)}"),
+        ("Account vs phone tests", f"{sum(1 for r in runner.account_phone_results if r['passed'])}/{len(runner.account_phone_results)}"),
+        ("Dotted initials tests", f"{sum(1 for r in runner.person_initials_results if r['passed'])}/{len(runner.person_initials_results)}"),
+        ("Honorific title tests", f"{sum(1 for r in runner.person_titles_results if r['passed'])}/{len(runner.person_titles_results)}"),
+        ("NRP alignment tests", f"{sum(1 for r in runner.nrp_alignment_results if r['passed'])}/{len(runner.nrp_alignment_results)}"),
+        ("Multi-line context tests", f"{sum(1 for r in runner.multiline_results if r['passed'])}/{len(runner.multiline_results)}"),
+        ("Mixed-case name tests", f"{sum(1 for r in runner.mixed_case_results if r['passed'])}/{len(runner.mixed_case_results)}"),
+        ("Address unit tests", f"{sum(1 for r in runner.address_units_results if r['passed'])}/{len(runner.address_units_results)}"),
+        ("Key-value context tests", f"{sum(1 for r in runner.key_value_results if r['passed'])}/{len(runner.key_value_results)}"),
         ("Geo-coordinate tests", f"{sum(1 for r in runner.geo_coordinate_results if r['passed'])}/{len(runner.geo_coordinate_results)}"),
         ("NRP detection tests", f"{sum(1 for r in runner.nrp_results if r['passed'])}/{len(runner.nrp_results)}"),
         ("US entity tests", f"{sum(1 for r in runner.us_entity_results if r['passed'])}/{len(runner.us_entity_results)}"),

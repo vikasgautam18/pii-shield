@@ -165,7 +165,9 @@ class TestMergeAddressUnit:
         merged = _merge_address_entities(results, text)
         addrs = [r for r in merged if r.entity_type == "ADDRESS"]
         assert len(addrs) == 1
-        assert addrs[0].start == 19
+        # Starts at "Flat" (9), not "Kumar Pinnacle" (19) — a unit number or
+        # its label left outside the ADDRESS span would leak.
+        assert addrs[0].start == 9
         assert addrs[0].end == 53
 
     def test_loose_glue_without_indicator_no_merge(self):
@@ -226,3 +228,75 @@ class TestMergeAddressIntegration:
         resp = client.get("/supported-entities")
         assert resp.status_code == 200
         assert "ADDRESS" in resp.json()
+
+
+# ---- address-context merging (ORGANIZATION / NRP + unit numbers) ----
+
+
+def _org(start: int, end: int, score: float = 0.85) -> RecognizerResult:
+    r = RecognizerResult(entity_type="ORGANIZATION", start=start, end=end, score=score)
+    r.recognition_metadata = {"recognizer_name": "SpacyRecognizer"}
+    return r
+
+
+def _nrp(start: int, end: int, score: float = 0.85) -> RecognizerResult:
+    r = RecognizerResult(entity_type="NRP", start=start, end=end, score=score)
+    r.recognition_metadata = {"recognizer_name": "SpacyRecognizer"}
+    return r
+
+
+class TestAddressContextMerging:
+    """Building/society names come back as LOCATION, ORGANIZATION or NRP
+    depending on context, so near an address indicator all three count."""
+
+    def test_lone_nrp_after_indicator_becomes_address(self):
+        text = "residing at F3003, Kanakia Zen World"
+        start = text.index("Kanakia")
+        merged = _merge_address_entities([_nrp(start, len(text))], text)
+        addrs = [r for r in merged if r.entity_type == "ADDRESS"]
+        assert len(addrs) == 1
+        # Absorbs the flat number "F3003" so it is not left exposed.
+        assert text[addrs[0].start : addrs[0].end] == "F3003, Kanakia Zen World"
+
+    def test_lone_organization_after_indicator_becomes_address(self):
+        text = "He lives at Prestige Shantiniketan"
+        start = text.index("Prestige")
+        merged = _merge_address_entities([_org(start, len(text))], text)
+        assert [r.entity_type for r in merged] == ["ADDRESS"]
+
+    def test_organization_without_indicator_is_untouched(self):
+        # No address indicator -> ordinary ORGANIZATION detection is unaffected.
+        text = "She works at Contoso Manufacturing on weekdays"
+        start = text.index("Contoso")
+        merged = _merge_address_entities([_org(start, start + 21)], text)
+        assert [r.entity_type for r in merged] == ["ORGANIZATION"]
+
+    def test_nrp_without_indicator_is_untouched(self):
+        text = "The Kanakia Zen group sponsors the event"
+        merged = _merge_address_entities([_nrp(4, 21)], text)
+        assert [r.entity_type for r in merged] == ["NRP"]
+
+    def test_unit_number_absorbed_into_multi_entity_address(self):
+        text = "Send it to 12 MG Road, Bengaluru 560001"
+        road = text.index("MG Road")
+        merged = _merge_address_entities(
+            [_loc(road, road + 7), _loc(23, 32), _pin(33, 39)], text
+        )
+        addrs = [r for r in merged if r.entity_type == "ADDRESS"]
+        assert len(addrs) == 1
+        assert text[addrs[0].start : addrs[0].end].startswith("12 MG Road")
+
+    def test_ordinary_word_before_address_is_not_absorbed(self):
+        # Only unit-number-shaped tokens are absorbed, never plain words.
+        text = "Address: near Kumar Pinnacle, Pune 411045"
+        merged = _merge_address_entities([_loc(14, 28), _loc(30, 34), _pin(35, 41)], text)
+        addrs = [r for r in merged if r.entity_type == "ADDRESS"]
+        assert len(addrs) == 1
+        assert text[addrs[0].start : addrs[0].end].startswith("Kumar Pinnacle")
+
+    def test_standalone_location_still_not_promoted(self):
+        # Regression guard: a lone LOCATION must keep its type even with an
+        # indicator present, so ordinary place mentions are not over-redacted.
+        text = "He lives at Mumbai and works there."
+        merged = _merge_address_entities([_loc(12, 18)], text)
+        assert [r.entity_type for r in merged] == ["LOCATION"]

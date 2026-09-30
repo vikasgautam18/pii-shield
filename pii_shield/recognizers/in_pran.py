@@ -10,7 +10,9 @@ are nearby.  Without context, Aadhaar (base 0.3–0.85) wins the overlap.
 
 When context keywords are found in the text, ``analyze()`` elevates
 the score to 0.95 so that PRAN beats the built-in PhoneRecognizer
-(0.85) for 12-digit numbers in pension context.
+(0.85) for 12-digit numbers in pension context.  A keyword on another
+line still raises the score, but a recognizer with its own keyword on the
+number's line then decides the type (``pipeline.prefer_line_context``).
 """
 
 from __future__ import annotations
@@ -20,6 +22,8 @@ from typing import TYPE_CHECKING
 import re
 
 from presidio_analyzer import Pattern, PatternRecognizer
+
+from pii_shield.recognizers._context_boost import boost_by_context
 
 if TYPE_CHECKING:
     from presidio_analyzer import RecognizerResult
@@ -76,9 +80,4 @@ class InPranRecognizer(PatternRecognizer):
         regex_flags: int | None = None,
     ) -> list[RecognizerResult]:
         results = super().analyze(text, entities, nlp_artifacts, regex_flags)
-        if results:
-            has_context = bool(_CONTEXT_RE.search(text))
-            if has_context:
-                for r in results:
-                    r.score = _BOOSTED_SCORE
-        return results
+        return boost_by_context(results, text, _CONTEXT_RE, _BOOSTED_SCORE)

@@ -13,11 +13,15 @@ This recognizer replaces the built-in one with broader pattern coverage.
 
 from presidio_analyzer import Pattern, PatternRecognizer
 
+from pii_shield.text_lines import INLINE_SPACE
+
 # Space-separated: 9876 5432 1098
 # Lookbehind/lookahead prevent matching inside larger groups (e.g. credit cards).
+# The lookahead stops at the end of the line, so digits on the next line (such
+# as a numbered list) cannot block the match.
 _PATTERN_SPACES = Pattern(
     name="in_aadhaar_spaces",
-    regex=r"(?<!\d )\b[2-9]\d{3}\s\d{4}\s\d{4}\b(?!\s\d)",
+    regex=rf"(?<!\d )\b[2-9]\d{{3}}\s\d{{4}}\s\d{{4}}\b(?!{INLINE_SPACE}\d)",
     score=0.85,
 )
 

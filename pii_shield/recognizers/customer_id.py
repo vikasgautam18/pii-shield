@@ -11,7 +11,9 @@ nearby.  Without context, the generic bank account recognizer handles it.
 
 When context keywords are found in the text, ``analyze()`` elevates
 the score to 0.95 so that CUSTOMER_ID beats IN_BANK_ACCOUNT
-(0.10 + context boost ≈ 0.55).
+(0.10 + context boost ≈ 0.55).  A keyword on another line still raises
+the score, but a recognizer with its own keyword on the number's line then
+decides the type (``pipeline.prefer_line_context``).
 """
 
 from __future__ import annotations
@@ -21,6 +23,8 @@ from typing import TYPE_CHECKING
 import re
 
 from presidio_analyzer import Pattern, PatternRecognizer
+
+from pii_shield.recognizers._context_boost import boost_by_context
 
 if TYPE_CHECKING:
     from presidio_analyzer import RecognizerResult
@@ -82,9 +86,4 @@ class CustomerIdRecognizer(PatternRecognizer):
         regex_flags: int | None = None,
     ) -> list[RecognizerResult]:
         results = super().analyze(text, entities, nlp_artifacts, regex_flags)
-        if results:
-            has_context = bool(_CONTEXT_RE.search(text))
-            if has_context:
-                for r in results:
-                    r.score = _BOOSTED_SCORE
-        return results
+        return boost_by_context(results, text, _CONTEXT_RE, _BOOSTED_SCORE)
