@@ -1,5 +1,15 @@
 """Shared fixtures for the PII Shield test suite."""
 
+import os
+
+# A developer's shell or `.env` (Compose passes it into the container) may enable authentication, and
+# app.main reads the auth settings when it is imported, before any fixture runs. Scrub that environment
+# first so test results never depend on it; tests that need authentication configure it themselves.
+_AUTH_ENV_PREFIXES = ("AUTH_", "OIDC_")
+_AUTH_ENV_NAMES = ("UI_REDIRECT_URI", "API_ACCESS_TOKEN")
+for _name in [n for n in os.environ if n.startswith(_AUTH_ENV_PREFIXES) or n in _AUTH_ENV_NAMES]:
+    del os.environ[_name]
+
 import fakeredis
 import fakeredis.aioredis
 import pytest

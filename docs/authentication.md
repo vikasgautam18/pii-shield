@@ -55,6 +55,12 @@ cat dev/keycloak/dev.env.example >> .env
 docker compose --profile auth-dev up --build
 ```
 
+The first build takes several minutes. `.env.example` selects `NLP_ENGINE=transformers`, which builds a much larger
+image; authentication does not depend on the engine, so for a quicker start set `NLP_ENGINE=spacy` (the Compose
+default) in `.env` first. To skip the Grafana container too, name just the services you need:
+`docker compose --profile auth-dev up --build redis app playground admin keycloak` (the API then logs harmless
+OTLP export errors because there is no collector).
+
 | URL | What |
 |---|---|
 | http://localhost:7860 | Playground (needs the `PIIShield.User` role) |
@@ -71,12 +77,37 @@ docker compose --profile auth-dev up --build
 Call the API as a service (client-credentials flow):
 
 ```bash
-export OIDC_ISSUER_URL=http://localhost:8080/realms/pii-shield OIDC_ALLOW_INSECURE_HTTP=true
-export OIDC_CLIENT_ID=pii-shield-svc OIDC_CLIENT_SECRET=dev-only-service-client-secret
-TOKEN=$(python scripts/get_token.py)
+TOKEN=$(curl -s http://localhost:8080/realms/pii-shield/protocol/openid-connect/token \
+  -d grant_type=client_credentials -d client_id=pii-shield-svc \
+  -d client_secret=dev-only-service-client-secret | jq -r .access_token)
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/apps          # 200
 curl http://localhost:8000/apps                                             # 401
 ```
+
+`scripts/get_token.py` does the same (set `OIDC_ISSUER_URL=http://localhost:8080/realms/pii-shield`,
+`OIDC_ALLOW_INSECURE_HTTP=true`, `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET`; it needs `pip install requests`) and adds
+`--show-claims` for debugging.
+
+The dev service account only has the user role, so admin routes (`/audit-log`, `POST /apps`) answer `403`. To try
+them, open the Keycloak console (`admin` / `admin`), realm `pii-shield`, Users,
+`service-account-pii-shield-svc`, Role mapping, and assign `PIIShield.Admin`. Tokens you already hold keep their
+old roles: request a new one.
+
+Run the authentication tests in the container (no identity provider needed):
+
+```bash
+docker compose --env-file /dev/null run --rm --no-deps -T \
+  -v "$PWD/app:/app/app" -v "$PWD/tests:/app/tests" -v "$PWD/pii_shield:/app/pii_shield" \
+  app sh -c "pip install -q pytest 'redis<6' && python -m pytest -q -p no:cacheprovider \
+    tests/test_auth_settings.py tests/test_auth_validator.py tests/test_auth_dependencies.py \
+    tests/test_auth_endpoints.py tests/test_ui_launcher.py tests/test_ui_auth.py \
+    tests/test_client_tooling.py tests/test_streamlit_auth_deps.py tests/test_audit.py \
+    tests/test_env_isolation.py"
+```
+
+`--env-file /dev/null` keeps your `.env` out of the test container (for example `.env.example` disables the US
+recognizers that some endpoint tests expect). Replace the test list with `tests` to run everything; with the default
+spaCy image, 15 NER-dependent tests also fail on `main` and are unrelated to authentication.
 
 To switch authentication off again, set `AUTH_ENABLED=false` (or delete the lines you appended) and run
 `docker compose up -d --force-recreate --no-deps app playground admin`.
@@ -290,6 +321,12 @@ Secrets are passed from your environment into Container Apps secrets, not commit
 changes the UIs first when enabling and the API first when disabling, so every intermediate state is usable, and
 requires UI apps that already run the launcher (it tells you if they do not; redeploy them once with
 `02-deploy-apps.sh`).
+
+`01-build-push.sh` and `02-deploy-apps.sh` read their targets (resource group, registry, environment, Redis) from
+`terraform output`, so Terraform must be installed and initialised against the remote state first
+(`terraform init` with the `-backend-config` flags printed by `00-bootstrap-state.sh`; see `infra/README.md`).
+Azure Cloud Shell already has Terraform and the Azure CLI. `03-verify.sh` and `06-configure-auth.sh` need only
+`RG_NAME` (and the app names, if you changed them) plus the Azure CLI.
 
 **Recommended rollout**
 
