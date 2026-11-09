@@ -303,6 +303,9 @@ one before they do (most client libraries can do this for you).
 The bundled test tools accept the same token: `examples/run_indian_banking_tests.py`,
 `examples/run_indian_banking_tests_azure.py`, `examples/scale_test.py` and `scripts/cleanup_test_apps.py` read
 `API_ACCESS_TOKEN` (or `--access-token`). They also need an admin-role token because they register applications.
+The two `run_indian_banking_tests*.py` runners ask the API who the token belongs to (`GET /me`) before the first
+test and stop with a clear message when the token is missing, rejected or not an admin's, instead of running a
+suite in which every test fails. A full run takes a few minutes, so a token fetched just before it is enough.
 
 ## Enabling and disabling
 

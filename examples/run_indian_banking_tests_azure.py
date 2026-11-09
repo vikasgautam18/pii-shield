@@ -7,14 +7,20 @@ Runs all test scenarios against a live PII Shield API and generates
 a detailed HTML report.
 
 Prerequisites:
-    1. Services must be running: docker compose up -d
+    1. The Azure deployment must be running (see infra/README.md)
     2. pip install requests  (usually already available)
 
 Usage:
     python examples/run_indian_banking_tests_azure.py [--api-url URL] [--output FILE]
 
+Authentication:
+    When the API runs with AUTH_ENABLED=true the suite needs an admin-role token, because it registers
+    applications. Create one and export it (or pass --access-token):
+        export API_ACCESS_TOKEN="$(python scripts/get_token.py)"
+    The token is checked before any test runs; see docs/authentication.md.
+
 Defaults:
-    --api-url   https://pii-shield.thankfulplant-d485e8db.centralindia.azurecontainerapps.io
+    --api-url   https://piishield.purpleflower-09f5bc39.centralindia.azurecontainerapps.io
     --output    examples/__results/test_report_azure.html
 """
 
@@ -35,11 +41,11 @@ import re
 
 import requests
 
-from _auth import add_token_argument, install_bearer_token  # noqa: E402
+from _auth import ApiAccessError, add_token_argument, check_api_access, install_bearer_token  # noqa: E402
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
 
-DEFAULT_API_URL = "https://pii-shield.thankfulplant-d485e8db.centralindia.azurecontainerapps.io"
+DEFAULT_API_URL = "https://piishield.purpleflower-09f5bc39.centralindia.azurecontainerapps.io"
 DEFAULT_OUTPUT = "examples/__results/test_report_azure.html"
 
 # ── Data Classes ─────────────────────────────────────────────────────────────
@@ -5196,6 +5202,13 @@ def main() -> None:
     except Exception as exc:
         print(f"❌ Cannot reach API at {args.api_url}: {exc}")
         print("   Ensure the Azure Container App is running.")
+        sys.exit(1)
+
+    # An API with authentication on answers /apps with a 401 body instead of raising, so check access here
+    try:
+        print(f"  {check_api_access(args.api_url, args.access_token)}")
+    except ApiAccessError as exc:
+        print(f"❌ {exc}")
         sys.exit(1)
 
     # Run tests

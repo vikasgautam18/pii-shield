@@ -13,6 +13,12 @@ Prerequisites:
 Usage:
     python examples/run_indian_banking_tests.py [--api-url URL] [--output FILE]
 
+Authentication:
+    When the API runs with AUTH_ENABLED=true the suite needs an admin-role token, because it registers
+    applications. Create one and export it (or pass --access-token):
+        export API_ACCESS_TOKEN="$(python scripts/get_token.py)"
+    The token is checked before any test runs; see docs/authentication.md.
+
 Defaults:
     --api-url   http://localhost:8000
     --output    examples/__results/test_report.html
@@ -35,7 +41,7 @@ import re
 
 import requests
 
-from _auth import add_token_argument, install_bearer_token  # noqa: E402
+from _auth import ApiAccessError, add_token_argument, check_api_access, install_bearer_token  # noqa: E402
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
 
@@ -5184,6 +5190,13 @@ def main() -> None:
     except Exception as exc:
         print(f"❌ Cannot reach API at {args.api_url}: {exc}")
         print("   Start the server: docker compose up -d")
+        sys.exit(1)
+
+    # An API with authentication on answers /apps with a 401 body instead of raising, so check access here
+    try:
+        print(f"  {check_api_access(args.api_url, args.access_token)}")
+    except ApiAccessError as exc:
+        print(f"❌ {exc}")
         sys.exit(1)
 
     # Run tests

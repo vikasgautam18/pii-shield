@@ -1,8 +1,15 @@
-"""Tests for the service-token tooling: scripts/get_token.py and examples/_auth.py."""
+"""Tests for the service-token tooling: scripts/get_token.py and examples/_auth.py (including the access
+preflight the test runners run before they start)."""
 
 import base64
+import http.server
 import importlib.util
 import json
+import os
+import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -284,3 +291,143 @@ class TestBearerHelper:
         assert requests.sessions.Session.request is before
         requests.get("http://api.test/apps")
         assert sent[0]["headers"] is None
+
+
+ME_ADMIN = {"auth_enabled": True, "subject": "svc-1", "name": "Admin Svc", "kind": "service",
+            "roles": ["PIIShield.Admin"], "is_user": True, "is_admin": True}
+ME_USER = {"auth_enabled": True, "subject": "svc-2", "name": "User Svc", "kind": "service",
+           "roles": ["PIIShield.User"], "is_user": True, "is_admin": False}
+
+
+class TestApiAccessCheck:
+    @staticmethod
+    def serve(monkeypatch, response):
+        """Make requests.get answer with ``response`` (raised if it is an exception); return the calls."""
+        calls = []
+
+        def fake_get(url, **kwargs):
+            calls.append((url, kwargs))
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        return calls
+
+    def test_an_admin_token_passes_and_is_described(self, monkeypatch):
+        calls = self.serve(monkeypatch, FakeResponse(200, {**ME_ADMIN, "expires_at": time.time() + 1830}))
+        summary = examples_auth.check_api_access("https://api.test/", "tok")
+        assert "Admin Svc" in summary and "PIIShield.Admin" in summary and "service" in summary
+        assert "30 min" in summary
+        url, kwargs = calls[0]
+        assert url == "https://api.test/me"
+        assert kwargs["headers"] == examples_auth.auth_headers("tok")
+
+    def test_a_user_token_is_refused_when_admin_is_needed(self, monkeypatch):
+        self.serve(monkeypatch, FakeResponse(200, ME_USER))
+        with pytest.raises(examples_auth.ApiAccessError, match="admin role.*User Svc.*PIIShield.User"):
+            examples_auth.check_api_access("https://api.test", "tok")
+        assert "User Svc" in examples_auth.check_api_access("https://api.test", "tok", require_admin=False)
+
+    def test_a_token_without_roles_is_described_as_having_none(self, monkeypatch):
+        self.serve(monkeypatch, FakeResponse(200, {**ME_USER, "roles": [], "is_user": False}))
+        with pytest.raises(examples_auth.ApiAccessError, match="roles: none"):
+            examples_auth.check_api_access("https://api.test", "tok")
+
+    def test_a_missing_token_and_a_rejected_token_get_different_advice(self, monkeypatch):
+        self.serve(monkeypatch, FakeResponse(401, {"detail": "Authentication required."}))
+        with pytest.raises(examples_auth.ApiAccessError, match="no access token.*API_ACCESS_TOKEN"):
+            examples_auth.check_api_access("https://api.test")
+        with pytest.raises(examples_auth.ApiAccessError, match="rejected the access token"):
+            examples_auth.check_api_access("https://api.test", "stale")
+
+    def test_an_api_without_me_predates_authentication(self, monkeypatch):
+        self.serve(monkeypatch, FakeResponse(404, {"detail": "Not Found"}))
+        assert "does not use authentication" in examples_auth.check_api_access("https://api.test")
+
+    def test_authentication_off_needs_neither_a_token_nor_the_admin_role(self, monkeypatch):
+        anonymous = {"auth_enabled": False, "kind": "anonymous", "roles": [],
+                     "is_user": True, "is_admin": True}
+        self.serve(monkeypatch, FakeResponse(200, anonymous))
+        assert "off" in examples_auth.check_api_access("https://api.test")
+
+    @pytest.mark.parametrize(
+        "response",
+        [FakeResponse(503, {}), FakeResponse(200, not_json=True), FakeResponse(200, ["not", "a", "mapping"])],
+    )
+    def test_unexpected_answers_are_reported(self, monkeypatch, response):
+        self.serve(monkeypatch, response)
+        with pytest.raises(examples_auth.ApiAccessError, match="Unexpected answer"):
+            examples_auth.check_api_access("https://api.test", "tok")
+
+    def test_an_unreachable_api_is_reported(self, monkeypatch):
+        self.serve(monkeypatch, requests.ConnectionError("refused"))
+        with pytest.raises(examples_auth.ApiAccessError, match="Cannot reach API at https://api.test"):
+            examples_auth.check_api_access("https://api.test", "tok")
+
+
+class _FakeApiHandler(http.server.BaseHTTPRequestHandler):
+    routes: dict = {}
+
+    def do_GET(self):  # noqa: N802 (http.server naming)
+        status, body = self.routes.get(self.path, (404, {"detail": "Not Found"}))
+        payload = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture()
+def fake_api():
+    """Start a tiny HTTP server answering the canned ``{path: (status, json body)}`` routes."""
+    servers = []
+
+    def start(routes):
+        handler = type("Handler", (_FakeApiHandler,), {"routes": routes})
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+        return f"http://127.0.0.1:{server.server_address[1]}"
+
+    yield start
+    for server in servers:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize("runner", ["run_indian_banking_tests.py", "run_indian_banking_tests_azure.py"])
+class TestRunnerPreflight:
+    """Both runners must stop before the first test when the token cannot do the job."""
+
+    @staticmethod
+    def run(runner, url, tmp_path, token=""):
+        env = {k: v for k, v in os.environ.items() if k != "API_ACCESS_TOKEN"}
+        env["PYTHONIOENCODING"] = "utf-8"
+        command = [sys.executable, str(REPO_ROOT / "examples" / runner),
+                   "--api-url", url, "--output", str(tmp_path / "report.html")]
+        if token:
+            command += ["--access-token", token]
+        return subprocess.run(command, cwd=REPO_ROOT, env=env, capture_output=True,
+                              encoding="utf-8", timeout=120)
+
+    def test_stops_when_the_api_wants_a_token(self, runner, fake_api, tmp_path):
+        denied = (401, {"detail": "Authentication required."})
+        url = fake_api({"/apps": denied, "/me": denied})
+        result = self.run(runner, url, tmp_path)
+        assert result.returncode == 1
+        assert "requires authentication" in result.stdout and "API_ACCESS_TOKEN" in result.stdout
+        assert "FAILED" not in result.stdout
+        assert not (tmp_path / "report.html").exists()
+
+    def test_stops_when_the_token_is_not_an_admin(self, runner, fake_api, tmp_path):
+        url = fake_api({"/apps": (200, []), "/me": (200, ME_USER)})
+        result = self.run(runner, url, tmp_path, token="user-token")
+        assert result.returncode == 1
+        assert "admin role" in result.stdout and "User Svc" in result.stdout
+        assert "FAILED" not in result.stdout
+        assert not (tmp_path / "report.html").exists()

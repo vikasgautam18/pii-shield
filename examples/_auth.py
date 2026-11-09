@@ -8,8 +8,11 @@ When the API runs with ``AUTH_ENABLED=true`` every call needs an access token::
 The token comes from ``--access-token`` or the ``API_ACCESS_TOKEN`` environment
 variable. Without one the scripts behave exactly as before (an API with auth off).
 
+Scripts that register or delete applications also call ``check_api_access`` before they start, so a missing,
+expired or too-weak token stops them with a clear message instead of a wall of per-test HTTP errors.
+
 Used by:
-  - examples/run_indian_banking_tests.py / run_indian_banking_tests_azure.py  (requests)
+  - examples/run_indian_banking_tests.py / run_indian_banking_tests_azure.py  (requests, check_api_access)
   - examples/scale_test.py                                                    (aiohttp)
   - scripts/cleanup_test_apps.py                                              (requests)
 """
@@ -18,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import time
 
 import requests
 
@@ -61,3 +65,59 @@ def install_bearer_token(token: str, api_base: str) -> None:
         return original(self, method, url, **kwargs)
 
     requests.sessions.Session.request = request
+
+
+class ApiAccessError(RuntimeError):
+    """The API will not let a script do its job: no token, a rejected token, or too little privilege."""
+
+
+def check_api_access(
+    api_base: str, token: str = "", *, require_admin: bool = True, timeout: float = 30
+) -> str:
+    """Fail fast, with an actionable message, if the API would reject this script's calls.
+
+    Asks ``GET /me`` who the API thinks the caller is. An API that predates authentication has no ``/me``
+    and needs nothing, and one with authentication off answers as an anonymous admin. Returns a one-line
+    summary to print, or raises :class:`ApiAccessError`. ``require_admin`` is for scripts that register or
+    delete applications, which only admins may do. Call it once the API is known to answer.
+    """
+    base = api_base.rstrip("/")
+    try:
+        resp = requests.get(f"{base}/me", headers=auth_headers(token), timeout=timeout)
+    except requests.RequestException as exc:
+        raise ApiAccessError(f"Cannot reach API at {api_base}: {exc}") from exc
+
+    if resp.status_code == 404:
+        return "API does not use authentication (it has no /me endpoint)"
+    if resp.status_code == 401:
+        if not token:
+            raise ApiAccessError(
+                "The API requires authentication but no access token was given. "
+                f"Set {ENV_VAR} or pass --access-token (create a token with scripts/get_token.py)."
+            )
+        raise ApiAccessError(
+            "The API rejected the access token (HTTP 401): it may have expired or be meant for a "
+            "different API. Create a fresh one with scripts/get_token.py."
+        )
+    try:
+        me = resp.json()
+    except ValueError:
+        me = None
+    if resp.status_code != 200 or not isinstance(me, dict):
+        raise ApiAccessError(f"Unexpected answer from {base}/me (HTTP {resp.status_code}).")
+
+    if not me.get("auth_enabled"):
+        return "Authentication is off on this API"
+
+    who = me.get("name") or me.get("subject") or "an unknown caller"
+    roles = ", ".join(me.get("roles") or []) or "none"
+    if require_admin and not me.get("is_admin"):
+        raise ApiAccessError(
+            "This script registers and deletes applications, which needs the admin role, but the token "
+            f"is for {who} (roles: {roles}). Use a token for an admin account or service."
+        )
+    summary = f"Authenticated as {who} ({me.get('kind', 'user')}; roles: {roles})"
+    expires_at = me.get("expires_at")
+    if isinstance(expires_at, (int, float)):
+        summary += f"; token valid for another {max(int(expires_at - time.time()) // 60, 0)} min"
+    return summary
