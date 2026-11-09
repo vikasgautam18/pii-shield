@@ -28,6 +28,19 @@ def _ensure_db_dir() -> None:
     Path(AUDIT_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 
 
+def _ensure_actor_column(conn: sqlite3.Connection) -> None:
+    """Add the ``actor`` column to audit tables created before authentication existed."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(audit_log)")}
+    if "actor" in columns:
+        return
+    try:
+        conn.execute("ALTER TABLE audit_log ADD COLUMN actor TEXT NOT NULL DEFAULT ''")
+    except sqlite3.OperationalError as exc:
+        # Another worker migrated the table between our check and the ALTER.
+        if "duplicate column" not in str(exc).lower():
+            raise
+
+
 def get_connection() -> sqlite3.Connection:
     """Return a SQLite connection (creates file + table on first call)."""
     _ensure_db_dir()
@@ -41,10 +54,12 @@ def get_connection() -> sqlite3.Connection:
             action      TEXT NOT NULL,
             app_id      TEXT NOT NULL,
             app_name    TEXT NOT NULL DEFAULT '',
-            details     TEXT NOT NULL DEFAULT ''
+            details     TEXT NOT NULL DEFAULT '',
+            actor       TEXT NOT NULL DEFAULT ''
         )
         """
     )
+    _ensure_actor_column(conn)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_audit_app_id ON audit_log(app_id)"
     )
@@ -61,8 +76,13 @@ def record_event(
     app_name: str = "",
     details: str | dict = "",
     conn: sqlite3.Connection | None = None,
+    actor: str = "",
 ) -> dict:
-    """Insert an audit record and return it as a dict."""
+    """Insert an audit record and return it as a dict.
+
+    ``actor`` identifies the authenticated user or service that performed the
+    action; it is empty when authentication is disabled.
+    """
     close_after = conn is None
     conn = conn or get_connection()
     try:
@@ -73,11 +93,12 @@ def record_event(
             "app_id": app_id,
             "app_name": app_name,
             "details": json.dumps(details) if isinstance(details, dict) else str(details),
+            "actor": actor,
         }
         conn.execute(
             """
-            INSERT INTO audit_log (id, timestamp, action, app_id, app_name, details)
-            VALUES (:id, :timestamp, :action, :app_id, :app_name, :details)
+            INSERT INTO audit_log (id, timestamp, action, app_id, app_name, details, actor)
+            VALUES (:id, :timestamp, :action, :app_id, :app_name, :details, :actor)
             """,
             record,
         )

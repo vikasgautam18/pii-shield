@@ -7,7 +7,8 @@ requests==2.32.3
 gradio==5.23.0
 # Streamlit 1.57+ unconditionally imports its Starlette server, which needs a newer
 # starlette than the <0.41 allowed by fastapi==0.115.2 (fails at startup with ImportError).
-streamlit>=1.38.0,<1.57
+# 1.56 is the floor for the [auth] extra (OIDC login, st.user.tokens, chunked auth cookies).
+streamlit[auth]>=1.56.0,<1.57
 redis>=5.3.0
 fakeredis==2.26.2
 python-dotenv==1.1.0
@@ -33,4 +34,6 @@ torch
 gunicorn
 # --- Azure Redis Entra authentication (optional, for REDIS_AUTH_MODE=entra) ---
 azure-identity>=1.15.0
+# --- OIDC bearer-token validation for the API (used only when AUTH_ENABLED=true) ---
+PyJWT[crypto]>=2.8,<3
 PyYAML==6.0.3

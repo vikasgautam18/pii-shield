@@ -177,8 +177,8 @@ This deploys all three container apps:
 | App | CPU / Memory | Ingress | Scale |
 |-----|-------------|---------|-------|
 | `pii-shield` | 2 vCPU / 4 GiB | External (HTTPS) | 0–96 (scale to zero) |
-| `playground` (Streamlit Playground) | 1 vCPU / 2 GiB | External (HTTPS) | 0–3 (scale to zero) |
-| `pii-admin` (Streamlit Admin) | 1 vCPU / 2 GiB | External (HTTPS) | 0–2 (scale to zero) |
+| `playground` (Streamlit Playground) | 1 vCPU / 2 GiB | External (HTTPS) | 0–3 (scale to zero); 0–1 with authentication on |
+| `pii-admin` (Streamlit Admin) | 1 vCPU / 2 GiB | External (HTTPS) | 0–2 (scale to zero); 0–1 with authentication on |
 
 On completion, the script prints all service URLs:
 
@@ -195,6 +195,20 @@ On completion, the script prints all service URLs:
 
 > **HTTPS is automatic** — Azure provides free TLS certificates on `*.azurecontainerapps.io`.
 
+### Authentication (optional)
+
+Authentication is **off by default**. With `AUTH_ENABLED=true`, the same
+`02-deploy-apps.sh` run turns on sign-in for the API and both UIs (OpenID Connect,
+e.g. Microsoft Entra ID), using the `OIDC_*` and `AUTH_COOKIE_SECRET` values from
+your shell; it stores the secrets as Container Apps secrets and prints the redirect
+URIs to register with the identity provider. Because Streamlit keeps sign-in state
+in process memory, the two UIs are limited to a single replica while it is on.
+
+To switch an existing deployment without rebuilding the image, use
+`./06-configure-auth.sh enable|disable`. See
+[docs/authentication.md](../docs/authentication.md) for identity-provider setup,
+granting access to users and services, and troubleshooting.
+
 ---
 
 ## Step 6 — Verify
@@ -203,7 +217,10 @@ On completion, the script prints all service URLs:
 ./03-verify.sh
 ```
 
-Runs health checks and a smoke test against the deployed API.
+Runs health checks and a smoke test against the deployed API. If authentication is
+on, pass the same switch: `AUTH_ENABLED=true ./03-verify.sh` also proves the API
+rejects anonymous calls, and adding `VERIFY_ACCESS_TOKEN="$(python ../../scripts/get_token.py)"`
+proves a valid token is accepted.
 
 ---
 
@@ -241,6 +258,8 @@ The deploy script configures these automatically. For reference:
 | `TRANSFORMERS_MODEL` | `dslim/bert-base-NER` | From build args |
 | `SESSION_TTL_SECONDS` | `86400` | 24-hour session expiry |
 | `API_BASE` | `http://pii-shield` | Streamlit UIs → API (internal ACA network) |
+| `AUTH_ENABLED` | `false` | Set to `true` at deploy time to require sign-in on the API and both UIs |
+| `OIDC_ISSUER_URL`, `OIDC_AUDIENCE`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `AUTH_COOKIE_SECRET` | — | Required when `AUTH_ENABLED=true`; taken from your shell, `OIDC_CLIENT_SECRET` and `AUTH_COOKIE_SECRET` stored as ACA secrets |
 
 > **Note:** The app exports telemetry directly to Application Insights using the `azure-monitor-opentelemetry-exporter` SDK — not via a managed OTel sidecar. The Container Apps OTel agent configuration is for platform-level metrics only.
 
@@ -330,5 +349,6 @@ infra/
     ├── 01-build-push.sh      # Build image in ACR
     ├── 02-deploy-apps.sh     # Deploy all container apps
     ├── 03-verify.sh          # Health checks & smoke tests
-    └── 04-deploy-dashboards.sh # Upload Grafana dashboards
+    ├── 04-deploy-dashboards.sh # Upload Grafana dashboards
+    └── 06-configure-auth.sh  # Turn authentication on/off for deployed apps
 ```

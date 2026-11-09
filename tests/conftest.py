@@ -8,6 +8,16 @@ from app import redis_store
 
 
 @pytest.fixture(autouse=True)
+def _reset_auth_state():
+    """Keep authentication state (cached from the environment) from leaking between tests."""
+    from app import auth
+
+    auth.reset_auth()
+    yield
+    auth.reset_auth()
+
+
+@pytest.fixture(autouse=True)
 def _fake_redis(monkeypatch):
     """Replace both sync and async Redis clients with fakeredis for all tests.
 

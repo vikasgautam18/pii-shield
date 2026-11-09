@@ -35,6 +35,8 @@ import re
 
 import requests
 
+from _auth import add_token_argument, install_bearer_token  # noqa: E402
+
 # ── Defaults ─────────────────────────────────────────────────────────────────
 
 DEFAULT_API_URL = "https://pii-shield.thankfulplant-d485e8db.centralindia.azurecontainerapps.io"
@@ -5169,7 +5171,9 @@ def main() -> None:
         default=DEFAULT_OUTPUT,
         help=f"HTML report output path (default: {DEFAULT_OUTPUT})",
     )
+    add_token_argument(parser)
     args = parser.parse_args()
+    install_bearer_token(args.access_token, args.api_url)
 
     # Resolve test data path
     data_path = Path("indian_banking_test_data.json")

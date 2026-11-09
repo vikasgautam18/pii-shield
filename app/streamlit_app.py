@@ -10,23 +10,41 @@ import requests
 import streamlit as st
 
 from themes import apply_theme
+from ui_auth import ApiClient, require_login
 
 API_BASE = os.getenv("API_BASE", "http://localhost:8000")
 
 st.set_page_config(page_title="PII Shield Playground", page_icon="🛡️", layout="wide")
 apply_theme()
+# Sign-in gate: a no-op unless AUTH_ENABLED=true. It runs before any API call and
+# stops the script (showing a sign-in / access-denied screen) when access is not granted.
+auth_session = require_login(required="user", api_base=API_BASE)
+api = ApiClient(auth_session)
 st.title("🛡️ PII Shield Playground")
 st.caption("Detect, anonymize, and restore PII using Microsoft Presidio.")
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+class _FetchError(Exception):
+    """An API call failed; raised so st.cache_data never caches a failure (e.g. a 401)."""
+
+
 @st.cache_data(ttl=10)
+def _fetch_apps_cached() -> list[dict]:
+    try:
+        resp = api.get(f"{API_BASE}/apps", timeout=10)
+    except requests.ConnectionError as exc:
+        raise _FetchError from exc
+    if resp.status_code != 200:
+        raise _FetchError(resp.status_code)
+    return resp.json()
+
+
 def fetch_apps() -> list[dict]:
     try:
-        resp = requests.get(f"{API_BASE}/apps", timeout=10)
-        return resp.json() if resp.status_code == 200 else []
-    except requests.ConnectionError:
+        return _fetch_apps_cached()
+    except _FetchError:
         return []
 
 
@@ -69,7 +87,7 @@ with tab_anon:
             if anon_app_id:
                 headers["X-App-Id"] = anon_app_id
             try:
-                resp = requests.post(
+                resp = api.post(
                     f"{API_BASE}/anonymize_unique",
                     json={"text": anon_input, "language": "en"},
                     headers=headers,
@@ -171,7 +189,7 @@ with tab_deanon:
             if deanon_app_id:
                 headers["X-App-Id"] = deanon_app_id
             try:
-                resp = requests.post(
+                resp = api.post(
                     f"{API_BASE}/deanonymize",
                     json={
                         "id": session_id.strip(),

@@ -15,4 +15,5 @@ infra/terraform/*.tfstate*
 infra/terraform/terraform.tfvars
 **/.env
 **/.env.local
+**/secrets.toml
 models/onnx-int8

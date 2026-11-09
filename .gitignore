@@ -225,3 +225,6 @@ terraform.tfvars
 
 # Local test config (use test_config.example.yml as template)
 examples/test_config.yml
+
+# Streamlit secrets (the UI launcher generates this from OIDC_* env vars; never commit)
+secrets.toml

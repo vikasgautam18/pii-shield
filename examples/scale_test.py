@@ -46,6 +46,7 @@ from typing import Any
 import aiohttp
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _auth import add_token_argument, auth_headers  # noqa: E402
 from _config import load_section  # noqa: E402
 
 # ── Configuration loading ────────────────────────────────────────────────────
@@ -601,7 +602,7 @@ async def run_scale_test(args: argparse.Namespace) -> dict:
 
     # ── Health check ─────────────────────────────────────────────────────
     connector = aiohttp.TCPConnector(limit=args.concurrency, ssl=False)
-    async with aiohttp.ClientSession(connector=connector) as session:
+    async with aiohttp.ClientSession(connector=connector, headers=auth_headers(args.access_token)) as session:
         print(" Checking API connectivity...")
         try:
             # Try /docs (FastAPI OpenAPI) as a health probe
@@ -780,6 +781,7 @@ def parse_args() -> argparse.Namespace:
         "--output", default=DEFAULT_OUTPUT,
         help=f"Output report path (default: {DEFAULT_OUTPUT})",
     )
+    add_token_argument(parser)
     return parser.parse_args()
 
 

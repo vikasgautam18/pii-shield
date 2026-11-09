@@ -15,6 +15,7 @@ An intelligent anonymization layer that sits between your AI application and LLM
 - **Observability** — OpenTelemetry traces, metrics, and logs with dual-backend support: Azure Monitor (production) or OTLP gRPC (local dev). Pre-built Grafana dashboards for both environments.
 - **Standalone Library** — Use `pii_shield` as an importable Python package for batch processing without FastAPI, Redis, or Docker. See [Using as a Library](#using-as-a-library) below.
 - **Docker Support** — `docker-compose.yml` orchestrates Redis, Grafana LGTM, and the PII Shield app.
+- **Optional Authentication** — One `AUTH_ENABLED` switch adds OpenID Connect sign-in (Microsoft Entra ID, Keycloak, or any OIDC provider) to the playground and admin UI, and bearer-token validation with role-based access to the API. Off by default. See [docs/authentication.md](docs/authentication.md).
 - **Azure Deployment** — Terraform IaC + shell scripts for Azure Container Apps, Redis, App Insights, and Managed Grafana. See [Azure Deployment Guide](infra/README.md).
 
 ## Using as a Library
@@ -349,12 +350,14 @@ Two web interfaces are included in the Docker Compose stack. They start automati
 
 ### Running outside Docker
 
-You can also run the UIs standalone (the FastAPI server must be running first):
+You can also run the UIs standalone (the FastAPI server must be running first). The launcher starts Streamlit with the same flags as before and, when authentication is enabled, first generates the sign-in configuration from the environment:
 
 ```bash
-streamlit run app/streamlit_app.py --server.port 7860 --server.address 0.0.0.0     # http://localhost:7860
-streamlit run app/streamlit_admin.py --server.port 7861 --server.address 0.0.0.0   # http://localhost:7861
+python -m app.ui_launcher playground --port 7860   # http://localhost:7860
+python -m app.ui_launcher admin --port 7861        # http://localhost:7861
 ```
+
+With authentication off you can still run Streamlit directly: `streamlit run app/streamlit_app.py --server.port 7860 --server.address 0.0.0.0`.
 
 Set the `API_BASE` environment variable if the API is not at `http://localhost:8000`.
 
@@ -374,7 +377,39 @@ Opens at **http://localhost:7861** with:
 - **Registered Apps tab** — View all registered applications and their configurations.
 - **Admin tab** — Register applications, look up app details, update per-entity anonymization strategies, and delete apps.
 
-> **Legacy note:** `app/gradio_app.py` and `app/gradio_admin.py` are retained for backward compatibility but are no longer wired into Docker Compose or the Azure deployment. New work should target the Streamlit modules above.
+> **Legacy note:** `app/gradio_app.py` and `app/gradio_admin.py` are retained for backward compatibility but are no longer wired into Docker Compose or the Azure deployment. New work should target the Streamlit modules above. They have no sign-in support, so they cannot be used against an API running with authentication enabled.
+
+## Authentication
+
+Authentication is **optional and off by default**. A single switch in `.env` controls the API and both UIs:
+
+```dotenv
+AUTH_ENABLED=true     # false (default): open, exactly as before
+```
+
+When enabled:
+
+- the **playground** and **admin UI** require sign-in through any OpenID Connect provider (Microsoft Entra ID, Keycloak, Okta, ...), and the admin UI additionally requires an admin role;
+- the **API** requires `Authorization: Bearer <access token>` on every route except `GET /health`, validating the token's signature, issuer, audience and expiry, and enforcing the `user` / `admin` roles;
+- the **audit log** records who performed each change.
+
+Access is granted in your identity provider by assigning roles, with no PII Shield changes needed. A service gets a token with the standard client-credentials flow (`python scripts/get_token.py`).
+
+| Variable | Purpose |
+|---|---|
+| `AUTH_ENABLED` | Master switch for API + UIs (restart the services after changing it) |
+| `OIDC_ISSUER_URL`, `OIDC_AUDIENCE` | Identity provider and the audience the API accepts |
+| `OIDC_ROLES_CLAIM`, `AUTH_USER_ROLES`, `AUTH_ADMIN_ROLES` | Where roles are found and which names grant access |
+| `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_API_SCOPE`, `AUTH_COOKIE_SECRET` | How the UIs sign users in |
+
+To try it without any cloud account, use the bundled development Keycloak:
+
+```bash
+cat dev/keycloak/dev.env.example >> .env
+docker compose --profile auth-dev up --build
+```
+
+The full guide, with Microsoft Entra ID setup, the complete configuration reference, enabling/disabling in Docker Compose and Azure, and troubleshooting, is in **[docs/authentication.md](docs/authentication.md)**.
 
 ## API Usage
 
@@ -487,6 +522,13 @@ curl -X POST http://localhost:8000/anonymize_unique \
 ```
 
 When the header is omitted, global config applies. If the `app_id` is not found, a 404 is returned.
+
+`X-App-Id` selects an application's configuration; it is **not** an authentication mechanism. When [authentication](#authentication) is enabled, send an `Authorization: Bearer <access token>` header as well.
+
+### `GET /health` and `GET /me`
+
+- `GET /health` — liveness probe; always public. Returns `{"status": "ok"}`.
+- `GET /me` — the caller's identity and effective roles (`auth_enabled`, `subject`, `name`, `kind`, `roles`, `is_user`, `is_admin`, `expires_at`). Requires a valid token when authentication is enabled; with it off it reports an open caller. The UIs use it to decide what to show.
 
 ### Python Example
 

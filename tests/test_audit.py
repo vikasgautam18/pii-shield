@@ -1,6 +1,7 @@
 """Tests for the SQLite audit store and /audit-log endpoint."""
 
 import os
+import sqlite3
 import tempfile
 
 import pytest
@@ -75,6 +76,47 @@ class TestAuditStore:
         audit_store.record_event("CONFIG_UPDATED", "app-1", "App1", "simple string")
         logs = audit_store.get_audit_log()
         assert logs[0]["details"] == "simple string"
+
+    def test_actor_defaults_to_empty(self):
+        record = audit_store.record_event("APP_REGISTERED", "app-1", "App1")
+        assert record["actor"] == ""
+        assert audit_store.get_audit_log()[0]["actor"] == ""
+
+    def test_actor_is_stored_and_returned(self):
+        audit_store.record_event("APP_DELETED", "app-1", "App1", actor="alice@example.com")
+        assert audit_store.get_audit_log()[0]["actor"] == "alice@example.com"
+
+    def test_legacy_database_without_actor_column_is_migrated(self, _temp_audit_db):
+        legacy = sqlite3.connect(_temp_audit_db)
+        legacy.execute(
+            """
+            CREATE TABLE audit_log (
+                id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                action TEXT NOT NULL,
+                app_id TEXT NOT NULL,
+                app_name TEXT NOT NULL DEFAULT '',
+                details TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        legacy.execute(
+            "INSERT INTO audit_log VALUES ('1', '2024-01-01T00:00:00+00:00', 'APP_REGISTERED', 'app-old', 'Old', '')"
+        )
+        legacy.commit()
+        legacy.close()
+
+        audit_store.record_event("APP_DELETED", "app-new", "New", actor="bob")
+
+        by_app = {row["app_id"]: row for row in audit_store.get_audit_log()}
+        assert by_app["app-old"]["actor"] == ""
+        assert by_app["app-new"]["actor"] == "bob"
+
+    def test_migration_is_idempotent(self):
+        audit_store.record_event("APP_REGISTERED", "app-1", "App1", actor="alice")
+        for _ in range(3):
+            audit_store.get_connection().close()
+        assert audit_store.get_audit_log()[0]["actor"] == "alice"
 
 
 # ---------------------------------------------------------------------------

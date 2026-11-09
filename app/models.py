@@ -84,3 +84,14 @@ class AppDetailResponse(BaseModel):
         default_factory=dict,
         description="Per-entity anonymization strategy config",
     )
+
+
+class MeResponse(BaseModel):
+    auth_enabled: bool = Field(..., description="Whether the API enforces authentication")
+    subject: str | None = Field(default=None, description="Token subject (opaque user or service id)")
+    name: str | None = Field(default=None, description="Display name or username, when the token carries one")
+    kind: str = Field(..., description="'user', 'service' or 'anonymous'")
+    roles: list[str] = Field(default_factory=list, description="Roles found in the token's roles claim")
+    is_user: bool = Field(..., description="May call the data-plane endpoints (anonymize, de-anonymize, read apps)")
+    is_admin: bool = Field(..., description="May manage applications, allow-lists and read the audit log")
+    expires_at: int | None = Field(default=None, description="Access-token expiry (Unix seconds)")

@@ -1,0 +1,123 @@
+{
+  "realm": "pii-shield",
+  "displayName": "PII Shield (DEV ONLY)",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "accessTokenLifespan": 300,
+  "roles": {
+    "realm": [
+      {
+        "name": "PIIShield.User",
+        "description": "May anonymize and de-anonymize text and read application metadata."
+      },
+      {
+        "name": "PIIShield.Admin",
+        "description": "May register and configure applications, manage allow-lists and read the audit log."
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "pii-shield-ui",
+      "name": "PII Shield playground and admin UIs",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "dev-only-ui-client-secret",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:7860/oauth2callback",
+        "http://localhost:7861/oauth2callback"
+      ],
+      "attributes": {
+        "post.logout.redirect.uris": "http://localhost:7860/oauth2callback##http://localhost:7861/oauth2callback",
+        "pkce.code.challenge.method": "S256"
+      },
+      "defaultClientScopes": ["web-origins", "acr", "profile", "roles", "basic", "email"],
+      "protocolMappers": [
+        {
+          "name": "pii-shield-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "pii-shield-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "pii-shield-svc",
+      "name": "Example service client (client-credentials flow)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "dev-only-service-client-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "defaultClientScopes": ["web-origins", "acr", "profile", "roles", "basic", "email"],
+      "protocolMappers": [
+        {
+          "name": "pii-shield-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "pii-shield-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@example.test",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "User",
+      "credentials": [{ "type": "password", "value": "alice-dev-password", "temporary": false }],
+      "realmRoles": ["PIIShield.User"]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "email": "bob@example.test",
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "Admin",
+      "credentials": [{ "type": "password", "value": "bob-dev-password", "temporary": false }],
+      "realmRoles": ["PIIShield.Admin"]
+    },
+    {
+      "username": "carol",
+      "enabled": true,
+      "email": "carol@example.test",
+      "emailVerified": true,
+      "firstName": "Carol",
+      "lastName": "NoRole",
+      "credentials": [{ "type": "password", "value": "carol-dev-password", "temporary": false }],
+      "realmRoles": []
+    },
+    {
+      "username": "service-account-pii-shield-svc",
+      "enabled": true,
+      "serviceAccountClientId": "pii-shield-svc",
+      "realmRoles": ["PIIShield.User"]
+    }
+  ]
+}

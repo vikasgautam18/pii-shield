@@ -6,7 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from opentelemetry import metrics, trace
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.trace import StatusCode
@@ -87,6 +87,7 @@ from app.models import (
     AppDetailResponse,
     DeanonymizeRequest,
     DeanonymizeResponse,
+    MeResponse,
     RegisterAppRequest,
     RegisterAppResponse,
 )
@@ -111,6 +112,20 @@ from app.redis_store import (
 import app.redis_store as redis_store_mod
 from app.state_store import SESSION_TTL_SECONDS, AnonymizationRecord, store
 from app.audit_store import record_event, get_audit_log
+from app.auth import (
+    Principal,
+    authenticate,
+    get_auth_state,
+    public,
+    require_admin,
+    require_authenticated,
+    require_user,
+    warm_up_auth,
+)
+
+# Fail fast: an invalid authentication configuration must stop the service at
+# start-up (including under gunicorn --preload) rather than run unprotected.
+get_auth_state()
 
 # Thread pool for asyncio.to_thread().  ONNX Runtime releases the GIL during
 # native C++ inference, so multiple threads CAN run truly in parallel — unlike
@@ -124,6 +139,7 @@ async def _lifespan(app):
     loop = asyncio.get_running_loop()
     loop.set_default_executor(ThreadPoolExecutor(max_workers=_NLP_THREAD_POOL_SIZE))
     _start_cache_invalidation_listener()
+    await warm_up_auth()  # no-op unless AUTH_ENABLED=true; never raises
     # Warm up the NLP model so the first real request doesn't pay JIT/allocation cost.
     engine._run_pipeline(
         text="John Smith at john@example.com",
@@ -140,6 +156,9 @@ app = FastAPI(
     description="An anonymization layer that detects and masks PII using Microsoft Presidio.",
     version="0.1.0",
     lifespan=_lifespan,
+    # Default-deny: when AUTH_ENABLED=true every route needs a valid bearer token
+    # unless its endpoint is explicitly marked @public. A no-op when auth is off.
+    dependencies=[Depends(authenticate)],
 )
 FastAPIInstrumentor.instrument_app(app)
 
@@ -252,7 +271,29 @@ analyzer = engine._analyzer
 logger.info("PiiShieldEngine ready (NLP engine: %s)", get_nlp_engine_name())
 
 
-@app.get("/supported-entities")
+@app.get("/health")
+@public
+async def health() -> dict[str, str]:
+    """Liveness probe. Always public and free of dependencies (no Redis, no auth)."""
+    return {"status": "ok"}
+
+
+@app.get("/me", response_model=MeResponse)
+async def me(principal: Principal = Depends(require_authenticated)) -> MeResponse:
+    """Identity and effective roles of the caller (used by the UIs to gate access)."""
+    return MeResponse(
+        auth_enabled=get_auth_state().settings.enabled,
+        subject=principal.subject or None,
+        name=principal.name or principal.username or None,
+        kind=principal.kind,
+        roles=sorted(principal.roles),
+        is_user=principal.is_user,
+        is_admin=principal.is_admin,
+        expires_at=principal.expires_at,
+    )
+
+
+@app.get("/supported-entities", dependencies=[Depends(require_user)])
 async def supported_entities() -> list[str]:
     """Return the list of PII entity types the analyzer can detect."""
     return engine.supported_entities
@@ -268,7 +309,11 @@ def _validate_app_id(app_id: str | None) -> dict | None:
     return result
 
 
-@app.post("/anonymize_unique", response_model=AnonymizeUniqueResponse)
+@app.post(
+    "/anonymize_unique",
+    response_model=AnonymizeUniqueResponse,
+    dependencies=[Depends(require_user)],
+)
 async def anonymize_unique_text(
     request: AnonymizeRequest,
     x_app_id: str | None = Header(default=None),
@@ -354,7 +399,11 @@ async def anonymize_unique_text(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/deanonymize", response_model=DeanonymizeResponse)
+@app.post(
+    "/deanonymize",
+    response_model=DeanonymizeResponse,
+    dependencies=[Depends(require_user)],
+)
 async def deanonymize_text(
     request: DeanonymizeRequest,
     x_app_id: str | None = Header(default=None),
@@ -410,20 +459,26 @@ async def deanonymize_text(
 
 
 @app.post("/apps", response_model=RegisterAppResponse, status_code=201)
-async def register_application(request: RegisterAppRequest) -> RegisterAppResponse:
+async def register_application(
+    request: RegisterAppRequest,
+    principal: Principal = Depends(require_admin),
+) -> RegisterAppResponse:
     """Register a new application and return its ID with default config."""
     result = register_app(request.app_name)
-    record_event("APP_REGISTERED", result["app_id"], request.app_name, {"config": result["config"]})
+    record_event(
+        "APP_REGISTERED", result["app_id"], request.app_name, {"config": result["config"]},
+        actor=principal.actor,
+    )
     return RegisterAppResponse(**result)
 
 
-@app.get("/apps", response_model=list[AppDetailResponse])
+@app.get("/apps", response_model=list[AppDetailResponse], dependencies=[Depends(require_user)])
 async def list_applications() -> list[AppDetailResponse]:
     """List all registered applications."""
     return [AppDetailResponse(**a) for a in list_apps()]
 
 
-@app.get("/apps/{app_id}", response_model=AppDetailResponse)
+@app.get("/apps/{app_id}", response_model=AppDetailResponse, dependencies=[Depends(require_user)])
 async def get_application(app_id: str) -> AppDetailResponse:
     """Get details and config for a registered application."""
     result = get_app(app_id)
@@ -435,7 +490,9 @@ async def get_application(app_id: str) -> AppDetailResponse:
 
 @app.put("/apps/{app_id}/config", response_model=AppDetailResponse)
 async def update_application_config(
-    app_id: str, request: AppConfigUpdateRequest
+    app_id: str,
+    request: AppConfigUpdateRequest,
+    principal: Principal = Depends(require_admin),
 ) -> AppDetailResponse:
     """Update the anonymization strategy for a specific entity type in an app."""
     if request.strategy not in ("replace", "hash", "encrypt", "fake"):
@@ -447,19 +504,29 @@ async def update_application_config(
         _record_error("/apps/{app_id}/config", 404, "not_found", f"Application '{app_id}' not found.")
         raise HTTPException(status_code=404, detail=f"Application '{app_id}' not found.")
     invalidate_app_cache(app_id)
-    record_event("CONFIG_UPDATED", app_id, result["app_name"], {"entity_type": request.entity_type, "strategy": request.strategy})
+    record_event(
+        "CONFIG_UPDATED", app_id, result["app_name"],
+        {"entity_type": request.entity_type, "strategy": request.strategy},
+        actor=principal.actor,
+    )
     return AppDetailResponse(**result)
 
 
 @app.delete("/apps/{app_id}", status_code=204)
-async def delete_application(app_id: str) -> None:
+async def delete_application(
+    app_id: str,
+    principal: Principal = Depends(require_admin),
+) -> None:
     """Deregister an application."""
     app_info = get_app(app_id)
     if not delete_app(app_id):
         _record_error("/apps/{app_id}", 404, "not_found", f"Application '{app_id}' not found.")
         raise HTTPException(status_code=404, detail=f"Application '{app_id}' not found.")
     invalidate_app_cache(app_id)
-    record_event("APP_DELETED", app_id, app_info["app_name"] if app_info else "")
+    record_event(
+        "APP_DELETED", app_id, app_info["app_name"] if app_info else "",
+        actor=principal.actor,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -467,7 +534,7 @@ async def delete_application(app_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@app.get("/apps/{app_id}/allow-list")
+@app.get("/apps/{app_id}/allow-list", dependencies=[Depends(require_admin)])
 async def get_allow_list(app_id: str) -> dict:
     """Return the allow-list for an application."""
     app_info = get_app(app_id)
@@ -477,7 +544,11 @@ async def get_allow_list(app_id: str) -> dict:
 
 
 @app.put("/apps/{app_id}/allow-list")
-async def update_allow_list(app_id: str, body: dict) -> dict:
+async def update_allow_list(
+    app_id: str,
+    body: dict,
+    principal: Principal = Depends(require_admin),
+) -> dict:
     """Set the allow-list for an application.
 
     Body: ``{"allow_list": ["Contoso Bank", "Woodgrove Bank"]}``
@@ -490,7 +561,10 @@ async def update_allow_list(app_id: str, body: dict) -> dict:
     if result is None:
         raise HTTPException(status_code=404, detail=f"Application '{app_id}' not found.")
     invalidate_app_cache(app_id)
-    record_event("ALLOW_LIST_UPDATED", app_id, app_info["app_name"], details={"allow_list": result})
+    record_event(
+        "ALLOW_LIST_UPDATED", app_id, app_info["app_name"], details={"allow_list": result},
+        actor=principal.actor,
+    )
     return {"app_id": app_id, "allow_list": result}
 
 
@@ -499,7 +573,7 @@ async def update_allow_list(app_id: str, body: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
-@app.get("/apps/{app_id}/entity-type-allow-list")
+@app.get("/apps/{app_id}/entity-type-allow-list", dependencies=[Depends(require_admin)])
 async def get_entity_type_allow_list(app_id: str) -> dict:
     """Return the entity-type allow-list for an application."""
     app_info = get_app(app_id)
@@ -509,7 +583,11 @@ async def get_entity_type_allow_list(app_id: str) -> dict:
 
 
 @app.put("/apps/{app_id}/entity-type-allow-list")
-async def update_entity_type_allow_list(app_id: str, body: dict) -> dict:
+async def update_entity_type_allow_list(
+    app_id: str,
+    body: dict,
+    principal: Principal = Depends(require_admin),
+) -> dict:
     """Set the entity-type allow-list for an application.
 
     Body: ``{"entity_type_allow_list": ["EMAIL_ADDRESS", "PHONE_NUMBER"]}``
@@ -525,7 +603,11 @@ async def update_entity_type_allow_list(app_id: str, body: dict) -> dict:
         raise HTTPException(status_code=404, detail=f"Application '{app_id}' not found.")
     invalidate_app_cache(app_id)
     app_info = get_app(app_id)
-    record_event("ENTITY_TYPE_ALLOW_LIST_UPDATED", app_id, app_info["app_name"] if app_info else "", details={"entity_type_allow_list": result})
+    record_event(
+        "ENTITY_TYPE_ALLOW_LIST_UPDATED", app_id, app_info["app_name"] if app_info else "",
+        details={"entity_type_allow_list": result},
+        actor=principal.actor,
+    )
     return {"app_id": app_id, "entity_type_allow_list": result}
 
 
@@ -534,7 +616,7 @@ async def update_entity_type_allow_list(app_id: str, body: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
-@app.get("/apps/{app_id}/entity-keyword-allow-list")
+@app.get("/apps/{app_id}/entity-keyword-allow-list", dependencies=[Depends(require_admin)])
 async def get_entity_keyword_allow_list_endpoint(app_id: str) -> dict:
     """Return the entity-keyword allow-list for an application.
 
@@ -547,7 +629,11 @@ async def get_entity_keyword_allow_list_endpoint(app_id: str) -> dict:
 
 
 @app.put("/apps/{app_id}/entity-keyword-allow-list")
-async def update_entity_keyword_allow_list_endpoint(app_id: str, body: dict) -> dict:
+async def update_entity_keyword_allow_list_endpoint(
+    app_id: str,
+    body: dict,
+    principal: Principal = Depends(require_admin),
+) -> dict:
     """Set the entity-keyword allow-list for an application.
 
     Body: ``{"entity_keyword_allow_list": {"ORGANIZATION": ["Contoso Bank"], "LOCATION": ["India"]}}``
@@ -563,7 +649,11 @@ async def update_entity_keyword_allow_list_endpoint(app_id: str, body: dict) -> 
         raise HTTPException(status_code=404, detail=f"Application '{app_id}' not found.")
     invalidate_app_cache(app_id)
     app_info = get_app(app_id)
-    record_event("ENTITY_KEYWORD_ALLOW_LIST_UPDATED", app_id, app_info["app_name"] if app_info else "", details={"entity_keyword_allow_list": result})
+    record_event(
+        "ENTITY_KEYWORD_ALLOW_LIST_UPDATED", app_id, app_info["app_name"] if app_info else "",
+        details={"entity_keyword_allow_list": result},
+        actor=principal.actor,
+    )
     return {"app_id": app_id, "entity_keyword_allow_list": result}
 
 
@@ -572,7 +662,7 @@ async def update_entity_keyword_allow_list_endpoint(app_id: str, body: dict) -> 
 # ---------------------------------------------------------------------------
 
 
-@app.get("/audit-log")
+@app.get("/audit-log", dependencies=[Depends(require_admin)])
 async def audit_log(
     app_id: str | None = None,
     action: str | None = None,

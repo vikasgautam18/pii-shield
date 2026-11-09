@@ -40,12 +40,13 @@ The LLM never sees real PII — only opaque placeholders like {{PERSON_1}}, SHA3
 | Batch processing | Thread- and process-parallel processing of text lists, CSV files, and pandas DataFrames via BatchProcessor. |
 | Infrastructure | Docker Compose for local development (Redis, Grafana LGTM, Streamlit UIs). Terraform IaC + shell scripts for Azure Container Apps, Azure Cache for Redis, ACR, Application Insights, and Managed Grafana. |
 | Observability | OpenTelemetry traces, metrics, and logs with dual-backend support — OTLP gRPC (local) and Azure Monitor (production). Pre-built Grafana dashboards for both environments. |
+| Authentication & authorization (optional) | A single `AUTH_ENABLED` switch (default off) adds OpenID Connect sign-in to both Streamlit UIs and bearer-token validation with role-based access (user / admin) to the API, using any OIDC identity provider (Microsoft Entra ID, Keycloak, …). The audit log records the acting principal. See §8.4 and [authentication.md](authentication.md). |
 
 **Out of scope:**
 
 | **Concern** | **Rationale** |
 |----|----|
-| Authentication / authorization middleware | Expected to be handled by a reverse proxy (e.g., nginx, Azure Container Apps ingress, API gateway). PII Shield does not enforce identity or access control. |
+| Per-application access control and API keys | Authorization is role-based (two tiers). Binding callers to specific `X-App-Id` applications, issuing API keys, and mutual TLS are future work (§12.1). |
 | HTTPS termination | TLS is terminated at the infrastructure layer (nginx, Azure Container Apps built-in HTTPS, load balancer). The application listens on plain HTTP. |
 | Rate limiting | Not built-in. Recommended approach: add slowapi middleware or enforce at the reverse proxy / API gateway level. |
 | PII detection model training | PII Shield uses pre-trained NLP models (spaCy, Stanza, Transformers, ONNX). Custom model training is outside the scope of this system. |
@@ -145,7 +146,11 @@ The service package provides the full HTTP API and associated runtime infrastruc
 | models.py | Pydantic request/response models (AnonymizeRequest, AnonymizeUniqueResponse, DeanonymizeRequest, DeanonymizeResponse, RegisterAppRequest, etc.). |
 | redis_store.py | Synchronous Redis client for app registry CRUD. Connection pooling via redis.ConnectionPool. Monkeypatched with fakeredis in tests. |
 | state_store.py | Async Redis-backed session store (AnonymizationRecord HASH with configurable TTL). Falls back to in-memory dict when Redis is unavailable. |
-| audit_store.py | SQLite-based audit log for administrative events (app registration, config updates, deletions). |
+| audit_store.py | SQLite-based audit log for administrative events (app registration, config updates, deletions), including the acting principal (`actor`). |
+| auth_settings.py | Standard-library-only authentication settings: strict `AUTH_ENABLED` parsing, `OIDC_*` / `AUTH_*` validation (fail-fast), role-claim extraction. Shared by the API, the UIs and the launcher. |
+| auth.py | API-side OIDC bearer-token validation (JWKS cache, JWT verification), the `Principal`, and the FastAPI dependencies (`authenticate`, `require_user`, `require_admin`, `@public`). |
+| ui_auth.py | Streamlit-side sign-in gate (`require_login`), `GET /me` session handling and the bearer-token `ApiClient` used by both UIs. |
+| ui_launcher.py | Starts a Streamlit UI (`python -m app.ui_launcher playground|admin`): renders `.streamlit/secrets.toml` from the OIDC environment when authentication is enabled, then execs Streamlit. |
 | telemetry.py | OpenTelemetry SDK initialization with dual-backend auto-detection (Azure Monitor vs. OTLP gRPC). Configures TracerProvider, MeterProvider, and LoggerProvider. |
 | streamlit_app.py | Streamlit web UI for end-user anonymize/de-anonymize operations. Connects to the FastAPI service via API_BASE. |
 | streamlit_admin.py | Streamlit web UI for admin operations — app registration, config management, registered app listing. |
@@ -166,9 +171,12 @@ The service package provides the full HTTP API and associated runtime infrastruc
 | /apps/{app_id}/allow-list | GET/PUT | Read or set per-app allow-list (terms excluded from PII detection). |
 | /apps/{app_id}/entity-type-allow-list | GET/PUT | Read or set per-app entity-type allow-list (entity types excluded from detection). |
 | /supported-entities | GET | Return the list of PII entity types the analyzer can detect. |
-| /audit-log | GET | Return audit log entries with optional app_id, action, and limit filters. |
-| /health | GET | Liveness probe. |
+| /audit-log | GET | Return audit log entries (newest first) with optional app_id, action, and limit filters. Each entry includes the `actor` that performed the action. |
+| /health | GET | Liveness probe. Always public. |
+| /me | GET | Identity and effective roles of the caller (`auth_enabled`, `subject`, `name`, `kind`, `roles`, `is_user`, `is_admin`, `expires_at`). Used by the UIs to gate access. |
 | /docs | GET | Swagger UI — interactive API documentation (auto-generated by FastAPI). |
+
+When `AUTH_ENABLED=true` every route except `/health`, `/docs`, `/redoc` and `/openapi.json` requires a valid bearer token; `/apps` writes, the allow-list routes and `/audit-log` additionally require the admin role (§8.4).
 
 #### Standalone Library (pii_shield/)
 
@@ -932,7 +940,7 @@ All stores auto-generate a UUID if no record_id is provided.
 
 File: app/streamlit_app.py
 
-Launch: streamlit run app/streamlit_app.py --server.port 7860 (or the playground service in Docker Compose, which runs the same command behind --server.address 0.0.0.0 --server.headless true).
+Launch: python -m app.ui_launcher playground (or the playground service in Docker Compose, which runs the same command); with authentication disabled, streamlit run app/streamlit_app.py --server.port 7860 --server.address 0.0.0.0 --server.headless true is equivalent.
 
 API backend: the UI talks exclusively to the FastAPI service over HTTP at the URL given by the API_BASE environment variable (default http://localhost:8000; in Docker Compose this is wired to http://app:8000). It is a pure REST client with no direct Redis, database, or engine access.
 
@@ -946,7 +954,7 @@ On the De-anonymize tab the user can either rely on the auto-populated state fro
 
 File: app/streamlit_admin.py
 
-Launch: streamlit run app/streamlit_admin.py --server.port 7861 (or the admin service in Docker Compose). Like the Playground, it shares the same Docker image as the FastAPI service and overrides the command at container start.
+Launch: python -m app.ui_launcher admin (or the admin service in Docker Compose); with authentication disabled, streamlit run app/streamlit_admin.py --server.port 7861 is equivalent. Like the Playground, it shares the same Docker image as the FastAPI service and overrides the command at container start.
 
 The Admin UI is organised into four tabs — Applications, Application Admin, Allow-Lists, and Audit Log — created in a single st.tabs(...) call. The Applications tab lists all registered tenants in a pandas DataFrame rendered through st.dataframe, enriched with each tenant's per-entity strategy configuration, entity-type allow-list, and entity-keyword allow-list fetched from the corresponding REST endpoints. The Application Admin tab exposes register, lookup, configure (per-entity-type strategy: replace / hash / encrypt / fake), and delete actions. The Allow-Lists tab edits both the entity-type allow-list and the entity-keyword allow-list — the latter through an editable st.data_editor grid backed by st.session_state.ekw_df so unsaved edits survive Streamlit reruns until the user saves or explicitly reloads from the server. The Audit Log tab filters the audit trail by application and by action (APP_REGISTERED, APP_DELETED, CONFIG_UPDATED, ALLOW_LIST_UPDATED, ENTITY_TYPE_ALLOW_LIST_UPDATED) before rendering the results in a sortable table.
 
@@ -1046,6 +1054,7 @@ Application lifecycle events are recorded in a local SQLite database for auditab
 | app_id | TEXT | NOT NULL | Application UUID |
 | app_name | TEXT | NOT NULL, DEFAULT '' | Application name at time of event |
 | details | TEXT | NOT NULL, DEFAULT '' | JSON-encoded event details or free-form string |
+| actor | TEXT | NOT NULL, DEFAULT '' | Authenticated user (`preferred_username`) or `service:<client id>` that performed the action; empty when authentication is disabled. Added to pre-existing databases automatically on first use. |
 
 **Indexes:**
 
@@ -1270,7 +1279,7 @@ The local development stack is defined in docker-compose.yml with 5 services:
 
 Inter-Service Communication: The Streamlit services set API_BASE=http://app:8000 to reach the FastAPI service via Docker DNS. Outside Docker, API_BASE defaults to http://localhost:8000.
 
-Shared Image: Both the playground and admin Streamlit services reuse the same Docker image as app but override the command to streamlit run app/streamlit_app.py --server.port 7860 and streamlit run app/streamlit_admin.py --server.port 7861 respectively (each with --server.address 0.0.0.0 --server.headless true --client.toolbarMode minimal).
+Shared Image: Both the playground and admin Streamlit services reuse the same Docker image as app but override the command to python -m app.ui_launcher playground and python -m app.ui_launcher admin respectively. The launcher starts Streamlit on ports 7860 and 7861 with --server.address 0.0.0.0 --server.headless true --client.toolbarMode minimal, exactly as the previous direct streamlit run commands did, and additionally generates the OIDC sign-in configuration when AUTH_ENABLED=true (§8.4).
 
 ### 7.2 Dockerfile
 
@@ -1481,6 +1490,26 @@ PII Shield offers two encryption backends:
 | Local (Docker) | Unencrypted (redis://) | No password | Development only — no sensitive data in local Redis |
 | Azure | TLS-only (rediss://, min TLS 1.2) | Access key (URL-encoded in connection URL) | Non-SSL port disabled; stored as ACA secret |
 | Azure (Entra mode) | TLS-only (min TLS 1.2) | Microsoft Entra managed identity | No secrets — DefaultAzureCredential acquires tokens automatically. Access key auth disabled on Redis. System-assigned managed identity with Redis Cache Contributor role. |
+
+### 8.4 Authentication and Authorization
+
+Authentication is **optional**: `AUTH_ENABLED` (default `false`) is one switch for the API and both Streamlit UIs, read at startup. With it off, behaviour is unchanged. The operator guide, including identity-provider setup, is [authentication.md](authentication.md); this section records the design.
+
+**Standards, not a platform.** The UIs use the OIDC authorization-code flow with PKCE (Streamlit's built-in `st.login`). The API validates JWT access tokens through OIDC discovery and the provider's JWKS. No cloud-specific service or SDK is involved, so Microsoft Entra ID, Keycloak and other OIDC providers differ only in configuration. Access is granted in the identity provider by assigning roles; PII Shield stores no users or permissions.
+
+| Concern | Design |
+|----|----|
+| Default-deny | A global FastAPI dependency authenticates every route unless the endpoint is marked `@public` (only `/health`). A test enumerates the application's routes so a new, unclassified route fails CI. |
+| Token validation | Algorithm allow-list (asymmetric only; `none` and HS* are rejected), signature via the cached JWKS, exact `iss`, `aud` in the configured list, `exp`/`nbf`/`iat` with clock-skew leeway, required claims, key type matching the algorithm, token size cap. |
+| Signing keys | Discovery + JWKS cached for `OIDC_JWKS_CACHE_SECONDS`; refreshes triggered by an unknown `kid` are throttled (so random key ids cannot turn the API into a request amplifier against the IdP); stale keys keep serving through IdP outages for a bounded time, and a request that already holds a usable key never waits on a slow or hung refresh; with no usable keys the API answers `503` and **fails closed**. |
+| Authorization | Roles are read from a configurable claim (dot-paths supported; list or space-delimited values). Two tiers: *user* (anonymize, de-anonymize, read applications) and *admin* (manage applications and allow-lists, read the audit log); admin implies user. Names are configurable lists. |
+| Failure contract | `401` (no/invalid/expired token, with `WWW-Authenticate`), `403` (missing role), `503` (keys unavailable). Bodies are generic; the reason is logged without the token and counted in `pii.auth.rejections`. |
+| UI gate | Each UI calls `GET /me` with the user's access token before any data call and shows a sign-in, session-expired, no-access, admin-required or API-unreachable screen. The API is the source of truth for identity and roles, so the UIs parse no JWTs. The API enforces the same roles independently. Streamlit does not refresh tokens, so an expired token sends the user back through sign-in. |
+| Configuration | Fail-fast: invalid settings stop the service with every problem listed, never silently running open. Streamlit reads OIDC settings only from `.streamlit/secrets.toml`, so `app/ui_launcher.py` renders that file (mode `0600`, regenerated on start, never committed or baked into images) from the environment and then starts Streamlit. |
+| Audit | `audit_log.actor` records the user (`preferred_username`) or `service:<client id>`; the column is added to existing databases automatically. |
+| Disabled mode | Every dependency returns an open principal immediately and PyJWT is not imported; the existing test suite is the regression check. |
+
+Operational constraints: Streamlit keeps sign-in state in process memory, so the UIs run as a single replica (or behind session affinity) when authentication is on; revocation takes effect when the current access token expires; `X-App-Id` is still not an authentication mechanism (§12.1). Rate limiting is not built in; see §12.3.
 
 
 
@@ -1712,6 +1741,17 @@ All entity types support all four strategies. The strategy is determined by (in 
 | CONTEXT_SIMILARITY_FACTOR | 0.45 | No | NLP | LemmaContextAwareEnhancer similarity threshold for boosting recognizer scores from contextual words |
 | CUSTOM_RECOGNIZERS_FILE | config/custom_recognizers.yml | No | NLP | YAML file declaring custom regex recognizers and the global allow-list |
 | RECOGNIZER_CONTEXTS_FILE | config/recognizer_contexts.yml | No | NLP | YAML file overriding the context word list per recognizer class |
+| AUTH_ENABLED | false | No | Auth | Master switch for API and UI authentication (§8.4). When false, no other auth variable is read |
+| OIDC_ISSUER_URL | — | If AUTH_ENABLED | Auth | OIDC issuer / discovery base (API and UIs) |
+| OIDC_AUDIENCE | — | If AUTH_ENABLED | Auth | Access-token audience(s) the API accepts |
+| OIDC_ROLES_CLAIM | roles | No | Auth | Claim path(s) that carry roles (dot-notation supported) |
+| AUTH_USER_ROLES / AUTH_ADMIN_ROLES | PIIShield.User / PIIShield.Admin | No | Auth | Role names granting user / admin access (admin implies user) |
+| OIDC_CLIENT_ID / OIDC_CLIENT_SECRET | — | If AUTH_ENABLED | Auth (UIs) | OIDC client the Streamlit UIs sign in with |
+| OIDC_API_SCOPE | — | For Entra ID | Auth (UIs) | Scope that makes the IdP issue the access token for this API |
+| AUTH_COOKIE_SECRET | — | If AUTH_ENABLED | Auth (UIs) | Signs the UI session cookie (≥ 32 characters, identical on every replica) |
+| UI_REDIRECT_URI | http://localhost:{port}/oauth2callback | No | Auth (UIs) | OIDC redirect URI for each UI (must end in /oauth2callback) |
+
+Further optional authentication settings (OIDC_ISSUER, OIDC_JWKS_URL, OIDC_ALGORITHMS, OIDC_CLOCK_SKEW_SECONDS, OIDC_JWKS_CACHE_SECONDS, OIDC_ALLOW_INSECURE_HTTP, OIDC_UI_SCOPES, OIDC_SERVER_METADATA_URL, OIDC_PROMPT) are documented in [authentication.md](authentication.md).
 
 ### Appendix C: API Quick Reference
 
@@ -1734,22 +1774,24 @@ All entity types support all four strategies. The strategy is determined by (in 
 | GET | /openapi.json | OpenAPI 3.x specification | — | — | JSON |
 | GET | /apps/{app_id}/entity-keyword-allow-list | Get per-entity-type keyword allow-list for an app | — | — | {"app_id", "entity_keyword_allow_list"} (200) |
 | PUT | /apps/{app_id}/entity-keyword-allow-list | Set per-entity-type keyword allow-list for an app | — | {"entity_keyword_allow_list": {...}} | {"app_id", "entity_keyword_allow_list"} (200) |
+| GET | /health | Liveness probe (always public) | — | — | {"status": "ok"} (200) |
+| GET | /me | Identity and role tier of the calling token | Authorization: Bearer (when AUTH_ENABLED) | — | MeResponse (200) |
+
+When `AUTH_ENABLED=true`, every endpoint above except `/health`, `/docs`, `/redoc` and `/openapi.json` additionally requires an `Authorization: Bearer <access token>` header: the user tier for the anonymize/de-anonymize/read endpoints, the admin tier for `/apps` writes, the allow-list endpoints and `/audit-log` (§8.4). The `X-App-Id` header is unchanged and is not an authentication mechanism.
 
 ## 12. Future Work
 
 The following items are deliberately *out of scope* for the current release but are tracked here as the expected next major workstreams. They reflect the gaps that operators most commonly hit when promoting PII Shield from a self-contained service into a hardened, multi-team production platform.
 
-### 12.1 Built-in Authentication & Authorization
+### 12.1 Further Authentication & Authorization Work
 
-PII Shield currently delegates *all* authentication to the surrounding infrastructure (reverse proxy, Azure Container Apps ingress, or an API gateway), as documented in §1.3 and §8.4. While that keeps the service framework-agnostic, it leaves a few capabilities on the table that are awkward to add purely at the edge:
+Optional OIDC sign-in for the Admin and Playground UIs, bearer-token validation with role-based access (user / admin) for the API, and audit-log binding to the acting principal are **implemented** (§8.4 and [authentication.md](authentication.md)). The following remain future work:
 
 - **First-class API-key issuance and rotation** — today every consuming app is identified by an opaque `X-App-Id` header that carries no proof of identity. A future release should introduce per-app API keys (or PATs) that are minted at registration time, stored hashed in Redis, rotated through a dedicated endpoint, and verified on every request via a FastAPI dependency. This would make `X-App-Id` cryptographically attributable rather than just advisory.
-- **OIDC / Microsoft Entra integration for the Admin and Playground UIs** — both Streamlit UIs are currently unauthenticated and rely on network isolation. Adding an OIDC sign-in flow (Entra ID for Azure deployments, generic OIDC for self-hosted) would allow the Admin UI to enforce role-based access (e.g. *registry admin* vs *read-only auditor*) and would let audit-log entries record the human actor, not just the action.
-- **Per-endpoint scopes / RBAC** — the `/apps/*` admin surface, the `/audit-log` query endpoint, and the hot-path `/anonymize_unique` and `/deanonymize` endpoints have very different sensitivity profiles. A scope model (`apps:write`, `audit:read`, `pii:anonymize`) attached to each API key or OIDC token would let operators run a single PII Shield instance for many tenants with confidence that no consumer can read another's audit trail or mutate its config.
+- **Per-application binding and finer scopes** — authorization is role-based with two tiers, so any caller with the user role can use any registered `X-App-Id`, and an admin can manage every application. Binding identity-provider clients (or token client ids) to the applications they may use, recorded at registration time, would let one PII Shield instance serve many tenants with confidence that no consumer can use another's configuration or read another's audit trail. Finer scopes (`apps:write`, `audit:read`, `pii:anonymize`) are a natural extension of the existing role-claim mechanism.
 - **Mutual TLS (mTLS) for service-to-service callers** — for high-trust deployments where PII Shield sits between an internal LLM gateway and downstream services, accepting mTLS client certificates as an alternative to API keys would remove the need to share long-lived secrets.
-- **Audit-log binding** — once authenticated identity is available, every row in the SQLite audit log should carry the calling principal (subject ID and display name). Today the `details` JSON is the only place an actor identity could appear, and only if the caller chose to send it.
 
-These features are interdependent: the API-key model and the OIDC flow share the same dependency-injection plumbing in FastAPI, and both feed the audit-log binding work. The recommended sequence is API keys first (smallest surface, immediate value), then OIDC for the UIs, then scopes and mTLS.
+These remaining features build on the same FastAPI dependency plumbing (`app/auth.py`) and the audit `actor` column now in place. The recommended sequence is API keys first (smallest surface, immediate value), then per-application binding and scopes, then mTLS.
 
 ### 12.2 Replacing SQLite with PostgreSQL for the Audit Store
 
@@ -1781,7 +1823,7 @@ PII Shield has no built-in rate limiting today, as called out in §8.4. Operator
 **Proposed approach.**
 - Add `slowapi` (FastAPI-friendly wrapper around `limits`) as an optional dependency, wired in only when `RATE_LIMIT_ENABLED=true`.
 - Use Redis as the limiter backing store (`limits.aio.storage.RedisStorage`) so that quotas are accurate across all Gunicorn workers and Container App replicas. The existing async Redis pool from `app/redis_store.py` can be reused.
-- Key by `X-App-Id` first, falling back to client IP for unauthenticated requests; once §12.1 ships, key by authenticated principal instead.
+- Key by `X-App-Id` first, falling back to client IP for unauthenticated requests; with authentication enabled (§8.4), key by the authenticated principal instead.
 - Define limit tiers per endpoint group (`admin`, `hot_path`, `audit_query`) with sane defaults overridable via env (`RATE_LIMIT_HOT_PATH=5000/minute`, `RATE_LIMIT_ADMIN=100/minute`, etc.) and a per-app override stored in the existing app-config Redis hash.
 - Return RFC-compliant `429 Too Many Requests` responses with `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` headers so clients can back off intelligently.
 - Emit `pii.rate_limit.rejected` and `pii.rate_limit.allowed` counters via the existing OpenTelemetry meter, dimensioned by `app_id` and `endpoint`, so the existing dashboards (§6.5) can show throttle rates per tenant.
