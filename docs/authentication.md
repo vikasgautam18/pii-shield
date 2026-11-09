@@ -196,8 +196,17 @@ PII Shield needs three things from an IdP:
 
 ### Microsoft Entra ID
 
-> This path is not exercised by the automated tests (there is no Entra tenant in CI); the generic OIDC machinery
-> it relies on is verified against Keycloak. Follow it in a non-production tenant first.
+> Verified end to end against a real Microsoft Entra tenant on Azure Container Apps: scripted setup, user and
+> service tokens, role enforcement, the sign-in outcomes below (user, admin, unrecognised role, unassigned) and
+> `AUTH_ENABLED` flipped off and on again. The automated test suite still uses Keycloak, because there is no Entra
+> tenant in CI. Follow these steps in a non-production tenant first.
+
+**Scripted setup.** In a test or demo tenant, `infra/scripts/07-setup-entra.sh create` does all of the steps below
+for you (and creates test users and test services); `delete` removes them again. It needs the Container Apps
+environment to exist (the redirect URIs contain its default domain), is safe to re-run, and writes the resulting
+`OIDC_*` values and the test credentials to a private file outside the repository
+(`~/.config/pii-shield/<project>.entra.env`, mode 0600). Load it with `set -a; . <file>; set +a` and run
+`06-configure-auth.sh enable`.
 
 You can use **one** app registration that acts as both the API and the UI client (simplest), or two. The steps
 below use one; with two, put the API settings on the API registration and the client settings on the client
@@ -320,7 +329,9 @@ AUTH_ENABLED=true VERIFY_ACCESS_TOKEN="$(python scripts/get_token.py)" ./infra/s
 Secrets are passed from your environment into Container Apps secrets, not committed. `06-configure-auth.sh`
 changes the UIs first when enabling and the API first when disabling, so every intermediate state is usable, and
 requires UI apps that already run the launcher (it tells you if they do not; redeploy them once with
-`02-deploy-apps.sh`).
+`02-deploy-apps.sh`). It then waits until the new revisions are serving (`ROLLOUT_TIMEOUT_SECONDS`, default 600),
+so `03-verify.sh` can follow immediately: `az containerapp update` alone returns while the previous revision
+still answers for a couple of minutes.
 
 `01-build-push.sh` and `02-deploy-apps.sh` read their targets (resource group, registry, environment, Redis) from
 `terraform output`, so Terraform must be installed and initialised against the remote state first
@@ -346,7 +357,12 @@ Azure Cloud Shell already has Terraform and the Azure CLI. `03-verify.sh` and `0
 - **Restarts and scale-to-zero.** The UI session lives in a signed cookie, so people who are already signed in stay
   signed in when a UI replica restarts or scales to zero (the Azure scripts allow scale-to-zero). A restart *during*
   the redirect to the IdP loses that one pending login: the user sees the sign-in screen again and signs in a
-  second time.
+  second time. The first visit after an idle period waits for a cold start (tens of seconds for a UI, longer for
+  the API, which loads the NER model) and the browser may show a connection error once; reload, or keep one
+  replica warm (see `DEPLOYMENT.md`).
+- **Sign out.** The UI ends its own session, then Streamlit sends the browser to the IdP's end-session endpoint.
+  Entra shows an account chooser there; choosing the account completes the sign-out and returns to the sign-in
+  screen through the registered redirect URI.
 - **Sessions and expiry.** Streamlit does not refresh tokens. When the access token expires the UI shows "Your
   session has expired" and offers to sign in again (one click while the IdP session is alive; the user may see
   an account chooser). The Streamlit cookie itself lasts up to 30 days, independent of token lifetime.
@@ -386,6 +402,8 @@ The API logs `Auth rejected (<reason>, HTTP <status>) on <route>`. Decode the to
 | UI: signed in but "does not have access" | Account has no role | Assign a role, then sign out and in |
 | Sign-in loops back to the sign-in screen | Callback reached a different replica, or the redirect URI differs | Run one replica (or session affinity); match the redirect URI exactly |
 | IdP error about the redirect URI (Entra `AADSTS50011`) | URI not registered | Register `https://<host>/oauth2callback` exactly |
+| Entra `AADSTS50105`: the signed-in user is not assigned to a role | *Assignment required* is on and the user (or their group) has no assignment | Assign the user or group to a role (step 7); this is the intended block for unassigned accounts |
+| Entra sign-in stops at "Let's keep your account secure" | The tenant enforces MFA registration (for example Security Defaults) for new accounts | The user registers an authenticator at first sign-in. To automate it for test users, choose "Set up a different authentication app" and "Can't scan the QR code?" to reveal a TOTP secret, then answer the code prompt on later sign-ins |
 
 ## Limitations
 

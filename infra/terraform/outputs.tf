@@ -19,24 +19,24 @@ output "acr_admin_password" {
 # ── Redis ────────────────────────────────────────────────────────────────────
 
 output "redis_hostname" {
-  description = "Redis hostname"
-  value       = azurerm_redis_cache.this.hostname
+  description = "Managed Redis endpoint hostname"
+  value       = azurerm_managed_redis.this.hostname
 }
 
 output "redis_ssl_port" {
-  description = "Redis TLS port"
-  value       = azurerm_redis_cache.this.ssl_port
+  description = "Managed Redis TLS port"
+  value       = azurerm_managed_redis.this.default_database[0].port
 }
 
 output "redis_primary_key" {
-  description = "Redis primary access key"
-  value       = azurerm_redis_cache.this.primary_access_key
+  description = "Managed Redis primary access key (null unless redis_access_keys_enabled is true)"
+  value       = var.redis_access_keys_enabled ? azurerm_managed_redis.this.default_database[0].primary_access_key : null
   sensitive   = true
 }
 
 output "redis_url" {
-  description = "Full Redis connection URL (rediss:// with TLS)"
-  value       = "rediss://:${urlencode(azurerm_redis_cache.this.primary_access_key)}@${azurerm_redis_cache.this.hostname}:${azurerm_redis_cache.this.ssl_port}/0"
+  description = "Full Redis connection URL (rediss:// with TLS); null unless redis_access_keys_enabled is true"
+  value       = var.redis_access_keys_enabled ? "rediss://:${urlencode(azurerm_managed_redis.this.default_database[0].primary_access_key)}@${azurerm_managed_redis.this.hostname}:${azurerm_managed_redis.this.default_database[0].port}/0" : null
   sensitive   = true
 }
 

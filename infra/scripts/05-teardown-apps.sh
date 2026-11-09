@@ -68,12 +68,14 @@ fi
 echo ""
 
 # ── 2. Redis access-policy-assignments (best-effort) ─────────────────────────
+# Only the assignments created by 02-deploy-apps.sh (piishieldapp*). The operator's
+# assignment is managed by Terraform and is removed by `terraform destroy`.
 
 if [[ -n "$REDIS_NAME" ]]; then
   echo "== Redis access-policy-assignments ($REDIS_NAME) =="
-  ASSIGNMENTS=$(az redis access-policy-assignment list \
-    -g "$RG_NAME" --name "$REDIS_NAME" \
-    --query "[].name" -o tsv 2>/dev/null || true)
+  ASSIGNMENTS=$(az redisenterprise database access-policy-assignment list \
+    -g "$RG_NAME" --cluster-name "$REDIS_NAME" --database-name default \
+    --query "[?starts_with(name, 'piishieldapp')].name" -o tsv 2>/dev/null || true)
 
   if [[ -z "$ASSIGNMENTS" ]]; then
     echo "  (none found)"
@@ -81,9 +83,9 @@ if [[ -n "$REDIS_NAME" ]]; then
     while IFS= read -r pa; do
       [[ -z "$pa" ]] && continue
       echo "  Deleting policy assignment: $pa"
-      az redis access-policy-assignment delete \
-        -g "$RG_NAME" --name "$REDIS_NAME" \
-        --policy-assignment-name "$pa" \
+      az redisenterprise database access-policy-assignment delete \
+        -g "$RG_NAME" --cluster-name "$REDIS_NAME" --database-name default \
+        --name "$pa" --yes \
         --only-show-errors >/dev/null \
         && echo "    [OK]" \
         || echo "    [skip — Redis may already be gone]"

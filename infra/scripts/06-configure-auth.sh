@@ -27,7 +27,8 @@
 # Rollout order keeps every intermediate state usable:
 #   enable : UIs first (they require sign-in; the API is still open), then the API
 #   disable: API first (open), then the UIs
-# Each update creates a new revision, so the services restart.
+# Each update creates a new revision, so the services restart; the script waits until the new
+# revisions serve traffic (ROLLOUT_TIMEOUT_SECONDS, default 600).
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -60,6 +61,28 @@ app_fqdn() {  # $1 = app name
     --query properties.configuration.ingress.fqdn -o tsv
 }
 
+# `az containerapp update` returns once the new revision exists, not once it serves traffic: until the
+# revision is ready the previous configuration keeps answering. Wait so the final message is true.
+wait_for_rollout() {  # $@ = app names
+  local app latest ready deadline
+  deadline=$((SECONDS + ${ROLLOUT_TIMEOUT_SECONDS:-600}))
+  echo "Waiting for the new revisions to start serving (up to ${ROLLOUT_TIMEOUT_SECONDS:-600}s)..."
+  for app in "$@"; do
+    while :; do
+      latest=$(az containerapp show --name "$app" --resource-group "$RG_NAME" \
+        --query properties.latestRevisionName -o tsv 2>/dev/null || true)
+      ready=$(az containerapp show --name "$app" --resource-group "$RG_NAME" \
+        --query properties.latestReadyRevisionName -o tsv 2>/dev/null || true)
+      if [ -n "$latest" ] && [ "$latest" = "$ready" ]; then break; fi
+      if [ "$SECONDS" -ge "$deadline" ]; then
+        echo "WARNING: $app is still rolling out ${latest:-its new revision}; the previous configuration may answer for a little longer." >&2
+        break
+      fi
+      sleep 10
+    done
+  done
+}
+
 require_launcher() {  # $1 = app name
   local command
   command=$(az containerapp show --name "$1" --resource-group "$RG_NAME" \
@@ -80,6 +103,7 @@ if [ "$ACTION" = "disable" ]; then
     --max-replicas "$PLAYGROUND_MAX_REPLICAS" --set-env-vars AUTH_ENABLED=false --output none
   az containerapp update --name "$ADMIN_APP_NAME" --resource-group "$RG_NAME" \
     --max-replicas "$ADMIN_MAX_REPLICAS" --set-env-vars AUTH_ENABLED=false --output none
+  wait_for_rollout "$API_APP_NAME" "$PLAYGROUND_APP_NAME" "$ADMIN_APP_NAME"
   echo "Authentication disabled on $API_APP_NAME, $PLAYGROUND_APP_NAME and $ADMIN_APP_NAME."
   echo "(OIDC_* settings and secrets are left in place but ignored while AUTH_ENABLED=false.)"
   exit 0
@@ -142,6 +166,7 @@ configure_ui "$ADMIN_APP_NAME" "$ADMIN_REDIRECT_URI"
 echo "Configuring $API_APP_NAME..."
 az containerapp update --name "$API_APP_NAME" --resource-group "$RG_NAME" \
   --set-env-vars "${api_env[@]}" --output none
+wait_for_rollout "$PLAYGROUND_APP_NAME" "$ADMIN_APP_NAME" "$API_APP_NAME"
 
 echo ""
 echo "Authentication enabled (issuer: $OIDC_ISSUER_URL)."

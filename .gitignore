@@ -215,6 +215,9 @@ examples/__results/
 # Terraform state (stored in Azure Storage, not in repo)
 *.tfstate
 *.tfstate.backup
+# Saved plans (terraform plan -out=...) can contain sensitive values
+tfplan
+*.tfplan
 .terraform/
 .terraform.lock.hcl
 PII-Shield-Architecture.pptx

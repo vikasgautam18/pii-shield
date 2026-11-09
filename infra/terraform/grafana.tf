@@ -5,7 +5,7 @@ resource "azurerm_dashboard_grafana" "this" {
   resource_group_name               = azurerm_resource_group.this.name
   location                          = azurerm_resource_group.this.location
   sku                               = "Standard"
-  grafana_major_version             = 11
+  grafana_major_version             = var.grafana_major_version
   api_key_enabled                   = true
   deterministic_outbound_ip_enabled = false
   public_network_access_enabled     = true
@@ -37,7 +37,7 @@ resource "azurerm_role_assignment" "grafana_log_reader" {
 data "azurerm_client_config" "current" {}
 
 resource "azurerm_role_assignment" "grafana_admin" {
-  principal_id         = data.azurerm_client_config.current.object_id
+  principal_id         = local.operator_object_id
   role_definition_name = "Grafana Admin"
   scope                = azurerm_dashboard_grafana.this.id
 }

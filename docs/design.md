@@ -38,7 +38,7 @@ The LLM never sees real PII — only opaque placeholders like {{PERSON_1}}, SHA3
 | Custom Indian PII recognizers | Purpose-built recognizers for Aadhaar, Driving License, PIN Code, Phone Number, UPI ID, and natural date expressions — shared between both packages. |
 | Custom operators | SHA3-256 hash, post-quantum encryption (ML-KEM-768 + AES-256-GCM), Fernet encryption, and synthetic fake-data generation operators. |
 | Batch processing | Thread- and process-parallel processing of text lists, CSV files, and pandas DataFrames via BatchProcessor. |
-| Infrastructure | Docker Compose for local development (Redis, Grafana LGTM, Streamlit UIs). Terraform IaC + shell scripts for Azure Container Apps, Azure Cache for Redis, ACR, Application Insights, and Managed Grafana. |
+| Infrastructure | Docker Compose for local development (Redis, Grafana LGTM, Streamlit UIs). Terraform IaC + shell scripts for Azure Container Apps, Azure Managed Redis, ACR, Application Insights, and Managed Grafana. |
 | Observability | OpenTelemetry traces, metrics, and logs with dual-backend support — OTLP gRPC (local) and Azure Monitor (production). Pre-built Grafana dashboards for both environments. |
 | Authentication & authorization (optional) | A single `AUTH_ENABLED` switch (default off) adds OpenID Connect sign-in to both Streamlit UIs and bearer-token validation with role-based access (user / admin) to the API, using any OIDC identity provider (Microsoft Entra ID, Keycloak, …). The audit log records the acting principal. See §8.4 and [authentication.md](authentication.md). |
 
@@ -308,7 +308,7 @@ Startup order: app waits for redis healthcheck (redis-cli ping). The Streamlit s
 |----|----|----|----|
 | Azure Container Apps (×3) | Deployed via ***infra/scripts/02-deploy-apps.sh*** | Consumption | API + 2 Streamlit UIs (playground, admin). Auto-scaling: API 0–96 replicas, playground 0–3, admin 0–2; built-in HTTPS with managed certificates. |
 | Azure Container Registry | acr.tf | Basic | Remote Docker builds via ***az acr build*** — no local Docker required. Admin credentials enabled for Container Apps image pull. |
-| Azure Cache for Redis | redis.tf | Standard C1 | TLS-only session store and app registry. Key-based auth. ~15–20 minute provisioning time. |
+| Azure Managed Redis | redis.tf | Balanced B0 (non-HA by default) | TLS-only session store and app registry. Microsoft Entra authentication (access keys disabled). The slowest resource to provision. Replaces classic Azure Cache for Redis, which new customers can no longer create and which retires on 30 Sep 2028. |
 | Log Analytics Workspace | log_analytics.tf | PerGB2018 | 30-day log retention. Backing store for Application Insights and Container Apps Environment diagnostics. |
 | Application Insights | app_insights.tf | Web | Distributed tracing via Azure Monitor OpenTelemetry exporter. Linked to Log Analytics workspace. |
 | Container Apps Environment | container_env.tf | — | Shared environment for all three Container Apps. Linked to Log Analytics for diagnostic logging. |
@@ -318,8 +318,8 @@ Startup order: app waits for redis healthcheck (redis-cli ping). The Streamlit s
 
 | **Resource** | **Details** |
 |----|----|
-| Resource Group | terraform-state-rg |
-| Storage Account | piishieldtfstate (Entra ID auth only, shared key access disabled) |
+| Resource Group | `<project>-tfstate-rg` |
+| Storage Account | `<project>tf<random>` (Entra ID auth only, shared key access disabled) |
 | Blob Container | tfstate |
 | Resource Lock | CanNotDelete on the state storage account |
 
@@ -1211,7 +1211,7 @@ Python's standard logging module is bridged to OpenTelemetry via LoggingInstrume
 
 | Component | Details |
 |----|----|
-| Stack | Azure Managed Grafana (Terraform-provisioned, Standard SKU, Grafana v11) |
+| Stack | Azure Managed Grafana (Terraform-provisioned, Standard SKU, Grafana v12) |
 | URL | Output from terraform output grafana_url |
 | Dashboard Files | observability/grafana/dashboards-azure/ |
 | Query Language | KQL (Kusto Query Language) against Application Insights / Log Analytics |
@@ -1321,21 +1321,21 @@ All infrastructure is defined in infra/terraform/ and managed via Terraform ≥ 
 |----|----|----|----|----|
 | Resource Group | main.tf | azurerm_resource_group | — | Container for all app resources (default name: pii-shield) |
 | Container Registry | acr.tf | azurerm_container_registry | Basic, admin enabled | Stores Docker images |
-| Azure Cache for Redis | redis.tf | azurerm_redis_cache | Standard C1, TLS-only, min TLS 1.2, Entra auth (access keys disabled) | Session store + app registry |
+| Azure Managed Redis | redis.tf | azurerm_managed_redis | Balanced_B0, non-HA, TLS-only, EnterpriseCluster policy (single endpoint for non-cluster clients), Entra auth (access keys disabled) | Session store + app registry |
 | Log Analytics Workspace | log_analytics.tf | azurerm_log_analytics_workspace | PerGB2018, 30-day retention | Backing store for logs and metrics |
 | Application Insights | app_insights.tf | azurerm_application_insights | Web, linked to Log Analytics | OTel trace/metric/log ingestion |
 | Container Apps Environment | container_env.tf | azurerm_container_app_environment | Consumption (serverless), linked to Log Analytics | Hosts all 3 container apps |
-| Azure Managed Grafana | grafana.tf | azurerm_dashboard_grafana | Standard, v11, SystemAssigned identity, API key enabled | Observability dashboards (KQL) |
+| Azure Managed Grafana | grafana.tf | azurerm_dashboard_grafana | Standard, major version 12 (`grafana_major_version`), SystemAssigned identity, API key enabled | Observability dashboards (KQL) |
 
 **Terraform State Backend:**
 
 | Property        | Value                                            |
 |-----------------|--------------------------------------------------|
 | Backend         | azurerm (Azure Blob Storage)                     |
-| Resource Group  | terraform-state-rg (separate from app resources) |
-| Storage Account | piishieldtfstate                                 |
+| Resource Group  | `<project>-tfstate-rg` (separate from app resources) |
+| Storage Account | `<project>tf<random>`                            |
 | Container       | tfstate                                          |
-| State Key       | pii-shield.terraform.tfstate                     |
+| State Key       | `<project>.terraform.tfstate`                    |
 | Auth            | Entra ID (use_azuread_auth = true)               |
 | Protection      | CanNotDelete lock, shared key access disabled    |
 
@@ -1364,7 +1364,7 @@ All infrastructure is defined in infra/terraform/ and managed via Terraform ≥ 
 
 | Permission / Role | Scope | Reason |
 |----|----|----|
-| Create resource groups | Subscription | Create terraform-state-rg |
+| Create resource groups | Subscription | Create `<project>-tfstate-rg` |
 | Create storage accounts | Resource group | Terraform state storage |
 | Storage Blob Data Contributor | Storage account | Read/write state blobs via Entra ID |
 | Create resource locks | Resource group | CanNotDelete lock on state storage |
@@ -1393,7 +1393,7 @@ All infrastructure is defined in infra/terraform/ and managed via Terraform ≥ 
 |-------------------|------------------|--------------------------------------|
 | Grafana Admin     | Grafana instance | Create folders and upload dashboards |
 
-> Note: Deployment scripts use ACR admin credentials for image pulls. Redis can be configured in either of two auth modes by the deployment script: (a) key mode — the access key is read from Terraform output and stored as an Azure Container Apps secret, or (b) Entra mode — the container app's system-assigned managed identity is granted the Redis Cache Contributor role, REDIS_AUTH_MODE=entra is exported, and DefaultAzureCredential acquires tokens at runtime. The Terraform variable redis_access_keys_enabled controls which modes are available on the cache itself.
+> Note: Deployment scripts use ACR admin credentials for image pulls. Redis can be configured in either of two auth modes by the deployment script: (a) key mode — the access key is read from Terraform output and stored as an Azure Container Apps secret, or (b) Entra mode — the container app's system-assigned managed identity is granted the Managed Redis `default` data access policy (az redisenterprise database access-policy-assignment), REDIS_AUTH_MODE=entra is exported, and DefaultAzureCredential acquires tokens at runtime. The Terraform variable redis_access_keys_enabled controls which modes are available on the cache itself.
 
 ### 7.4 Environment Variables
 
@@ -1439,7 +1439,7 @@ Complete reference of all environment variables, organized by category.
 | REDIS_URL | redis://localhost:6379/0 | No | Redis connection URL. Azure uses rediss:// (TLS) with URL-encoded access key. |
 | REDIS_AUTH_MODE | key | No | key (access key in URL) or entra (Azure managed identity) |
 | REDIS_HOST | — | If entra | Azure Redis hostname |
-| REDIS_PORT | 6380 | If entra | Azure Redis TLS port |
+| REDIS_PORT | 6380 | If entra | Redis TLS port: the deploy script sets 10000 for Azure Managed Redis (6380 is the classic Azure Cache for Redis port) |
 | REDIS_ENTRA_USERNAME | — | If entra | Managed identity principal (object) ID for AUTH username |
 | REDIS_POOL_SIZE | 20 | No | Max connections per pool per worker (both key and Entra modes) |
 
@@ -1489,7 +1489,7 @@ PII Shield offers two encryption backends:
 |----|----|----|----|
 | Local (Docker) | Unencrypted (redis://) | No password | Development only — no sensitive data in local Redis |
 | Azure | TLS-only (rediss://, min TLS 1.2) | Access key (URL-encoded in connection URL) | Non-SSL port disabled; stored as ACA secret |
-| Azure (Entra mode) | TLS-only (min TLS 1.2) | Microsoft Entra managed identity | No secrets — DefaultAzureCredential acquires tokens automatically. Access key auth disabled on Redis. System-assigned managed identity with Redis Cache Contributor role. |
+| Azure (Entra mode) | TLS-only (min TLS 1.2) | Microsoft Entra managed identity | No secrets — DefaultAzureCredential acquires tokens automatically. Access key auth disabled on Redis. System-assigned managed identity with the Managed Redis `default` access policy. |
 
 ### 8.4 Authentication and Authorization
 
@@ -1731,7 +1731,7 @@ All entity types support all four strategies. The strategy is determined by (in 
 | IMAGE_TAG | latest | No | Deployment | Docker image tag for build/deploy scripts |
 | REDIS_AUTH_MODE | key | No | Redis | key (access key in URL) or entra (Azure managed identity) |
 | REDIS_HOST | — | If entra | Redis | Azure Redis hostname |
-| REDIS_PORT | 6380 | If entra | Redis | Azure Redis TLS port |
+| REDIS_PORT | 6380 | If entra | Redis | Redis TLS port (the deploy script sets 10000 for Azure Managed Redis; 6380 is the classic port) |
 | REDIS_ENTRA_USERNAME | — | If entra | Redis | Managed identity principal (object) ID |
 | REDIS_POOL_SIZE | 20 | No | Redis | Max connections per pool per worker |
 | PII_SHIELD_THEME | default | No | UI | Streamlit theme preset (default, dark, etc.) loaded from app/themes.py |

@@ -17,7 +17,7 @@ and the provided lifecycle scripts.
 You also need:
 
 - **Azure subscription** with permission to create resource groups, storage
-  accounts, ACR, Redis Cache, Container Apps Environment, App Insights, and
+  accounts, ACR, Azure Managed Redis, Container Apps Environment, App Insights, and
   Managed Grafana.
 - An **Entra ID account** signed into the Azure CLI (`az login`).
 
@@ -69,8 +69,12 @@ subscription_id = "00000000-0000-0000-0000-000000000000"
 # (ACR, Redis, Grafana). Set `name_suffix` to pin it.
 project_name = "piishield"
 
-location       = "centralindia"
-redis_capacity = 1            # C1 = 1 GB. Use 3 for production load.
+location = "centralindia"
+
+# Azure Managed Redis (replaces classic Azure Cache for Redis, which is blocked for
+# new customers and retires on 30 Sep 2028). Balanced_B0 is the smallest size.
+redis_sku_name                  = "Balanced_B0"
+redis_high_availability_enabled = false   # off for dev/test; turn on for production
 ```
 
 All resource names are derived:
@@ -82,8 +86,8 @@ All resource names are derived:
 | Log Analytics | `<project_name>-logs` |
 | Application Insights | `<project_name>-insights` |
 | ACR | `<project_name>acr<suffix>` |
-| Redis | `<project_name>-redis-<suffix>` |
-| Grafana | `<project_name>-grafana-<suffix>` |
+| Redis | `<project_name>-redis-<suffix>` (Azure Managed Redis) |
+| Grafana | `<project_name>-g-<suffix>` (max 23 characters) |
 
 > **Note:** ACR, Redis, and Grafana names must be globally unique across Azure.
 > The random `name_suffix` handles this automatically. To get reproducible names

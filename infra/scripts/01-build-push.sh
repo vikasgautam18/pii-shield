@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # ── 01-build-push.sh ─────────────────────────────────────────────────────────
 # Build the PII Shield Docker image in Azure Container Registry (cloud build).
-# Reads ACR details from Terraform outputs.
+# Reads ACR details from Terraform outputs, or from ACR_NAME (login server or registry
+# name) and RG_NAME when those are set.
 #
 # Prerequisites:
-#   - Terraform applied (infra/terraform)
+#   - Terraform applied (infra/terraform), or the registry and resource group already exist
 #   - Azure CLI logged in
 #
 # Usage:
-#   cd infra/scripts && ./01-build-push.sh [--nlp-engine ENGINE] [--model MODEL]
+#   cd infra/scripts && ./01-build-push.sh [--nlp-engine ENGINE] [--model MODEL] [--tag TAG]
+#   ACR_NAME=myregistry RG_NAME=my-rg ./01-build-push.sh --tag v1   # without Terraform
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -31,10 +33,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Read Terraform outputs
-echo " Reading Terraform outputs..."
-ACR_NAME=$(cd "$TF_DIR" && terraform output -raw acr_login_server)
-RG_NAME=$(cd "$TF_DIR" && terraform output -raw resource_group_name)
+# Read Terraform outputs, unless ACR_NAME (login server or registry name) and RG_NAME are given
+echo " Resolving registry..."
+ACR_NAME="${ACR_NAME:-$(cd "$TF_DIR" && terraform output -raw acr_login_server)}"
+RG_NAME="${RG_NAME:-$(cd "$TF_DIR" && terraform output -raw resource_group_name)}"
 
 echo " Building image in ACR: ${ACR_NAME}/pii-shield:${IMAGE_TAG}"
 echo "   NLP_ENGINE=$NLP_ENGINE"

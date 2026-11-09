@@ -14,8 +14,9 @@ terraform {
 
   required_providers {
     azurerm = {
-      source  = "hashicorp/azurerm"
-      version = "~> 4.0"
+      source = "hashicorp/azurerm"
+      # azurerm_managed_redis (4.50+) and its access policy assignment (4.60+) are required.
+      version = "~> 4.60"
     }
     random = {
       source  = "hashicorp/random"
@@ -46,6 +47,9 @@ resource "random_string" "suffix" {
 locals {
   # Resolved suffix: user-supplied wins, else the auto-generated random string.
   suffix = var.name_suffix != "" ? var.name_suffix : random_string.suffix.result
+
+  # Identity that runs Terraform: it receives Grafana Admin and Managed Redis access.
+  operator_object_id = var.operator_object_id != "" ? var.operator_object_id : data.azurerm_client_config.current.object_id
 
   # Resource names
   # - Globally-unique resources (DNS namespace) use prefix + suffix.

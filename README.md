@@ -543,7 +543,7 @@ See [`examples/anonymize_request.py`](examples/anonymize_request.py) for the ful
 PII Shield can be deployed to Azure using **Terraform** (infrastructure) and **shell scripts** (application lifecycle). The Azure deployment includes:
 
 - **Azure Container Apps** — 3 apps (API, Streamlit Playground, Streamlit Admin) with auto-scaling and HTTPS
-- **Azure Cache for Redis** — TLS-only session and app registry store
+- **Azure Managed Redis** — TLS-only session and app registry store, Microsoft Entra authentication (no access keys)
 - **Azure Container Registry** — Remote Docker image builds (no local Docker required)
 - **Application Insights + Log Analytics** — Full observability via Azure Monitor OTel exporter
 - **Azure Managed Grafana** — Pre-built KQL dashboards for metrics, per-app analytics, and error monitoring
