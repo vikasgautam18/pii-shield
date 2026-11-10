@@ -132,8 +132,10 @@ services:
       - KC_HOSTNAME=http://localhost:8080
       - KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true
       - KC_HTTP_ENABLED=true
+    # Loopback only: the dev realm ships public credentials (admin/admin, fixed client secrets) and tokens are
+    # issued for http://localhost:8080, so other machines gain nothing from reaching it, but could abuse it.
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./dev/keycloak/pii-shield-realm.json:/opt/keycloak/data/import/pii-shield-realm.json:ro
     healthcheck:

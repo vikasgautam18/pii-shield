@@ -74,6 +74,17 @@ OTLP export errors because there is no collector).
 | `bob` | `bob-dev-password` | `PIIShield.Admin` | Both UIs |
 | `carol` | `carol-dev-password` | none | "Your account does not have access" |
 
+Trying the users by hand:
+
+- **Switching users.** Keycloak keeps one single-sign-on session per browser, so after you sign in as `alice` on one UI,
+  clicking *Sign in* on the other UI signs `alice` in silently. To try someone else, click **Sign out** first (it
+  ends the Keycloak session too) or use a private window.
+- **Short sessions.** Keycloak access tokens last 5 minutes here, so after 5 minutes the UI shows "Your session has
+  expired"; **Sign in again** signs you back in without a password while the Keycloak session lives (30 minutes
+  idle). Entra ID access tokens typically last an hour or more.
+- **Restarts.** Restarting a UI container (`docker compose restart playground`) does not sign anyone out, because the
+  session lives in a cookie signed with `AUTH_COOKIE_SECRET`.
+
 Call the API as a service (client-credentials flow):
 
 ```bash
@@ -113,7 +124,8 @@ To switch authentication off again, set `AUTH_ENABLED=false` (or delete the line
 `docker compose up -d --force-recreate --no-deps app playground admin`.
 
 > **Never reuse** the credentials in `dev/keycloak/`: they are public, and Keycloak runs in development mode
-> over plain HTTP.
+> over plain HTTP. Compose publishes its port on `127.0.0.1` only, so other machines on your network cannot reach
+> it; keep it that way, because anyone who could would be able to sign in as an admin.
 
 ## What is protected, and who can do what
 
