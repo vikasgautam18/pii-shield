@@ -15,9 +15,9 @@ Usage:
 
 Authentication:
     When the API runs with AUTH_ENABLED=true the suite needs an admin-role token, because it registers
-    applications. Create one and export it (or pass --access-token):
-        export API_ACCESS_TOKEN="$(python scripts/get_token.py)"
-    The token is checked before any test runs; see docs/authentication.md.
+    applications. Export it as API_ACCESS_TOKEN (or pass --access-token); docs/authentication.md
+    ("Running the bundled test suites") shows how to get one from the local Keycloak or the Entra test
+    services. The token is checked before any test runs, and the run stops if it stops working midway.
 
 Defaults:
     --api-url   http://localhost:8000
@@ -286,8 +286,9 @@ class PIIShieldClient:
 
     def ensure_app(self, app_name: str) -> str:
         """Return app_id for *app_name*, creating it if needed."""
-        existing = self.list_apps()
-        matches = [a for a in existing if a["app_name"] == app_name]
+        resp = requests.get(f"{self.base_url}/apps", timeout=self.timeout)
+        resp.raise_for_status()  # an error body (for example a 401) is not a list of apps
+        matches = [a for a in resp.json() if a["app_name"] == app_name]
         if matches:
             return matches[0]["app_id"]
         return self.register_app(app_name)["app_id"]
@@ -3453,6 +3454,12 @@ class TestRunner:
         for name, fn in sections:
             try:
                 fn()
+            except requests.HTTPError as exc:
+                print(f"  ❌ {name} FAILED: {exc}")
+                if exc.response is not None and exc.response.status_code == 401:
+                    print("\n❌ The API stopped accepting the access token (it may have expired), so the remaining "
+                          "sections cannot run.\n   Fetch a fresh token and re-run; no report was written.")
+                    sys.exit(1)
             except Exception as exc:
                 print(f"  ❌ {name} FAILED: {exc}")
 

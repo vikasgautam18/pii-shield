@@ -367,10 +367,17 @@ class TestApiAccessCheck:
 
 
 class _FakeApiHandler(http.server.BaseHTTPRequestHandler):
+    """Answers canned routes. A route key is ``"/path"`` (any method) or ``"POST /path"``; its value is a
+    ``(status, json body)`` pair, or a list of them that is answered in order (the last one then repeats)."""
+
     routes: dict = {}
 
-    def do_GET(self):  # noqa: N802 (http.server naming)
-        status, body = self.routes.get(self.path, (404, {"detail": "Not Found"}))
+    def _respond(self, method):
+        answer = self.routes.get(f"{method} {self.path}") or self.routes.get(self.path) or (404, {"detail": "Not Found"})
+        if isinstance(answer, list):
+            status, body = answer.pop(0) if len(answer) > 1 else answer[0]
+        else:
+            status, body = answer
         payload = json.dumps(body).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -378,13 +385,20 @@ class _FakeApiHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def do_GET(self):  # noqa: N802 (http.server naming)
+        self._respond("GET")
+
+    def do_POST(self):  # noqa: N802
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        self._respond("POST")
+
     def log_message(self, *args):
         pass
 
 
 @pytest.fixture()
 def fake_api():
-    """Start a tiny HTTP server answering the canned ``{path: (status, json body)}`` routes."""
+    """Start a tiny HTTP server answering canned routes (see ``_FakeApiHandler``)."""
     servers = []
 
     def start(routes):
@@ -430,4 +444,25 @@ class TestRunnerPreflight:
         assert result.returncode == 1
         assert "admin role" in result.stdout and "User Svc" in result.stdout
         assert "FAILED" not in result.stdout
+        assert not (tmp_path / "report.html").exists()
+
+    @pytest.mark.parametrize(
+        "routes",
+        [
+            # the setup section's lookup of existing apps is refused after the connectivity check succeeded
+            {"/me": (200, ME_ADMIN), "GET /apps": [(200, []), (401, {"detail": "Authentication required."})]},
+            # the lookup works but registering the first application is refused
+            {"/me": (200, ME_ADMIN), "GET /apps": (200, []),
+             "POST /apps": (401, {"detail": "Authentication required."})},
+        ],
+        ids=["lookup", "register"],
+    )
+    def test_stops_at_once_when_the_token_stops_working_midway(self, runner, fake_api, tmp_path, routes):
+        """A token that passes the preflight but is rejected later (it expired) must not fail every section."""
+        result = self.run(runner, fake_api(routes), tmp_path, token="admin-token")
+        assert result.returncode == 1
+        assert "Authenticated as Admin Svc" in result.stdout  # the preflight itself passed
+        assert "stopped accepting the access token" in result.stdout and "Fetch a fresh token" in result.stdout
+        assert result.stdout.count("FAILED") == 1  # it stopped at the first failure instead of failing every section
+        assert "401" in result.stdout and "string indices" not in result.stdout
         assert not (tmp_path / "report.html").exists()

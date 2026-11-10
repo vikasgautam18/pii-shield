@@ -109,6 +109,7 @@ Run the authentication tests in the container (no identity provider needed):
 ```bash
 docker compose --env-file /dev/null run --rm --no-deps -T \
   -v "$PWD/app:/app/app" -v "$PWD/tests:/app/tests" -v "$PWD/pii_shield:/app/pii_shield" \
+  -v "$PWD/examples:/app/examples" -v "$PWD/scripts:/app/scripts" \
   app sh -c "pip install -q pytest 'redis<6' && python -m pytest -q -p no:cacheprovider \
     tests/test_auth_settings.py tests/test_auth_validator.py tests/test_auth_dependencies.py \
     tests/test_auth_endpoints.py tests/test_ui_launcher.py tests/test_ui_auth.py \
@@ -317,7 +318,33 @@ The bundled test tools accept the same token: `examples/run_indian_banking_tests
 `API_ACCESS_TOKEN` (or `--access-token`). They also need an admin-role token because they register applications.
 The two `run_indian_banking_tests*.py` runners ask the API who the token belongs to (`GET /me`) before the first
 test and stop with a clear message when the token is missing, rejected or not an admin's, instead of running a
-suite in which every test fails. A full run takes a few minutes, so a token fetched just before it is enough.
+suite in which every test fails. They also stop, without writing a report, if the token stops working midway (for
+example because it expired).
+
+### Running the bundled test suites
+
+`scripts/get_token.py` needs the credentials of a *service* that holds the admin role and, for Entra, the `.default`
+scope. The `OIDC_CLIENT_*` values in the file written by `07-setup-entra.sh` belong to the UI client and will not
+do: Entra answers `AADSTS90014` (no scope) and then `AADSTS501051` (that client holds no role). Fetch the token just
+before the run:
+
+```bash
+# Local Docker Compose + Keycloak, after giving service-account-pii-shield-svc the PIIShield.Admin role (see above).
+# Keycloak tokens last 5 minutes, which is plenty for this suite on a laptop.
+export API_ACCESS_TOKEN="$(OIDC_ISSUER_URL=http://localhost:8080/realms/pii-shield OIDC_ALLOW_INSECURE_HTTP=true \
+  OIDC_CLIENT_ID=pii-shield-svc OIDC_CLIENT_SECRET=dev-only-service-client-secret python scripts/get_token.py)"
+python examples/run_indian_banking_tests.py
+
+# Azure, with the admin test service created by infra/scripts/07-setup-entra.sh
+set -a; . ~/.config/pii-shield/<project>.entra.env; set +a
+export API_ACCESS_TOKEN="$(OIDC_CLIENT_ID=$SVC_ADMIN_CLIENT_ID OIDC_CLIENT_SECRET=$SVC_ADMIN_CLIENT_SECRET \
+  OIDC_SCOPE=api://$OIDC_AUDIENCE/.default python scripts/get_token.py)"
+python examples/run_indian_banking_tests_azure.py
+```
+
+Both runners leave their test applications registered. Remove them with
+`python scripts/cleanup_test_apps.py --api-url <url> --prefix __test`, then again with `--prefix indian-banking-tests`
+(it reads the same `API_ACCESS_TOKEN`).
 
 ## Enabling and disabling
 

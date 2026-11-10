@@ -423,6 +423,9 @@ do_create() {
   echo "                      $u_viewer_upn (unrecognised role), $u_none_upn (unassigned)"
   echo "Enable authentication on the deployed apps with:"
   echo "  set -a; . \"$ENV_FILE\"; set +a; ./06-configure-auth.sh enable"
+  echo "Get an admin-role token for the API or the test suites (see docs/authentication.md):"
+  echo "  OIDC_CLIENT_ID=\$SVC_ADMIN_CLIENT_ID OIDC_CLIENT_SECRET=\$SVC_ADMIN_CLIENT_SECRET \\"
+  echo "    OIDC_SCOPE=api://\$OIDC_AUDIENCE/.default python ../../scripts/get_token.py"
 }
 
 # ── show ─────────────────────────────────────────────────────────────────────
