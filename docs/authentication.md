@@ -55,9 +55,10 @@ cat dev/keycloak/dev.env.example >> .env
 docker compose --profile auth-dev up --build
 ```
 
-The first build takes several minutes. `.env.example` selects `NLP_ENGINE=transformers`, which builds a much larger
-image; authentication does not depend on the engine, so for a quicker start set `NLP_ENGINE=spacy` (the Compose
-default) in `.env` first. To skip the Grafana container too, name just the services you need:
+The first build takes several minutes. `.env.example` selects `NLP_ENGINE=onnx` with `protectai/bert-base-NER-onnx`,
+the same engine and model the Azure deployment runs, and the build downloads and quantizes that model. Authentication
+does not depend on the engine, so for a quicker start set `NLP_ENGINE=spacy` (the Compose default) in `.env` first;
+detection results then differ slightly from Azure. To skip the Grafana container too, name just the services you need:
 `docker compose --profile auth-dev up --build redis app playground admin keycloak` (the API then logs harmless
 OTLP export errors because there is no collector).
 
@@ -118,8 +119,11 @@ docker compose --env-file /dev/null run --rm --no-deps -T \
 ```
 
 `--env-file /dev/null` keeps your `.env` out of the test container (for example `.env.example` disables the US
-recognizers that some endpoint tests expect). Replace the test list with `tests` to run everything; with the default
-spaCy image, 15 NER-dependent tests also fail on `main` and are unrelated to authentication.
+recognizers that some endpoint tests expect). It also resets the engine to the Compose default, spaCy. To run against
+the Azure engine, build the image with `NLP_ENGINE=onnx` and `TRANSFORMERS_MODEL=protectai/bert-base-NER-onnx` (the
+`.env.example` values) and add `-e NLP_ENGINE=onnx -e TRANSFORMERS_MODEL=protectai/bert-base-NER-onnx` to the `run`
+command. Replace the test list with `tests` to run everything: on the ONNX image everything passes, while on a spaCy
+image 15 NER-dependent tests fail on `main`, unrelated to authentication.
 
 To switch authentication off again, set `AUTH_ENABLED=false` (or delete the lines you appended) and run
 `docker compose up -d --force-recreate --no-deps app playground admin`.
@@ -410,9 +414,10 @@ Azure Cloud Shell already has Terraform and the Azure CLI. `03-verify.sh` and `0
 - **Restarts and scale-to-zero.** The UI session lives in a signed cookie, so people who are already signed in stay
   signed in when a UI replica restarts or scales to zero (the Azure scripts allow scale-to-zero). A restart *during*
   the redirect to the IdP loses that one pending login: the user sees the sign-in screen again and signs in a
-  second time. The first visit after an idle period waits for a cold start (tens of seconds for a UI, longer for
-  the API, which loads the NER model) and the browser may show a connection error once; reload, or keep one
-  replica warm (see `DEPLOYMENT.md`).
+  second time. The first visit after an idle period waits for a cold start (tens of seconds for a UI) and the
+  browser may show a connection error once; reload. After sign-in, a sleeping API needs about a minute to load the
+  NER model: the UI waits up to 90 seconds, showing "Contacting the PII Shield API…", and only then reports that it
+  cannot reach the API (with a Retry button). Keep one replica warm (see `DEPLOYMENT.md`) to avoid the waits.
 - **Sign out.** The UI ends its own session, then Streamlit sends the browser to the IdP's end-session endpoint.
   Entra shows an account chooser there; choosing the account completes the sign-out and returns to the sign-in
   screen through the registered redirect URI.

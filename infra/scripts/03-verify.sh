@@ -12,6 +12,7 @@
 #
 # Override defaults via env vars:
 #   RG_NAME=my-rg API_APP_NAME=my-api ./03-verify.sh
+#   VERIFY_TIMEOUT_SECONDS=90   per-request timeout; apps that scaled to zero need up to a minute to cold-start
 #
 # Authentication (mirror the AUTH_ENABLED you deployed with):
 #   AUTH_ENABLED=true ./03-verify.sh                      # proves the API rejects anonymous calls
@@ -56,7 +57,10 @@ check() {
     auth_args=("${CURL_AUTH[@]}")
   fi
 
-  status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 ${auth_args[@]+"${auth_args[@]}"} "$url" 2>/dev/null || echo "000")
+  # Apps that scale to zero need up to a minute to cold-start (the API loads its NER model), so allow for it.
+  # curl prints 000 itself when it cannot connect, so the failure is swallowed rather than echoed a second time.
+  status=$(curl -s -o /dev/null -w "%{http_code}" --max-time "${VERIFY_TIMEOUT_SECONDS:-90}" ${auth_args[@]+"${auth_args[@]}"} "$url" 2>/dev/null || true)
+  status="${status:-000}"
   if [[ "$status" == "$expected_status" ]]; then
     echo "  [PASS] $label (HTTP $status)"
     PASS=$((PASS + 1))

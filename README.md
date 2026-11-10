@@ -276,11 +276,11 @@ python -c "from transformers import AutoTokenizer, AutoModelForTokenClassificati
 
 ### Choosing the NLP Engine
 
-PII Shield supports three NLP backends for Presidio Analyzer: **spaCy** (default), **Stanza**, and **Transformers** (HuggingFace BERT models). Set the `NLP_ENGINE` variable in your `.env` file:
+PII Shield supports four NLP backends for Presidio Analyzer: **spaCy** (default), **Stanza**, **Transformers** (HuggingFace BERT models) and **ONNX** (the same BERT models on ONNX Runtime, which is what the Azure deployment runs). Set the `NLP_ENGINE` variable in your `.env` file:
 
 ```bash
 # .env
-NLP_ENGINE=spacy   # or "stanza" or "transformers"
+NLP_ENGINE=spacy   # or "stanza", "transformers" or "onnx"
 ```
 
 | Engine | Model | Strengths |
@@ -288,6 +288,7 @@ NLP_ENGINE=spacy   # or "stanza" or "transformers"
 | `spacy` | `en_core_web_lg` | Fast, mature, great for production workloads |
 | `stanza` | `en` (Stanford NLP) | High accuracy NER, strong on formal/academic text |
 | `transformers` | `dslim/bert-base-NER` (default) | BERT-based NER, supports custom HuggingFace models for domain-specific detection |
+| `onnx` | `protectai/bert-base-NER-onnx` (INT8-quantized at build time) | BERT NER with 2-3× faster CPU inference than `transformers`; matches Azure |
 
 #### Transformers Engine Configuration
 
@@ -314,9 +315,14 @@ NLP_ENGINE=stanza docker compose up --build
 # With Transformers engine (BERT-based NER)
 NLP_ENGINE=transformers docker compose up --build
 
+# With the ONNX engine (what the Azure deployment runs)
+NLP_ENGINE=onnx TRANSFORMERS_MODEL=protectai/bert-base-NER-onnx docker compose up --build
+
 # With a custom HuggingFace model
 NLP_ENGINE=transformers TRANSFORMERS_MODEL=ai4bharat/IndicNER docker compose up --build
 ```
+
+`protectai/bert-base-NER-onnx` ships ONNX weights only, so use it with `NLP_ENGINE=onnx`; `NLP_ENGINE=transformers` needs a model with PyTorch weights.
 
 This starts:
 - **Redis** on port 6379 (data persisted via Docker volume)
