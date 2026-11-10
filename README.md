@@ -22,6 +22,8 @@ An intelligent anonymization layer that sits between your AI application and LLM
 
 PII Shield can be imported directly into your Python application for batch PII processing — no web server required.
 
+> **Authentication:** The library runs in-process and has no authentication layer. `AUTH_ENABLED` and the `OIDC_*` settings apply only to the REST API and the web UIs (see [Authentication](#authentication)); `pii_shield` never reads them. If you embed it in your own service, access control is that service's job.
+
 ### Install
 
 ```bash

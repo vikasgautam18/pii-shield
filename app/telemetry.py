@@ -5,8 +5,16 @@ Supports two backends selected by environment variables:
   - Azure Monitor: set APPLICATIONINSIGHTS_CONNECTION_STRING
   - OTLP gRPC (local dev): set OTEL_EXPORTER_OTLP_ENDPOINT (default http://otel-lgtm:4317)
 
-Import this module early — before the FastAPI app is created — so the
-providers are registered globally.
+Importing this module registers the tracer and logger providers and the logging bridge, but
+starts no thread and creates no exporter. Call init_telemetry() once in every worker process
+to attach the exporters; app.main does it from the FastAPI lifespan, which runs after gunicorn
+has forked the worker.
+
+Never do that in the process that forks (gunicorn --preload imports the app in the master
+first). The metric reader keeps a thread and holds a collection lock while the registered-apps
+gauge reads Redis. If the fork lands while that lock is held, the worker inherits it locked:
+its reader never exports again, so every counter and histogram the worker records is lost,
+while traces and logs (which the SDK re-initialises after a fork) keep flowing.
 """
 
 import logging
@@ -62,25 +70,41 @@ def _create_exporters():
     )
 
 
-_trace_exporter, _metric_exporter, _log_exporter = _create_exporters()
+_initialized = False
 
-# ── Tracing ────────────────────────────────────────────────────────────────
+# Registered at import so the logging bridge below finds them (and startup logs keep their format), but
+# inert: nothing is exported until init_telemetry() adds the processors.
 _tracer_provider = TracerProvider(resource=_resource)
-_tracer_provider.add_span_processor(BatchSpanProcessor(_trace_exporter))
 trace.set_tracer_provider(_tracer_provider)
-
-# ── Metrics ────────────────────────────────────────────────────────────────
-_metric_reader = PeriodicExportingMetricReader(
-    _metric_exporter,
-    export_interval_millis=5000,
-)
-_meter_provider = MeterProvider(resource=_resource, metric_readers=[_metric_reader])
-metrics.set_meter_provider(_meter_provider)
-
-# ── Logging ────────────────────────────────────────────────────────────────
 _logger_provider = LoggerProvider(resource=_resource)
-_logger_provider.add_log_record_processor(BatchLogRecordProcessor(_log_exporter))
 set_logger_provider(_logger_provider)
 
 # Use the instrumentation-based logging bridge (avoids deprecation of sdk LoggingHandler)
 LoggingInstrumentor().instrument(set_logging_format=True, log_level=logging.INFO)
+
+
+def init_telemetry() -> None:
+    """Attach the exporters for this process. Idempotent.
+
+    The meter provider is created here, not at import, because a provider's metric readers are fixed when
+    it is built. Instruments created earlier through the global API (app.main creates its counters at
+    import) are proxies that bind to it once it is registered.
+    """
+    global _initialized
+    if _initialized:
+        return
+
+    trace_exporter, metric_exporter, log_exporter = _create_exporters()
+
+    _tracer_provider.add_span_processor(BatchSpanProcessor(trace_exporter))
+    _logger_provider.add_log_record_processor(BatchLogRecordProcessor(log_exporter))
+
+    # 5 s keeps the dashboards fresh; OTEL_METRIC_EXPORT_INTERVAL (milliseconds) overrides it.
+    export_interval_millis = None if os.getenv("OTEL_METRIC_EXPORT_INTERVAL") else 5000
+    metric_reader = PeriodicExportingMetricReader(
+        metric_exporter,
+        export_interval_millis=export_interval_millis,
+    )
+    metrics.set_meter_provider(MeterProvider(resource=_resource, metric_readers=[metric_reader]))
+
+    _initialized = True

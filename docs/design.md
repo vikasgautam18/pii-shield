@@ -151,7 +151,7 @@ The service package provides the full HTTP API and associated runtime infrastruc
 | auth.py | API-side OIDC bearer-token validation (JWKS cache, JWT verification), the `Principal`, and the FastAPI dependencies (`authenticate`, `require_user`, `require_admin`, `@public`). |
 | ui_auth.py | Streamlit-side sign-in gate (`require_login`), `GET /me` session handling and the bearer-token `ApiClient` used by both UIs. |
 | ui_launcher.py | Starts a Streamlit UI (`python -m app.ui_launcher playground|admin`): renders `.streamlit/secrets.toml` from the OIDC environment when authentication is enabled, then execs Streamlit. |
-| telemetry.py | OpenTelemetry SDK initialization with dual-backend auto-detection (Azure Monitor vs. OTLP gRPC). Configures TracerProvider, MeterProvider, and LoggerProvider. |
+| telemetry.py | OpenTelemetry SDK setup with dual-backend auto-detection (Azure Monitor vs. OTLP gRPC). Importing it registers the inert `TracerProvider` / `LoggerProvider` and the logging bridge; `init_telemetry()` attaches the exporters and creates the `MeterProvider`, once per worker process after the fork. |
 | streamlit_app.py | Streamlit web UI for end-user anonymize/de-anonymize operations. Connects to the FastAPI service via API_BASE. |
 | streamlit_admin.py | Streamlit web UI for admin operations — app registration, config management, registered app listing. |
 | recognizers/ | Backward-compatibility re-exports of custom recognizers (canonical code lives in pii_shield/recognizers/). |
@@ -423,7 +423,7 @@ The FastAPI app uses the ASGI lifespan protocol so that all warm-up work complet
 
 **Pre-lifespan initialization** (module-level, on import of `app/main.py`):
 
-1.  `app.telemetry` imported for side-effects → initializes the OpenTelemetry providers (`TracerProvider`, `MeterProvider`, `LoggerProvider`).
+1.  `app.telemetry` imported → registers the `TracerProvider` and `LoggerProvider` (inert: no exporter and no thread yet) and the logging bridge, so startup logs keep their format. The exporters and the `MeterProvider` are created per worker by `init_telemetry()` in the lifespan, never here (see [6.1](#61-telemetry-architecture)).
 
 2.  `PiiShieldEngine()` instantiated (`pii_shield/engine.py`):
 
@@ -457,11 +457,13 @@ The FastAPI app uses the ASGI lifespan protocol so that all warm-up work complet
 
 **Lifespan startup** (runs once per worker, before the first request is accepted):
 
-1.  Replace the asyncio loop's default executor with a `ThreadPoolExecutor(max_workers=NLP_THREAD_POOL_SIZE)` (default 6). ONNX Runtime releases the GIL during native inference, so the larger pool keeps concurrent NLP requests from queuing.
+1.  Call `init_telemetry()`: create the exporters and the `MeterProvider` and attach the span and log processors. This is deliberately per worker, after gunicorn's fork (see [6.1](#61-telemetry-architecture)).
 
-2.  Start the **cache-invalidation listener** — a daemon thread that subscribes to the `pii-shield:cache-invalidate` Redis Pub/Sub channel and evicts entries from the per-worker `_app_cache` whenever any other worker mutates an app's config.
+2.  Replace the asyncio loop's default executor with a `ThreadPoolExecutor(max_workers=NLP_THREAD_POOL_SIZE)` (default 6). ONNX Runtime releases the GIL during native inference, so the larger pool keeps concurrent NLP requests from queuing.
 
-3.  Warm up the NLP pipeline by running `engine._run_pipeline("John Smith at john@example.com", language="en", …)` once. This pays the model-load and JIT/allocation cost up front so the first user-facing request gets a normal-latency response.
+3.  Start the **cache-invalidation listener** — a daemon thread that subscribes to the `pii-shield:cache-invalidate` Redis Pub/Sub channel and evicts entries from the per-worker `_app_cache` whenever any other worker mutates an app's config.
+
+4.  Warm up the NLP pipeline by running `engine._run_pipeline("John Smith at john@example.com", language="en", …)` once. This pays the model-load and JIT/allocation cost up front so the first user-facing request gets a normal-latency response.
 
 #### 4.1.3 Anonymization Pipeline (POST /anonymize_unique)
 
@@ -1136,7 +1138,9 @@ Both backends use the same OTel SDK providers (TracerProvider, MeterProvider, Lo
 | service.version     | 0.1.0                                           |
 | service.instance.id | OTEL_SERVICE_INSTANCE_ID (default pii-shield-1) |
 
-**Initialization:** app/telemetry.py is imported at module load time (before the FastAPI app is created) via import app.telemetry in app/main.py. This registers providers globally.
+**Initialization:** `app/telemetry.py` is imported at module load time (before the FastAPI app is created). That registers the `TracerProvider` and `LoggerProvider` and the logging bridge, but they have no exporter yet, so no thread and no lock exists in the gunicorn master. `init_telemetry()` is then called from the FastAPI lifespan in every worker, after the fork: it creates the exporters, attaches the span and log processors, and creates the `MeterProvider`. Instruments created at import (the counters, the gauge, the FastAPI instrumentation) are API proxies that bind to the `MeterProvider` once it is registered.
+
+> **Why per worker.** The Dockerfile starts gunicorn with `--preload`, so the app is imported in the master and the workers are forked from it. A metric reader started in the master runs a thread and holds a collection lock while the `pii.registered.apps` gauge callback reads Redis; if a fork lands while the lock is held, the worker inherits it locked, its reader never exports again, and every counter and histogram it records is silently lost. Traces and logs keep flowing, because the SDK re-initialises its batch processors after a fork but not the metric reader. On Azure this looked like requests in Application Insights and nothing in `customMetrics`, so the by-application Grafana dashboard was empty. `tests/test_telemetry.py` guards the rule.
 
 ### 6.2 Traces
 
@@ -1169,7 +1173,7 @@ FastAPIInstrumentor.instrument_app(app) automatically creates spans for all HTTP
 | pii.errors | Counter | endpoint, status_code, error_type, app_id | Total errors by endpoint, HTTP status, and error category |
 | pii.registered.apps | Observable Gauge | — | Number of currently registered applications (polled from Redis via count_apps()) |
 
-**Export Interval:** PeriodicExportingMetricReader with export_interval_millis=5000 (5 seconds).
+**Export Interval:** PeriodicExportingMetricReader with export_interval_millis=5000 (5 seconds); `OTEL_METRIC_EXPORT_INTERVAL` (milliseconds) overrides it.
 
 **Error Types Tracked:** not_found, validation, internal.
 
@@ -1450,6 +1454,7 @@ Complete reference of all environment variables, organized by category.
 | OTEL_SERVICE_NAME | pii-shield | No | Service name in OTel resource attributes |
 | OTEL_SERVICE_INSTANCE_ID | pii-shield-1 | No | Instance identifier in OTel resource attributes |
 | OTEL_EXPORTER_OTLP_ENDPOINT | http://otel-lgtm:4317 | No | OTLP gRPC endpoint (used when Azure Monitor not configured) |
+| OTEL_METRIC_EXPORT_INTERVAL | 5000 | No | How often metrics are exported, in milliseconds |
 | APPLICATIONINSIGHTS_CONNECTION_STRING | — | No | Azure Application Insights connection string. If set, Azure Monitor exporters are used instead of OTLP. |
 
 #### 7.4.7 UI / Deployment
@@ -1508,6 +1513,7 @@ Authentication is **optional**: `AUTH_ENABLED` (default `false`) is one switch f
 | Configuration | Fail-fast: invalid settings stop the service with every problem listed, never silently running open. Streamlit reads OIDC settings only from `.streamlit/secrets.toml`, so `app/ui_launcher.py` renders that file (mode `0600`, regenerated on start, never committed or baked into images) from the environment and then starts Streamlit. |
 | Audit | `audit_log.actor` records the user (`preferred_username`) or `service:<client id>`; the column is added to existing databases automatically. |
 | Disabled mode | Every dependency returns an open principal immediately and PyJWT is not imported; the existing test suite is the regression check. |
+| Library scope | `AUTH_ENABLED` covers only the service (the API and both UIs). The `pii_shield` library runs in-process, never reads the `AUTH_*` / `OIDC_*` settings and has no authentication layer; embedding applications own access control, and their session stores hold plaintext PII (see `pii_shield/session_store.py`). |
 
 Operational constraints: Streamlit keeps sign-in state in process memory, so the UIs run as a single replica (or behind session affinity) when authentication is on; revocation takes effect when the current access token expires; `X-App-Id` is still not an authentication mechanism (§12.1). Rate limiting is not built in; see §12.3.
 
@@ -1726,6 +1732,7 @@ All entity types support all four strategies. The strategy is determined by (in 
 | OTEL_SERVICE_NAME | pii-shield | No | Telemetry | OTel service name |
 | OTEL_SERVICE_INSTANCE_ID | pii-shield-1 | No | Telemetry | OTel instance ID |
 | OTEL_EXPORTER_OTLP_ENDPOINT | http://otel-lgtm:4317 | No | Telemetry | OTLP gRPC endpoint (local dev) |
+| OTEL_METRIC_EXPORT_INTERVAL | 5000 | No | Telemetry | Metric export interval (milliseconds) |
 | APPLICATIONINSIGHTS_CONNECTION_STRING | — | No | Telemetry | Azure Monitor connection string (overrides OTLP) |
 | API_BASE | http://localhost:8000 | No | UI | FastAPI URL for Streamlit UIs (playground, admin) |
 | IMAGE_TAG | latest | No | Deployment | Docker image tag for build/deploy scripts |

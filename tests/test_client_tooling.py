@@ -6,6 +6,7 @@ import http.server
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -619,3 +620,70 @@ class TestBankingWrapper:
         assert result.returncode == 2
         assert message in result.stderr
         assert result.stdout == ""  # a run that got past the checks starts with "==> Mode: ..."
+
+
+class TestBankingWrapperAzureUrl:
+    """In azure mode the wrapper finds the API URL itself: Terraform state for the names, Azure for the host name.
+
+    terraform, az and curl are replaced by logging stand-ins on PATH, and the stand-in curl always fails, so each run
+    ends right after the lookup with "the API did not answer" and nothing (no virtualenv either) is created.
+    """
+
+    SCRIPT = REPO_ROOT / "examples" / "run_indian_banking_tests.sh"
+    FQDN = "piishield.stub-env.centralindia.azurecontainerapps.io"
+    TERRAFORM = (
+        "case \"$*\" in\n"
+        "  *resource_group_name*) printf piishield-rg ;;\n"
+        "  *api_app_name*) printf piishield ;;\n"
+        "  *) exit 1 ;;\n"
+        "esac\n"
+    )
+
+    @staticmethod
+    def _stubs(tmp_path, terraform):
+        bin_dir, log = tmp_path / "bin", tmp_path / "calls.log"
+        bin_dir.mkdir()
+        bodies = {"terraform": terraform, "az": f"echo {TestBankingWrapperAzureUrl.FQDN}\n", "curl": "exit 22\n"}
+        for name, body in bodies.items():
+            stub = bin_dir / name
+            stub.write_text(f'#!/bin/bash\necho "{name} $*" >> "{log}"\n{body}')
+            stub.chmod(0o755)
+        return bin_dir, log
+
+    def run(self, tmp_path, *args, terraform=TERRAFORM, env=None):
+        bin_dir, log = self._stubs(tmp_path, terraform)
+        full_env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path), **(env or {})}
+        venv_before = (REPO_ROOT / ".venv").exists()
+        result = subprocess.run([shutil.which("bash"), str(self.SCRIPT), "--mode", "azure", *args], cwd=REPO_ROOT,
+                                env=full_env, capture_output=True, encoding="utf-8", timeout=60)
+        assert (REPO_ROOT / ".venv").exists() == venv_before, "the virtualenv is only created once the API answers"
+        calls = log.read_text().splitlines() if log.exists() else []
+        return result, calls
+
+    def test_the_url_comes_from_terraform_state_and_azure(self, tmp_path):
+        result, calls = self.run(tmp_path)
+        assert f"==> Mode: azure (https://{self.FQDN})" in result.stdout
+        assert "Terraform state" in result.stdout
+        assert any(c.startswith("terraform") and "resource_group_name" in c for c in calls)
+        assert any(c.startswith("terraform") and "api_app_name" in c for c in calls)
+        assert any(c.startswith("az containerapp show --name piishield --resource-group piishield-rg") for c in calls)
+        assert result.returncode == 1 and f"The API did not answer at https://{self.FQDN}" in result.stderr
+
+    def test_an_explicit_url_wins_and_nothing_is_looked_up(self, tmp_path):
+        result, calls = self.run(tmp_path, "--api-url", "https://explicit.example.org/")
+        assert "==> Mode: azure (https://explicit.example.org)" in result.stdout
+        assert not [c for c in calls if c.startswith(("terraform", "az"))]
+
+    def test_rg_name_and_api_app_name_replace_the_terraform_lookup(self, tmp_path):
+        result, calls = self.run(tmp_path, env={"RG_NAME": "rg-x", "API_APP_NAME": "app-x"})
+        assert f"==> Mode: azure (https://{self.FQDN})" in result.stdout
+        assert not [c for c in calls if c.startswith("terraform")]
+        assert any(c.startswith("az containerapp show --name app-x --resource-group rg-x") for c in calls)
+
+    def test_without_terraform_state_the_runners_built_in_url_is_used_with_a_warning(self, tmp_path):
+        built_in = re.search(r'^DEFAULT_API_URL = "(.*)"$',
+                             (REPO_ROOT / "examples" / "run_indian_banking_tests_azure.py").read_text(), re.M).group(1)
+        result, calls = self.run(tmp_path, terraform="exit 1\n")
+        assert f"==> Mode: azure ({built_in})" in result.stdout
+        assert "WARNING: could not find the deployment" in result.stderr and "--api-url" in result.stderr
+        assert not [c for c in calls if c.startswith("az")]

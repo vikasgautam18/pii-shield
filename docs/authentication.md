@@ -344,9 +344,11 @@ examples/run_indian_banking_tests.sh --mode azure     # the Azure deployment
 It creates `.venv` (requests, pyyaml) on first use, gets the admin token when authentication is on, runs the suite,
 deletes the test applications and, locally, takes the temporary admin role from the dev Keycloak's service account
 away again (only if it granted it), also after a failure or Ctrl-C. `--keep-apps` keeps the test applications and
-`--output FILE` and other runner options are passed on. For Azure it wakes a scaled-to-zero API first and reads the
-Entra env file that `07-setup-entra.sh` wrote (`--env-file FILE`, `$ENTRA_ENV_FILE`, or the only `*.entra.env` in
-`~/.config/pii-shield`); `--api-url` selects another deployment. Locally it refuses `--api-url` and `--access-token`.
+`--output FILE` and other runner options are passed on. For Azure it finds the API URL in the Terraform state
+(resource group and app name from the outputs, then the app's host name from Azure, as `03-verify.sh` does;
+`--api-url` selects another deployment), wakes a scaled-to-zero API, and reads the Entra env file that
+`07-setup-entra.sh` wrote (`--env-file FILE`, `$ENTRA_ENV_FILE`, or the only `*.entra.env` in
+`~/.config/pii-shield`). Locally it refuses `--api-url` and `--access-token`.
 It exits with the runner's status, and the runner exits 0 even when a section reports fewer passes than expected, so
 read the summary. The same steps by hand, which also cover `scale_test.py`:
 
@@ -396,7 +398,7 @@ OIDC_ISSUER_URL=... OIDC_AUDIENCE=... OIDC_CLIENT_ID=... OIDC_CLIENT_SECRET=... 
 ./infra/scripts/06-configure-auth.sh disable
 
 # check it
-AUTH_ENABLED=true VERIFY_ACCESS_TOKEN="$(python scripts/get_token.py)" ./infra/scripts/03-verify.sh
+VERIFY_ACCESS_TOKEN="$(python scripts/get_token.py)" ./infra/scripts/03-verify.sh
 ```
 
 Secrets are passed from your environment into Container Apps secrets, not committed. `06-configure-auth.sh`
@@ -490,3 +492,7 @@ The API logs `Auth rejected (<reason>, HTTP <status>) on <route>`. Decode the to
 - Streamlit, not PII Shield, implements the UI sign-in flow; its limits (no token refresh, in-process state)
   apply.
 - Mutual TLS and API keys are not part of this change.
+- **The `pii_shield` library is not covered.** `AUTH_ENABLED` and `OIDC_*` apply only to the API and the two UIs.
+  The library runs in-process, never reads them and has no sign-in or token handling. If you embed it in your own
+  service, access control is that service's job, and its session stores hold the original PII in plaintext (see the
+  warning in `pii_shield/session_store.py`), so protect them accordingly.
