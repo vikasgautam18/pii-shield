@@ -13,7 +13,7 @@ expired or too-weak token stops them with a clear message instead of a wall of p
 
 Used by:
   - examples/run_indian_banking_tests.py / run_indian_banking_tests_azure.py  (requests, check_api_access)
-  - examples/scale_test.py                                                    (aiohttp)
+  - examples/scale_test.py                                                    (aiohttp, check_api_access)
   - scripts/cleanup_test_apps.py                                              (requests)
 """
 
@@ -71,19 +71,33 @@ class ApiAccessError(RuntimeError):
     """The API will not let a script do its job: no token, a rejected token, or too little privilege."""
 
 
+def _span(seconds: float) -> str:
+    """Short human form of a duration for messages."""
+    seconds = max(int(seconds), 0)
+    return f"{seconds // 60} min" if seconds >= 120 else f"{seconds} s"
+
+
 def check_api_access(
-    api_base: str, token: str = "", *, require_admin: bool = True, timeout: float = 30
+    api_base: str,
+    token: str = "",
+    *,
+    require_admin: bool = True,
+    timeout: float = 30,
+    need_seconds: float = 0,
+    verify: bool = True,
 ) -> str:
     """Fail fast, with an actionable message, if the API would reject this script's calls.
 
     Asks ``GET /me`` who the API thinks the caller is. An API that predates authentication has no ``/me``
     and needs nothing, and one with authentication off answers as an anonymous admin. Returns a one-line
     summary to print, or raises :class:`ApiAccessError`. ``require_admin`` is for scripts that register or
-    delete applications, which only admins may do. Call it once the API is known to answer.
+    delete applications, which only admins may do. ``need_seconds`` is how long the script will keep using the
+    token: the summary warns when the token will not last that long. ``verify`` is passed to ``requests``
+    (False only for test endpoints with self-signed certificates). Call it once the API is known to answer.
     """
     base = api_base.rstrip("/")
     try:
-        resp = requests.get(f"{base}/me", headers=auth_headers(token), timeout=timeout)
+        resp = requests.get(f"{base}/me", headers=auth_headers(token), timeout=timeout, verify=verify)
     except requests.RequestException as exc:
         raise ApiAccessError(f"Cannot reach API at {api_base}: {exc}") from exc
 
@@ -119,5 +133,11 @@ def check_api_access(
     summary = f"Authenticated as {who} ({me.get('kind', 'user')}; roles: {roles})"
     expires_at = me.get("expires_at")
     if isinstance(expires_at, (int, float)):
-        summary += f"; token valid for another {max(int(expires_at - time.time()) // 60, 0)} min"
+        remaining = int(expires_at - time.time())
+        summary += f"; token valid for another {max(remaining // 60, 0)} min"
+        if need_seconds and remaining < need_seconds:
+            summary += (
+                f". WARNING: that is less than the planned {_span(need_seconds)} run, so the API will start "
+                "refusing it partway and the run will stop early. Use a longer-lived token or a shorter run"
+            )
     return summary

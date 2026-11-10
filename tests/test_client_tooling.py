@@ -1,11 +1,12 @@
-"""Tests for the service-token tooling: scripts/get_token.py and examples/_auth.py (including the access
-preflight the test runners run before they start)."""
+"""Tests for the service-token tooling: scripts/get_token.py and examples/_auth.py, including the access
+preflight and token handling of the example scripts that call the API (the banking test runners, scale_test.py)."""
 
 import base64
 import http.server
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -365,6 +366,30 @@ class TestApiAccessCheck:
         with pytest.raises(examples_auth.ApiAccessError, match="Cannot reach API at https://api.test"):
             examples_auth.check_api_access("https://api.test", "tok")
 
+    def test_warns_when_the_token_will_not_last_the_planned_run(self, monkeypatch):
+        self.serve(monkeypatch, FakeResponse(200, {**ME_ADMIN, "expires_at": time.time() + 150}))
+        summary = examples_auth.check_api_access("https://api.test", "tok", need_seconds=300)
+        assert "token valid for another 2 min" in summary
+        assert "WARNING" in summary and "less than the planned 5 min run" in summary
+
+    def test_short_runs_are_described_in_seconds(self, monkeypatch):
+        self.serve(monkeypatch, FakeResponse(200, {**ME_ADMIN, "expires_at": time.time() + 20}))
+        assert "less than the planned 60 s run" in examples_auth.check_api_access("https://api.test", "tok",
+                                                                                  need_seconds=60)
+
+    def test_no_warning_when_the_token_lasts_or_no_run_length_is_given(self, monkeypatch):
+        self.serve(monkeypatch, FakeResponse(200, {**ME_ADMIN, "expires_at": time.time() + 3600}))
+        assert "WARNING" not in examples_auth.check_api_access("https://api.test", "tok", need_seconds=300)
+        # callers that do not say how long they will use the token (the banking runners) are never warned
+        self.serve(monkeypatch, FakeResponse(200, {**ME_ADMIN, "expires_at": time.time() + 30}))
+        assert "WARNING" not in examples_auth.check_api_access("https://api.test", "tok")
+
+    def test_certificate_verification_is_on_unless_switched_off(self, monkeypatch):
+        calls = self.serve(monkeypatch, FakeResponse(200, ME_ADMIN))
+        examples_auth.check_api_access("https://api.test", "tok")
+        examples_auth.check_api_access("https://api.test", "tok", verify=False)
+        assert [kwargs["verify"] for _, kwargs in calls] == [True, False]
+
 
 class _FakeApiHandler(http.server.BaseHTTPRequestHandler):
     """Answers canned routes. A route key is ``"/path"`` (any method) or ``"POST /path"``; its value is a
@@ -466,3 +491,92 @@ class TestRunnerPreflight:
         assert result.stdout.count("FAILED") == 1  # it stopped at the first failure instead of failing every section
         assert "401" in result.stdout and "string indices" not in result.stdout
         assert not (tmp_path / "report.html").exists()
+
+
+ANON = {"id": "s1", "text": "t", "anonymized_text": "{{PERSON_1}}", "entity_mapping": {}}
+DENIED = {"detail": "Authentication required."}
+
+
+def _scale_routes(me=ME_ADMIN, anonymize=(401, DENIED)):
+    """Canned API for the scale test's setup phase; ``anonymize`` decides how the load phase goes."""
+    return {
+        "/me": (200, me), "/supported-entities": (200, []), "GET /apps": (200, []),
+        "POST /apps": (201, {"app_id": "a1", "app_name": "scale-retail-banking", "config": {}}),
+        "POST /anonymize_unique": anonymize, "POST /deanonymize": (200, {"text": "t", "id": "s1"}),
+    }
+
+
+@pytest.fixture()
+def scale_script(tmp_path):
+    """A scratch copy of examples/scale_test.py with the minimal config it insists on."""
+    pytest.importorskip("aiohttp")
+    pytest.importorskip("yaml")
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    for name in ("scale_test.py", "_auth.py", "_config.py", "indian_banking_test_data.json"):
+        shutil.copy(REPO_ROOT / "examples" / name, examples / name)
+    (examples / "test_config.yml").write_text('scale:\n  api_url: "http://placeholder.invalid"\n')
+    return examples / "scale_test.py"
+
+
+class TestScaleTestAuth:
+    """examples/scale_test.py must explain token problems instead of crashing, and stop when the token dies."""
+
+    LOAD = ("--apps", "1", "--rpm", "600", "--workers", "1", "--ramp-up", "0")
+
+    @staticmethod
+    def run(script, url, tmp_path, *args, token=""):
+        env = {k: v for k, v in os.environ.items() if k != "API_ACCESS_TOKEN"}
+        command = [sys.executable, str(script), "--api-url", url, "--output", str(tmp_path / "report.json"), *args]
+        if token:
+            command += ["--access-token", token]
+        return subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, encoding="utf-8", timeout=120)
+
+    def test_a_missing_token_is_explained(self, scale_script, fake_api, tmp_path):
+        url = fake_api({"/me": (401, DENIED), "/apps": (401, DENIED)})
+        result = self.run(scale_script, url, tmp_path, *self.LOAD, "--duration", "5")
+        assert result.returncode == 1
+        assert "requires authentication" in result.stdout and "API_ACCESS_TOKEN" in result.stdout
+        assert "Traceback" not in result.stdout + result.stderr
+        assert not (tmp_path / "report.json").exists()
+
+    def test_a_token_that_may_not_register_applications_is_explained(self, scale_script, fake_api, tmp_path):
+        routes = _scale_routes(me=ME_USER)
+        routes["POST /apps"] = (403, {"detail": "Insufficient permissions: the admin role is required."})
+        result = self.run(scale_script, fake_api(routes), tmp_path, *self.LOAD, "--duration", "5", token="user-token")
+        assert result.returncode == 1
+        assert "Registering the application 'scale-retail-banking' failed with HTTP 403" in result.stdout
+        assert "needs the admin role" in result.stdout
+        assert "Traceback" not in result.stdout + result.stderr
+        assert not (tmp_path / "report.json").exists()
+
+    def test_stops_early_and_keeps_a_partial_report_when_the_token_is_refused_midway(
+        self, scale_script, fake_api, tmp_path
+    ):
+        url = fake_api(_scale_routes(anonymize=[(200, ANON)] * 3 + [(401, DENIED)]))
+        started = time.monotonic()
+        result = self.run(scale_script, url, tmp_path, *self.LOAD, "--duration", "60", token="admin-token")
+        assert time.monotonic() - started < 40  # the planned run is 60 s
+        assert result.returncode == 1
+        assert "stopped early" in result.stdout and "Fetch a fresh token" in result.stdout
+        report = json.loads((tmp_path / "report.json").read_text())
+        assert report["test_config"]["stopped_early"] and report["test_config"]["ran_seconds"] < 30
+        assert report["summary"]["successful_requests"] == 6  # three transactions of two requests each
+        assert report["summary"]["failed_requests"] >= 1
+        assert {error["status_code"] for error in report["errors"]} == {401}
+
+    def test_a_token_that_will_not_last_the_run_is_flagged_up_front(self, scale_script, fake_api, tmp_path):
+        url = fake_api(_scale_routes(me={**ME_ADMIN, "expires_at": time.time() + 120}))
+        result = self.run(scale_script, url, tmp_path, *self.LOAD, "--duration", "600", token="admin-token")
+        assert "[WARN]" in result.stdout and "less than the planned 10 min run" in result.stdout
+
+    def test_switching_certificate_verification_off_is_announced(self, scale_script, fake_api, tmp_path):
+        result = self.run(scale_script, fake_api(_scale_routes()), tmp_path, *self.LOAD, "--duration", "5",
+                          "--insecure", token="admin-token")
+        assert "TLS verification is off" in result.stdout
+
+    def test_certificates_are_verified_by_default(self, scale_script):
+        code = "import ssl, scale_test as s; c = s._tls_context(); print(c.verify_mode == ssl.CERT_REQUIRED, c.check_hostname)"
+        result = subprocess.run([sys.executable, "-c", code], cwd=scale_script.parent, capture_output=True,
+                                encoding="utf-8", timeout=60)
+        assert result.stdout.split() == ["True", "True"], result.stderr

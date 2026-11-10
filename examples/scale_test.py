@@ -12,6 +12,14 @@ Each "transaction" follows the sandwich pattern:
 Prerequisites:
     pip install aiohttp
 
+Authentication:
+    When the API runs with AUTH_ENABLED=true, export an admin-role token as API_ACCESS_TOKEN (or pass
+    --access-token): the test registers and configures its applications first. docs/authentication.md
+    ("Running the bundled test suites") shows how to get one. The access is checked before anything runs.
+    The whole run uses that one token, so it has to outlive --duration: the test warns when it will not,
+    and stops early (saving the partial report, exit code 1) if the API starts refusing it. TLS
+    certificates are verified; --insecure skips that for test endpoints with self-signed certificates.
+
 Usage:
     python examples/scale_test.py [options]
 
@@ -35,6 +43,7 @@ import argparse
 import asyncio
 import json
 import random
+import ssl
 import statistics
 import sys
 import time
@@ -44,9 +53,10 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
+import certifi
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _auth import add_token_argument, auth_headers  # noqa: E402
+from _auth import ApiAccessError, add_token_argument, auth_headers, check_api_access  # noqa: E402
 from _config import load_section  # noqa: E402
 
 # ── Configuration loading ────────────────────────────────────────────────────
@@ -347,6 +357,23 @@ def _latency_stats(latencies: list[float]) -> dict:
 # ── Setup: App Registration ─────────────────────────────────────────────────
 
 
+class SetupError(RuntimeError):
+    """The API refused a setup call; the message says why and what to do about it."""
+
+
+async def _require_ok(resp: aiohttp.ClientResponse, what: str) -> None:
+    """Raise SetupError with an actionable message unless the API accepted the call."""
+    if resp.status < 400:
+        return
+    hint = {
+        401: " The access token was rejected (it may have expired): fetch a fresh one.",
+        403: " The token's roles do not allow this: registering and configuring applications needs the admin role.",
+    }.get(resp.status)
+    if hint is None:
+        hint = f" {(await resp.text())[:200]}"
+    raise SetupError(f"{what} failed with HTTP {resp.status}.{hint}")
+
+
 async def ensure_app(
     session: aiohttp.ClientSession,
     base_url: str,
@@ -355,6 +382,7 @@ async def ensure_app(
 ) -> str:
     """Return app_id for *name*, creating it if it doesn't exist."""
     async with session.get(f"{base_url}/apps", timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+        await _require_ok(resp, "Listing the applications")
         apps = await resp.json()
     matches = [a for a in apps if a["app_name"] == name]
     if matches:
@@ -364,7 +392,7 @@ async def ensure_app(
         json={"app_name": name},
         timeout=aiohttp.ClientTimeout(total=timeout),
     ) as resp:
-        resp.raise_for_status()
+        await _require_ok(resp, f"Registering the application '{name}'")
         data = await resp.json()
     return data["app_id"]
 
@@ -383,7 +411,7 @@ async def configure_app(
             json={"entity_type": entity_type, "strategy": strategy},
             timeout=aiohttp.ClientTimeout(total=timeout),
         ) as resp:
-            resp.raise_for_status()
+            await _require_ok(resp, f"Configuring {entity_type} on application {app_id}")
 
 
 async def setup_apps(
@@ -433,8 +461,13 @@ async def run_transaction(
     stats: StatsCollector,
     semaphore: asyncio.Semaphore,
     timeout: int,
+    auth_failed: asyncio.Event,
 ) -> None:
-    """Execute one anonymize → deanonymize cycle."""
+    """Execute one anonymize → deanonymize cycle.
+
+    A 401 means the access token stopped working (it expired); it sets *auth_failed* so the run can stop
+    instead of measuring the speed of error responses.
+    """
     client_timeout = aiohttp.ClientTimeout(total=timeout)
     headers = {"X-App-Id": app.app_id, "Content-Type": "application/json"}
 
@@ -459,6 +492,8 @@ async def run_transaction(
                         "/anonymize_unique", status, anon_latency, app.name,
                         error=body[:200],
                     )
+                    if status == 401:
+                        auth_failed.set()
                     return
         except Exception as exc:
             anon_latency = time.monotonic() - t0
@@ -494,6 +529,8 @@ async def run_transaction(
                         "/deanonymize", status, deanon_latency, app.name,
                         error=body[:200],
                     )
+                    if status == 401:
+                        auth_failed.set()
                     return
         except Exception as exc:
             deanon_latency = time.monotonic() - t1
@@ -515,11 +552,12 @@ async def app_worker(
     semaphore: asyncio.Semaphore,
     timeout: int,
     stop_event: asyncio.Event,
+    auth_failed: asyncio.Event,
 ) -> None:
     """Continuously send transactions for one app until stop_event is set."""
     while not stop_event.is_set():
         scenario = random.choice(scenarios)
-        await run_transaction(session, base_url, app, scenario, stats, semaphore, timeout)
+        await run_transaction(session, base_url, app, scenario, stats, semaphore, timeout, auth_failed)
 
 
 async def ramp_up_controller(
@@ -577,6 +615,11 @@ async def console_reporter(
 # ── Main Orchestrator ────────────────────────────────────────────────────────
 
 
+def _tls_context() -> ssl.SSLContext:
+    """Verify server certificates with the CA bundle `requests` uses (aiohttp alone may not find one)."""
+    return ssl.create_default_context(cafile=certifi.where())
+
+
 async def run_scale_test(args: argparse.Namespace) -> dict:
     """Top-level async entry point."""
     base_url = args.api_url.rstrip("/")
@@ -599,9 +642,26 @@ async def run_scale_test(args: argparse.Namespace) -> dict:
     print(f"   Ramp-up:     {args.ramp_up}s")
     print(f"   Scenarios:   {len(scenarios)}")
     print()
+    if args.insecure and args.access_token:
+        print(" [WARN] TLS verification is off: the access token is sent without checking the server's certificate.\n")
+
+    # ── Access check ─────────────────────────────────────────────────────
+    # Admin is not demanded here: it is only needed when an application has to be registered or configured,
+    # and the setup phase reports that precisely. A missing, rejected or soon-to-expire token is caught now.
+    try:
+        access = check_api_access(
+            base_url, args.access_token, require_admin=False, timeout=args.timeout,
+            need_seconds=args.duration, verify=not args.insecure,
+        )
+    except ApiAccessError as exc:
+        print(f" [FAIL] {exc}")
+        if "CERTIFICATE_VERIFY_FAILED" in str(exc):
+            print("        Use --insecure only for a test endpoint with a self-signed certificate.")
+        sys.exit(1)
+    print(f" [{'WARN' if 'WARNING' in access else 'PASS'}] {access}\n")
 
     # ── Health check ─────────────────────────────────────────────────────
-    connector = aiohttp.TCPConnector(limit=args.concurrency, ssl=False)
+    connector = aiohttp.TCPConnector(limit=args.concurrency, ssl=False if args.insecure else _tls_context())
     async with aiohttp.ClientSession(connector=connector, headers=auth_headers(args.access_token)) as session:
         print(" Checking API connectivity...")
         try:
@@ -614,19 +674,28 @@ async def run_scale_test(args: argparse.Namespace) -> dict:
                     print(" [PASS] API is reachable\n")
                 else:
                     print(f" [WARN] API returned {resp.status}, continuing...\n")
+        except aiohttp.ClientConnectorCertificateError as exc:
+            print(f" [FAIL] TLS certificate check failed: {exc}")
+            print("        Use --insecure only for a test endpoint with a self-signed certificate.")
+            sys.exit(1)
         except Exception as exc:
             print(f" [FAIL] Cannot reach API: {exc}")
             sys.exit(1)
 
         # ── Setup phase ──────────────────────────────────────────────────
         print(" Setting up applications...")
-        apps = await setup_apps(session, base_url, args.apps, args.rpm, args.timeout)
+        try:
+            apps = await setup_apps(session, base_url, args.apps, args.rpm, args.timeout)
+        except SetupError as exc:
+            print(f" [FAIL] {exc}")
+            sys.exit(1)
         print()
 
         # ── Load phase ───────────────────────────────────────────────────
         stats = StatsCollector()
         semaphore = asyncio.Semaphore(args.concurrency)
         stop_event = asyncio.Event()
+        auth_failed = asyncio.Event()
         start_time = time.monotonic()
 
         target_total_rpm = args.apps * args.rpm
@@ -641,7 +710,10 @@ async def run_scale_test(args: argparse.Namespace) -> dict:
             for _ in range(args.workers):
                 workers.append(
                     asyncio.create_task(
-                        app_worker(session, base_url, app, scenarios, stats, semaphore, args.timeout, stop_event)
+                        app_worker(
+                            session, base_url, app, scenarios, stats, semaphore, args.timeout, stop_event,
+                            auth_failed,
+                        )
                     )
                 )
 
@@ -655,8 +727,12 @@ async def run_scale_test(args: argparse.Namespace) -> dict:
             console_reporter(stats, apps, args.rpm, stop_event, start_time, args.duration)
         )
 
-        # Wait for duration
-        await asyncio.sleep(args.duration)
+        # Wait for the duration, or stop early if the API starts refusing the access token
+        try:
+            await asyncio.wait_for(auth_failed.wait(), timeout=args.duration)
+            stopped_early = "the API rejected the access token (HTTP 401), most likely because it expired"
+        except asyncio.TimeoutError:
+            stopped_early = ""
         stop_event.set()
 
         # Cancel workers gracefully
@@ -671,7 +747,12 @@ async def run_scale_test(args: argparse.Namespace) -> dict:
     elapsed = time.monotonic() - start_time
 
     # ── Report ───────────────────────────────────────────────────────────
-    print(f"\n [PASS] Load phase complete ({elapsed:.1f}s)\n")
+    if stopped_early:
+        print(f"\n [FAIL] Load phase stopped early after {elapsed:.1f}s: {stopped_early}.")
+        print("        Fetch a fresh token and re-run, or use a longer-lived token or a shorter --duration.")
+        print("        The results below cover only the time before that.\n")
+    else:
+        print(f"\n [PASS] Load phase complete ({elapsed:.1f}s)\n")
 
     config = {
         "api_url": base_url,
@@ -685,6 +766,9 @@ async def run_scale_test(args: argparse.Namespace) -> dict:
         "scenarios": len(scenarios),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+    if stopped_early:
+        config["stopped_early"] = stopped_early
+        config["ran_seconds"] = round(elapsed, 1)
     report = stats.build_report(config)
 
     # Print summary
@@ -781,6 +865,11 @@ def parse_args() -> argparse.Namespace:
         "--output", default=DEFAULT_OUTPUT,
         help=f"Output report path (default: {DEFAULT_OUTPUT})",
     )
+    parser.add_argument(
+        "--insecure", action="store_true",
+        help="Skip TLS certificate verification (test endpoints with self-signed certificates only; "
+             "the access token is then sent without checking the server)",
+    )
     add_token_argument(parser)
     return parser.parse_args()
 
@@ -796,6 +885,9 @@ def main() -> None:
     with open(output_path, "w") as f:
         json.dump(report, f, indent=2)
     print(f"\n Report saved to: {output_path}\n")
+
+    if report.get("test_config", {}).get("stopped_early"):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

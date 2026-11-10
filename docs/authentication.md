@@ -110,7 +110,7 @@ Run the authentication tests in the container (no identity provider needed):
 docker compose --env-file /dev/null run --rm --no-deps -T \
   -v "$PWD/app:/app/app" -v "$PWD/tests:/app/tests" -v "$PWD/pii_shield:/app/pii_shield" \
   -v "$PWD/examples:/app/examples" -v "$PWD/scripts:/app/scripts" \
-  app sh -c "pip install -q pytest 'redis<6' && python -m pytest -q -p no:cacheprovider \
+  app sh -c "pip install -q pytest 'redis<6' aiohttp && python -m pytest -q -p no:cacheprovider \
     tests/test_auth_settings.py tests/test_auth_validator.py tests/test_auth_dependencies.py \
     tests/test_auth_endpoints.py tests/test_ui_launcher.py tests/test_ui_auth.py \
     tests/test_client_tooling.py tests/test_streamlit_auth_deps.py tests/test_audit.py \
@@ -321,6 +321,13 @@ test and stop with a clear message when the token is missing, rejected or not an
 suite in which every test fails. They also stop, without writing a report, if the token stops working midway (for
 example because it expired).
 
+`examples/scale_test.py` makes the same check, but only registering and configuring its applications needs the admin
+role, so it reports that when it happens. It uses one token for the whole run: it warns up front when the token will
+expire before `--duration` ends, and if the API starts refusing the token it stops early, keeps the partial report
+(`test_config.stopped_early`) and exits with code 1, rather than measuring the speed of error responses. It verifies
+TLS certificates (it used to skip that, which is not safe once it sends a token); pass `--insecure` only for a test
+endpoint with a self-signed certificate.
+
 ### Running the bundled test suites
 
 `scripts/get_token.py` needs the credentials of a *service* that holds the admin role and, for Entra, the `.default`
@@ -330,7 +337,8 @@ before the run:
 
 ```bash
 # Local Docker Compose + Keycloak, after giving service-account-pii-shield-svc the PIIShield.Admin role (see above).
-# Keycloak tokens last 5 minutes, which is plenty for this suite on a laptop.
+# Keycloak tokens last 5 minutes: plenty for the banking suite, but a scale test longer than that needs a
+# longer "Access Token Lifespan" in the Keycloak realm settings.
 export API_ACCESS_TOKEN="$(OIDC_ISSUER_URL=http://localhost:8080/realms/pii-shield OIDC_ALLOW_INSECURE_HTTP=true \
   OIDC_CLIENT_ID=pii-shield-svc OIDC_CLIENT_SECRET=dev-only-service-client-secret python scripts/get_token.py)"
 python examples/run_indian_banking_tests.py
@@ -340,11 +348,14 @@ set -a; . ~/.config/pii-shield/<project>.entra.env; set +a
 export API_ACCESS_TOKEN="$(OIDC_CLIENT_ID=$SVC_ADMIN_CLIENT_ID OIDC_CLIENT_SECRET=$SVC_ADMIN_CLIENT_SECRET \
   OIDC_SCOPE=api://$OIDC_AUDIENCE/.default python scripts/get_token.py)"
 python examples/run_indian_banking_tests_azure.py
+
+# Scale test (pip install aiohttp; it also needs examples/test_config.yml, copied from test_config.example.yml)
+python examples/scale_test.py --api-url https://<api-host> --apps 3 --rpm 30 --duration 60
 ```
 
-Both runners leave their test applications registered. Remove them with
+The runners and the scale test leave their test applications registered. Remove them with
 `python scripts/cleanup_test_apps.py --api-url <url> --prefix __test`, then again with `--prefix indian-banking-tests`
-(it reads the same `API_ACCESS_TOKEN`).
+and `--prefix scale-` (it reads the same `API_ACCESS_TOKEN`).
 
 ## Enabling and disabling
 
