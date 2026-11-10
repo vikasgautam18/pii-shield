@@ -11,7 +11,7 @@ from opentelemetry import metrics, trace
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.trace import StatusCode
 
-import app.telemetry  # noqa: F401  — initializes OTel providers on import
+from app.telemetry import init_telemetry
 from pii_shield.engine import PiiShieldEngine
 from pii_shield.models import EntityConfig
 from pii_shield.nlp_engine import get_nlp_engine_name
@@ -136,6 +136,8 @@ _NLP_THREAD_POOL_SIZE = int(os.getenv("NLP_THREAD_POOL_SIZE", "6"))
 
 @asynccontextmanager
 async def _lifespan(app):
+    # Per worker, after gunicorn --preload has forked it. Never at import: see app/telemetry.py.
+    init_telemetry()
     loop = asyncio.get_running_loop()
     loop.set_default_executor(ThreadPoolExecutor(max_workers=_NLP_THREAD_POOL_SIZE))
     _start_cache_invalidation_listener()
