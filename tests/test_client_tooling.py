@@ -580,3 +580,42 @@ class TestScaleTestAuth:
         result = subprocess.run([sys.executable, "-c", code], cwd=scale_script.parent, capture_output=True,
                                 encoding="utf-8", timeout=60)
         assert result.stdout.split() == ["True", "True"], result.stderr
+
+
+class TestBankingWrapper:
+    """examples/run_indian_banking_tests.sh checks its arguments before it touches anything (no virtualenv,
+    network or Keycloak), and its local mode cannot be pointed at another host."""
+
+    SCRIPT = REPO_ROOT / "examples" / "run_indian_banking_tests.sh"
+
+    def run(self, *args):
+        return subprocess.run(["bash", str(self.SCRIPT), *args], cwd=REPO_ROOT, capture_output=True,
+                              encoding="utf-8", timeout=60)
+
+    def test_the_script_parses(self):
+        assert subprocess.run(["bash", "-n", str(self.SCRIPT)], capture_output=True).returncode == 0
+
+    def test_help_describes_both_modes(self):
+        result = self.run("--help")
+        assert result.returncode == 0
+        assert "--mode local|azure" in result.stdout and "--keep-apps" in result.stdout
+
+    @pytest.mark.parametrize(
+        "args, message",
+        [
+            (["--mode"], "--mode needs a value"),
+            (["--mode", "bogus"], "--mode must be local or azure"),
+            (["--api-url", "http://elsewhere:8000"], "--api-url is not supported with --mode local"),
+            (["--mode=local", "--api-url=http://elsewhere:8000"], "--api-url is not supported with --mode local"),
+            (["--env-file", "/tmp/entra.env"], "--env-file only applies to --mode azure"),
+            (["--access-token", "abc"], "--access-token is not supported"),
+            (["--api", "http://elsewhere:8000"], "--api is not supported"),  # argparse accepts it for --api-url
+            (["--mode", "azure", "--access-token", "abc"], "--access-token is not supported"),
+            (["--mode", "azure", "--api-url", "http://insecure.example"], "must start with https://"),
+        ],
+    )
+    def test_bad_arguments_are_refused_before_anything_happens(self, args, message):
+        result = self.run(*args)
+        assert result.returncode == 2
+        assert message in result.stderr
+        assert result.stdout == ""  # a run that got past the checks starts with "==> Mode: ..."
