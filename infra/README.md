@@ -233,10 +233,11 @@ granting access to users and services, and troubleshooting.
 ./03-verify.sh
 ```
 
-Runs health checks and a smoke test against the deployed API. If authentication is
-on, pass the same switch: `AUTH_ENABLED=true ./03-verify.sh` also proves the API
-rejects anonymous calls, and adding `VERIFY_ACCESS_TOKEN="$(python ../../scripts/get_token.py)"`
-proves a valid token is accepted.
+Runs health checks and a smoke test against the deployed API. It finds out for itself whether
+authentication is on (`GET /me` answers 401 without a token only then); `AUTH_ENABLED=true` or `false` skips
+that detection. With authentication on it proves the API rejects anonymous calls, and
+`VERIFY_ACCESS_TOKEN="$(python ../../scripts/get_token.py)" ./03-verify.sh` also proves a valid token is
+accepted (without a token, the authenticated checks are skipped).
 
 ---
 

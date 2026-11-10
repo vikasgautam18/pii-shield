@@ -398,7 +398,7 @@ OIDC_ISSUER_URL=... OIDC_AUDIENCE=... OIDC_CLIENT_ID=... OIDC_CLIENT_SECRET=... 
 ./infra/scripts/06-configure-auth.sh disable
 
 # check it
-AUTH_ENABLED=true VERIFY_ACCESS_TOKEN="$(python scripts/get_token.py)" ./infra/scripts/03-verify.sh
+VERIFY_ACCESS_TOKEN="$(python scripts/get_token.py)" ./infra/scripts/03-verify.sh
 ```
 
 Secrets are passed from your environment into Container Apps secrets, not committed. `06-configure-auth.sh`

@@ -14,9 +14,10 @@
 #   RG_NAME=my-rg API_APP_NAME=my-api ./03-verify.sh
 #   VERIFY_TIMEOUT_SECONDS=90   per-request timeout; apps that scaled to zero need up to a minute to cold-start
 #
-# Authentication (mirror the AUTH_ENABLED you deployed with):
-#   AUTH_ENABLED=true ./03-verify.sh                      # proves the API rejects anonymous calls
-#   AUTH_ENABLED=true VERIFY_ACCESS_TOKEN="$(python ../../scripts/get_token.py)" ./03-verify.sh
+# Authentication: the script finds out for itself whether the API requires it (GET /me without a token answers
+# 401 only when it does). Set AUTH_ENABLED=true or false to skip that detection.
+#   ./03-verify.sh                                        # authentication on: proves anonymous calls are rejected
+#   VERIFY_ACCESS_TOKEN="$(python ../../scripts/get_token.py)" ./03-verify.sh
 #                                                         # ...and that a valid token is accepted
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -24,6 +25,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TF_DIR="$SCRIPT_DIR/../terraform"
 
+AUTH_EXPLICIT=0
+if [[ -n "${AUTH_ENABLED:-}" ]]; then AUTH_EXPLICIT=1; fi
 case "$(printf '%s' "${AUTH_ENABLED:-false}" | tr '[:upper:]' '[:lower:]')" in
   1|true|yes|on)     AUTH_ENABLED="true" ;;
   ""|0|false|no|off) AUTH_ENABLED="false" ;;
@@ -42,6 +45,7 @@ ADMIN_APP_NAME="${ADMIN_APP_NAME:-$(cd "$TF_DIR" 2>/dev/null && terraform output
 
 PASS=0
 FAIL=0
+SAW_401=0
 
 # check LABEL URL [EXPECTED_STATUS] [anon]
 # Sends the verification token (if any) unless the last argument is "anon".
@@ -67,6 +71,7 @@ check() {
   else
     echo "  [FAIL] $label (HTTP $status, expected $expected_status)"
     FAIL=$((FAIL + 1))
+    if [[ "$status" == "401" ]]; then SAW_401=1; fi
   fi
 }
 
@@ -110,12 +115,22 @@ check "Admin reachable"      "$ADMIN_URL"
 echo ""
 echo "API smoke tests..."
 
+# The health checks above also woke the API if it had scaled to zero. Unless AUTH_ENABLED was given, ask the API:
+# GET /me answers 401 without a token only when authentication is on (an older API without /me counts as open).
+if [[ "$AUTH_EXPLICIT" != "1" ]]; then
+  ME_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time "${VERIFY_TIMEOUT_SECONDS:-90}" "$API_URL/me" 2>/dev/null || true)
+  if [[ "$ME_STATUS" == "401" ]]; then
+    AUTH_ENABLED="true"
+    echo "  Authentication is on (GET /me without a token answered HTTP 401), so it is checked as AUTH_ENABLED=true."
+  fi
+fi
+
 if [[ "$AUTH_ENABLED" == "true" ]]; then
   # Authentication is on: anonymous callers must be turned away on protected routes.
   check "GET /apps without a token is rejected" "$API_URL/apps" 401 anon
   check "GET /audit-log without a token is rejected" "$API_URL/audit-log" 401 anon
   if [[ -z "$VERIFY_ACCESS_TOKEN" ]]; then
-    echo "  [SKIP] authenticated checks (set VERIFY_ACCESS_TOKEN to an access token for the API)"
+    echo "  [SKIP] authenticated checks (set VERIFY_ACCESS_TOKEN to an access token for the API; see the header of this script)"
   fi
 fi
 
@@ -153,6 +168,7 @@ if [[ "$AUTH_ENABLED" != "true" || -n "$VERIFY_ACCESS_TOKEN" ]]; then
   else
     echo "[FAIL] POST /anonymize_unique (HTTP $ANON_STATUS)"
     FAIL=$((FAIL + 1))
+    if [[ "$ANON_STATUS" == "401" ]]; then SAW_401=1; fi
   fi
 fi
 
@@ -164,5 +180,14 @@ echo "  Results: $PASS passed, $FAIL failed"
 echo "==============================================================="
 
 if [[ $FAIL -gt 0 ]]; then
+  if [[ "$SAW_401" == "1" ]]; then
+    echo ""
+    if [[ "$AUTH_ENABLED" == "true" ]]; then
+      echo "  The API rejected the access token (HTTP 401): it may have expired, or be for another API."
+    else
+      echo "  The API answered HTTP 401, so it requires authentication. Run again with AUTH_ENABLED=true and"
+      echo "  VERIFY_ACCESS_TOKEN set to an access token (see the header of this script)."
+    fi
+  fi
   exit 1
 fi

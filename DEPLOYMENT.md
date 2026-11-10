@@ -217,13 +217,12 @@ You should see:
 [PASS] Response contains anonymized_text
 ```
 
-If you deployed with authentication on, run it with the same switch so it checks
-that the API rejects anonymous calls, and (optionally) that a valid token is
-accepted:
+If you deployed with authentication on, the script notices (`GET /me` answers 401 without a token) and checks
+that the API rejects anonymous calls. Give it an access token to also check that a valid token is accepted
+(without one, the authenticated checks are skipped):
 
 ```bash
-AUTH_ENABLED=true ./03-verify.sh
-AUTH_ENABLED=true VERIFY_ACCESS_TOKEN="$(python ../../scripts/get_token.py)" ./03-verify.sh
+VERIFY_ACCESS_TOKEN="$(python ../../scripts/get_token.py)" ./03-verify.sh
 ```
 
 ---
