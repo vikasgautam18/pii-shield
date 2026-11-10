@@ -492,3 +492,7 @@ The API logs `Auth rejected (<reason>, HTTP <status>) on <route>`. Decode the to
 - Streamlit, not PII Shield, implements the UI sign-in flow; its limits (no token refresh, in-process state)
   apply.
 - Mutual TLS and API keys are not part of this change.
+- **The `pii_shield` library is not covered.** `AUTH_ENABLED` and `OIDC_*` apply only to the API and the two UIs.
+  The library runs in-process, never reads them and has no sign-in or token handling. If you embed it in your own
+  service, access control is that service's job, and its session stores hold the original PII in plaintext (see the
+  warning in `pii_shield/session_store.py`), so protect them accordingly.

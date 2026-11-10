@@ -1513,6 +1513,7 @@ Authentication is **optional**: `AUTH_ENABLED` (default `false`) is one switch f
 | Configuration | Fail-fast: invalid settings stop the service with every problem listed, never silently running open. Streamlit reads OIDC settings only from `.streamlit/secrets.toml`, so `app/ui_launcher.py` renders that file (mode `0600`, regenerated on start, never committed or baked into images) from the environment and then starts Streamlit. |
 | Audit | `audit_log.actor` records the user (`preferred_username`) or `service:<client id>`; the column is added to existing databases automatically. |
 | Disabled mode | Every dependency returns an open principal immediately and PyJWT is not imported; the existing test suite is the regression check. |
+| Library scope | `AUTH_ENABLED` covers only the service (the API and both UIs). The `pii_shield` library runs in-process, never reads the `AUTH_*` / `OIDC_*` settings and has no authentication layer; embedding applications own access control, and their session stores hold plaintext PII (see `pii_shield/session_store.py`). |
 
 Operational constraints: Streamlit keeps sign-in state in process memory, so the UIs run as a single replica (or behind session affinity) when authentication is on; revocation takes effect when the current access token expires; `X-App-Id` is still not an authentication mechanism (§12.1). Rate limiting is not built in; see §12.3.
 
