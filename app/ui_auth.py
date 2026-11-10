@@ -35,7 +35,11 @@ except ImportError:  # Streamlit script context: app/ is sys.path[0]
 EXPIRY_SKEW_SECONDS = 30
 _ME_KEY = "_pii_auth_me"
 _RERUN_KEY = "_pii_auth_401_fingerprint"
-_ME_TIMEOUT_SECONDS = 10
+# The API scales to zero when idle. The platform holds the first request while the replica starts and loads its
+# NER model (about a minute), so allow that long for the reply, but still fail fast when nothing is listening.
+_ME_CONNECT_TIMEOUT_SECONDS = 5
+_ME_READ_TIMEOUT_SECONDS = 90
+_WAITING_FOR_API_MESSAGE = "Contacting the PII Shield API. After a period of inactivity this can take about a minute…"
 
 
 # ── Pure decision logic (unit-tested without a Streamlit runtime) ────────────
@@ -155,7 +159,9 @@ def _is_logged_in() -> bool | None:
 def _fetch_me(api_base: str, token: str) -> tuple[int | None, Any]:
     try:
         response = requests.get(
-            f"{api_base}/me", headers=bearer_headers(token), timeout=_ME_TIMEOUT_SECONDS
+            f"{api_base}/me",
+            headers=bearer_headers(token),
+            timeout=(_ME_CONNECT_TIMEOUT_SECONDS, _ME_READ_TIMEOUT_SECONDS),
         )
     except requests.RequestException:
         return None, None
@@ -241,7 +247,8 @@ def require_login(*, required: str, api_base: str) -> UiSession:
     if me is not None and is_expired(me.get("expires_at"), time.time()):
         status, me = 401, None
     elif me is None:
-        status, body = _fetch_me(api_base, token)
+        with st.spinner(_WAITING_FOR_API_MESSAGE):
+            status, body = _fetch_me(api_base, token)
         if status == 200 and isinstance(body, dict):
             me = body
             st.session_state[_ME_KEY] = {"fingerprint": fingerprint, "me": me}

@@ -4,6 +4,7 @@ Streamlit itself is replaced by a small recording fake, so these run without a
 Streamlit runtime or browser; the real login flow is covered by the end-to-end checks.
 """
 
+import contextlib
 import time
 from types import SimpleNamespace
 
@@ -50,11 +51,21 @@ class FakeStreamlit:
     def __init__(self, *, logged_in=True, token="access-token-abc"):
         self.session_state = {}
         self.events = []
+        self.spinning = False
         self.sidebar = _Sidebar(self)
         user = SimpleNamespace(tokens={"access": token} if token else {})
         if logged_in is not None:  # None emulates an app without OIDC configuration
             user.is_logged_in = logged_in
         self.user = user
+
+    @contextlib.contextmanager
+    def spinner(self, text="", **kwargs):
+        self.events.append(("spinner", (text,), kwargs))
+        self.spinning = True
+        try:
+            yield
+        finally:
+            self.spinning = False
 
     def stop(self):
         raise Stopped
@@ -213,10 +224,24 @@ class TestRequireLogin:
         require_login(required="user", api_base=API_BASE)
         require_login(required="user", api_base=API_BASE)
         assert len(calls) == 1
+        assert fake_st.kinds().count("spinner") == 1  # the cached run does not wait for the API again
 
         fake_st.user.tokens["access"] = "a-brand-new-token"  # e.g. after signing in again
         require_login(required="user", api_base=API_BASE)
         assert len(calls) == 2
+
+    def test_explains_the_wait_while_a_sleeping_api_answers(self, enabled, fake_st, monkeypatch):
+        spinning_during_call = []
+
+        def fetch(api_base, token):
+            spinning_during_call.append(fake_st.spinning)
+            return 200, me_body()
+
+        monkeypatch.setattr(ui_auth, "_fetch_me", fetch)
+        require_login(required="user", api_base=API_BASE)
+        assert spinning_during_call == [True]
+        assert fake_st.spinning is False
+        assert "about a minute" in fake_st.text()
 
     def test_cached_identity_past_its_expiry_prompts_sign_in_again(self, enabled, fake_st, monkeypatch):
         stub_me(monkeypatch, body=me_body(expires_at=int(time.time()) + 600))
@@ -296,6 +321,26 @@ class TestFetchMe:
         assert ui_auth._fetch_me(API_BASE, "tok") == (200, {"is_user": True})
         assert captured["url"] == f"{API_BASE}/me"
         assert captured["headers"] == {"Authorization": "Bearer tok"}
+
+    def test_waits_for_a_scaled_to_zero_api_but_fails_fast_when_nothing_listens(self, monkeypatch):
+        class Response:
+            status_code = 200
+
+            def json(self):
+                return {"is_user": True}
+
+        captured = {}
+
+        def fake_get(url, headers=None, timeout=None):
+            captured["timeout"] = timeout
+            return Response()
+
+        monkeypatch.setattr(requests, "get", fake_get)
+        ui_auth._fetch_me(API_BASE, "tok")
+        assert isinstance(captured["timeout"], tuple), "needs separate connect and read timeouts"
+        connect, read = captured["timeout"]
+        assert connect <= 10  # a dead API is reported quickly
+        assert read >= 60  # a cold start (loading the NER model) takes about a minute
 
     def test_connection_errors_and_bad_json(self, monkeypatch):
         def boom(*args, **kwargs):
