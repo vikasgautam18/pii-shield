@@ -17,7 +17,7 @@ and the provided lifecycle scripts.
 You also need:
 
 - **Azure subscription** with permission to create resource groups, storage
-  accounts, ACR, Redis Cache, Container Apps Environment, App Insights, and
+  accounts, ACR, Azure Managed Redis, Container Apps Environment, App Insights, and
   Managed Grafana.
 - An **Entra ID account** signed into the Azure CLI (`az login`).
 
@@ -69,8 +69,12 @@ subscription_id = "00000000-0000-0000-0000-000000000000"
 # (ACR, Redis, Grafana). Set `name_suffix` to pin it.
 project_name = "piishield"
 
-location       = "centralindia"
-redis_capacity = 1            # C1 = 1 GB. Use 3 for production load.
+location = "centralindia"
+
+# Azure Managed Redis (replaces classic Azure Cache for Redis, which is blocked for
+# new customers and retires on 30 Sep 2028). Balanced_B0 is the smallest size.
+redis_sku_name                  = "Balanced_B0"
+redis_high_availability_enabled = false   # off for dev/test; turn on for production
 ```
 
 All resource names are derived:
@@ -82,8 +86,8 @@ All resource names are derived:
 | Log Analytics | `<project_name>-logs` |
 | Application Insights | `<project_name>-insights` |
 | ACR | `<project_name>acr<suffix>` |
-| Redis | `<project_name>-redis-<suffix>` |
-| Grafana | `<project_name>-grafana-<suffix>` |
+| Redis | `<project_name>-redis-<suffix>` (Azure Managed Redis) |
+| Grafana | `<project_name>-g-<suffix>` (max 23 characters) |
 
 > **Note:** ACR, Redis, and Grafana names must be globally unique across Azure.
 > The random `name_suffix` handles this automatically. To get reproducible names
@@ -169,6 +173,32 @@ APP_INSIGHTS_NAME=pii-shield-insights \
 ./02-deploy-apps_noref.sh
 ```
 
+### Optional: require sign-in
+
+Authentication is **off by default**. One switch, `AUTH_ENABLED`, covers the API
+and both UIs. Register the application with your identity provider first
+(Microsoft Entra ID or any OpenID Connect provider — see
+[docs/authentication.md](docs/authentication.md#identity-provider-setup)), then
+pass the settings from your shell or CI secret store. Secrets become Container
+Apps secrets; nothing is written to a file in the repo:
+
+```bash
+export AUTH_ENABLED=true
+export OIDC_ISSUER_URL="https://login.microsoftonline.com/<tenant-id>/v2.0"
+export OIDC_AUDIENCE="<api-client-id>"
+export OIDC_API_SCOPE="api://<api-client-id>/access_as_user"
+export OIDC_CLIENT_ID="<ui-client-id>"
+export OIDC_CLIENT_SECRET="<ui-client-secret>"
+export AUTH_COOKIE_SECRET="$(openssl rand -base64 48)"
+./02-deploy-apps.sh
+```
+
+The script prints the two redirect URIs (`https://<app>.<env-domain>/oauth2callback`)
+to register with the identity provider. With authentication on, the UIs run as a
+single replica, because Streamlit keeps sign-in state in process memory. Users
+and services are granted access in the identity provider by assigning the
+`PIIShield.User` / `PIIShield.Admin` roles, with no PII Shield change.
+
 ---
 
 ## 6. Verify the deployment
@@ -185,6 +215,15 @@ You should see:
 [PASS] Admin reachable (HTTP 200)
 [PASS] POST /anonymize_unique (HTTP 200)
 [PASS] Response contains anonymized_text
+```
+
+If you deployed with authentication on, run it with the same switch so it checks
+that the API rejects anonymous calls, and (optionally) that a valid token is
+accepted:
+
+```bash
+AUTH_ENABLED=true ./03-verify.sh
+AUTH_ENABLED=true VERIFY_ACCESS_TOKEN="$(python ../../scripts/get_token.py)" ./03-verify.sh
 ```
 
 ---
@@ -216,6 +255,15 @@ authoritative list. Highlights:
 | `WEB_CONCURRENCY` | `2` | Gunicorn workers per replica |
 | `NLP_THREAD_POOL_SIZE` | `6` | Concurrent NLP inferences per worker |
 | `DISABLED_RECOGNIZERS` | (see `.env.example`) | Comma-separated Presidio recognizer class names |
+| `AUTH_ENABLED` | `false` | One switch for sign-in on the API and both UIs (see below) |
+| `OIDC_ISSUER_URL` / `OIDC_AUDIENCE` | — | Required when `AUTH_ENABLED=true`: the identity provider's issuer, and the audience the API accepts |
+| `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | — | Required when `AUTH_ENABLED=true`: the client the UIs sign in with |
+| `OIDC_API_SCOPE` | — | Scope that makes the IdP issue a token for this API (Entra: `api://<client-id>/access_as_user`) |
+| `AUTH_COOKIE_SECRET` | — | Required when `AUTH_ENABLED=true`: 32+ random characters that sign the UI session cookie |
+| `AUTH_USER_ROLES` / `AUTH_ADMIN_ROLES` | `PIIShield.User` / `PIIShield.Admin` | Role names that grant user / admin access |
+
+The complete list of authentication settings, identity-provider setup and
+troubleshooting are in [docs/authentication.md](docs/authentication.md).
 
 ---
 
@@ -233,6 +281,24 @@ az containerapp update --name pii-shield --resource-group <rg> \
 ```
 
 Or re-run `./02-deploy-apps.sh` to update all 3 apps.
+
+To turn authentication on or off for apps that are already deployed (no image
+rebuild), use `06-configure-auth.sh`. It changes all three apps together, in an
+order that keeps every intermediate state usable, and each change creates a new
+revision (the services restart):
+
+```bash
+OIDC_ISSUER_URL=... OIDC_AUDIENCE=... OIDC_CLIENT_ID=... \
+OIDC_CLIENT_SECRET=... AUTH_COOKIE_SECRET=... \
+./06-configure-auth.sh enable
+
+./06-configure-auth.sh disable
+```
+
+Onboard calling services first: once authentication is on, API requests without
+a valid token get `401`. See
+[docs/authentication.md](docs/authentication.md#enabling-and-disabling) for the
+recommended rollout.
 
 ---
 

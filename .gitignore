@@ -215,6 +215,9 @@ examples/__results/
 # Terraform state (stored in Azure Storage, not in repo)
 *.tfstate
 *.tfstate.backup
+# Saved plans (terraform plan -out=...) can contain sensitive values
+tfplan
+*.tfplan
 .terraform/
 .terraform.lock.hcl
 PII-Shield-Architecture.pptx
@@ -225,3 +228,20 @@ terraform.tfvars
 
 # Local test config (use test_config.example.yml as template)
 examples/test_config.yml
+
+# Streamlit secrets (the UI launcher generates this from OIDC_* env vars; never commit)
+secrets.toml
+
+# Credentials and key material that must never be committed
+# (*.entra.env is what infra/scripts/07-setup-entra.sh writes; it normally lives outside the repo)
+*.entra.env
+*.pem
+*.key
+*.p12
+*.pfx
+# Terraform variable files hold real values; terraform.tfvars.example stays tracked
+*.tfvars
+*.tfvars.json
+
+# macOS Finder metadata (lists the folder's file names)
+.DS_Store

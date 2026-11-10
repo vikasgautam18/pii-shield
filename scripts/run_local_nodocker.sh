@@ -16,6 +16,7 @@
 #   ./scripts/run_local_nodocker.sh --no-redis       # assume REDIS_URL is set externally
 #   ./scripts/run_local_nodocker.sh --stop           # stop processes started by this script
 #   NLP_ENGINE=spacy ./scripts/run_local_nodocker.sh # override the NLP engine
+#   AUTH_ENABLED=true ./scripts/run_local_nodocker.sh # require sign-in (needs OIDC_* in .env; see docs/authentication.md)
 #
 # Requirements:
 #   - Python 3.10, 3.11, or 3.12 (NOT 3.13+ yet; presidio-analyzer pin)
@@ -148,9 +149,10 @@ fi
 
 # Source .env so NLP_ENGINE / TRANSFORMERS_MODEL / QUANTIZED_MODEL_DIR / etc.
 # are visible to both this script AND the child uvicorn/streamlit processes.
-# Shell-level NLP_ENGINE (set before invoking the script) wins over .env.
+# Shell-level NLP_ENGINE and AUTH_ENABLED (set before invoking the script) win over .env.
 log "Loading .env into the shell environment..."
 PRE_NLP_ENGINE="${NLP_ENGINE:-}"
+PRE_AUTH_ENABLED="${AUTH_ENABLED:-}"
 set -a
 # shellcheck source=/dev/null
 source .env
@@ -160,9 +162,39 @@ if [[ -n "$PRE_NLP_ENGINE" ]]; then
   NLP_ENGINE="$PRE_NLP_ENGINE"
   export NLP_ENGINE
 fi
+# Same for AUTH_ENABLED: .env ships AUTH_ENABLED=false, which must not defeat
+# `AUTH_ENABLED=true ./scripts/run_local_nodocker.sh` (or the reverse).
+if [[ -n "$PRE_AUTH_ENABLED" ]]; then
+  AUTH_ENABLED="$PRE_AUTH_ENABLED"
+  export AUTH_ENABLED
+fi
 NLP_ENGINE="${NLP_ENGINE:-onnx}"
 export NLP_ENGINE
 ok "NLP_ENGINE=$NLP_ENGINE"
+
+# ── 4b. Authentication (optional; see docs/authentication.md) ────────────────
+# AUTH_ENABLED (from .env or the shell) is the single switch for the API and both UIs.
+AUTH_ON="false"
+case "$(printf '%s' "${AUTH_ENABLED:-false}" | tr '[:upper:]' '[:lower:]')" in
+  1|true|yes|on) AUTH_ON="true" ;;
+esac
+if [[ "$AUTH_ON" == "true" ]]; then
+  # Streamlit signs its sign-in cookie with this secret; generate and keep one if missing.
+  if [[ -z "${AUTH_COOKIE_SECRET:-}" ]]; then
+    AUTH_COOKIE_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(48))")
+    export AUTH_COOKIE_SECRET
+    if command -v gsed >/dev/null 2>&1; then SED="gsed"; else SED="sed"; fi
+    if grep -q '^AUTH_COOKIE_SECRET=' .env; then
+      $SED -i.bak "s|^AUTH_COOKIE_SECRET=.*|AUTH_COOKIE_SECRET=$AUTH_COOKIE_SECRET|" .env && rm -f .env.bak
+    else
+      printf '\nAUTH_COOKIE_SECRET=%s\n' "$AUTH_COOKIE_SECRET" >> .env
+    fi
+    ok "Generated AUTH_COOKIE_SECRET and saved it to .env"
+  fi
+  ok "Authentication ENABLED (issuer: ${OIDC_ISSUER_URL:-<OIDC_ISSUER_URL not set>})"
+else
+  log "Authentication disabled (set AUTH_ENABLED=true in .env to enable it)."
+fi
 
 # ── 5. NLP model ─────────────────────────────────────────────────────────────
 log "Ensuring NLP model is available (NLP_ENGINE=$NLP_ENGINE)..."
@@ -253,23 +285,21 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
 done
 
 if [[ "$MODE" == "full" ]]; then
+  # The launcher renders Streamlit's OIDC secrets from the environment when
+  # AUTH_ENABLED=true, then starts Streamlit with the same flags as before.
   log "Starting Streamlit playground on port $PLAYGROUND_PORT..."
   API_BASE="http://localhost:$API_PORT" \
-  nohup streamlit run app/streamlit_app.py \
-    --server.port "$PLAYGROUND_PORT" \
-    --server.address 0.0.0.0 \
-    --server.headless true \
-    --client.toolbarMode minimal \
+  nohup python -m app.ui_launcher playground \
+    --port "$PLAYGROUND_PORT" \
+    --address 0.0.0.0 \
     >"$LOG_DIR/playground.log" 2>&1 &
   echo $! > "$PID_DIR/playground.pid"
 
   log "Starting Streamlit admin on port $ADMIN_PORT..."
   API_BASE="http://localhost:$API_PORT" \
-  nohup streamlit run app/streamlit_admin.py \
-    --server.port "$ADMIN_PORT" \
-    --server.address 0.0.0.0 \
-    --server.headless true \
-    --client.toolbarMode minimal \
+  nohup python -m app.ui_launcher admin \
+    --port "$ADMIN_PORT" \
+    --address 0.0.0.0 \
     >"$LOG_DIR/admin.log" 2>&1 &
   echo $! > "$PID_DIR/admin.pid"
 fi
@@ -284,6 +314,11 @@ echo "  Swagger docs:  http://localhost:$API_PORT/docs"
 if [[ "$MODE" == "full" ]]; then
 echo "  Playground:    http://localhost:$PLAYGROUND_PORT"
 echo "  Admin UI:      http://localhost:$ADMIN_PORT"
+fi
+if [[ "$AUTH_ON" == "true" ]]; then
+echo "  Auth:          ENABLED (sign-in required; the API needs a bearer token)"
+else
+echo "  Auth:          disabled (AUTH_ENABLED=true in .env to enable)"
 fi
 echo ""
 echo "  Logs:          $LOG_DIR/"

@@ -21,5 +21,9 @@ location = "centralindia"
 # Leave empty to auto-generate. Useful for reproducible redeploys.
 # name_suffix = "prod01"
 
-# Redis sizing (Standard C1 is a sensible default; raise to C3 for production load)
-redis_capacity = 1
+# Azure Managed Redis (replaces classic Azure Cache for Redis, which is blocked for
+# new customers and retires on 30 Sep 2028).
+#   Balanced_B0 is the smallest (dev/test). Raise it (Balanced_B1, Balanced_B3, ...) for load.
+#   High availability roughly doubles the cost; leave it off for dev/test.
+redis_sku_name                  = "Balanced_B0"
+redis_high_availability_enabled = false

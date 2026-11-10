@@ -1,6 +1,7 @@
 """Streamlit UI for PII Shield — Admin & Application Registry.
 
-Run:  streamlit run app/streamlit_admin.py --server.port 7861
+Run:  python -m app.ui_launcher admin
+      (or, with AUTH_ENABLED off: streamlit run app/streamlit_admin.py --server.port 7861)
 """
 
 import os
@@ -10,32 +11,59 @@ import requests
 import streamlit as st
 
 from themes import apply_theme
+from ui_auth import ApiClient, require_login
 
 API_BASE = os.getenv("API_BASE", "http://localhost:8000")
 
 st.set_page_config(page_title="PII Admin", page_icon="🛡️", layout="wide")
 apply_theme()
+# Sign-in gate: a no-op unless AUTH_ENABLED=true. Requires the admin role and runs
+# before any API call; the API enforces the same role independently.
+auth_session = require_login(required="admin", api_base=API_BASE)
+api = ApiClient(auth_session)
 st.title("🛡️ PII Admin")
 st.caption("Application registration, configuration, and management.")
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+class _FetchError(Exception):
+    """An API call failed; raised so st.cache_data never caches a failure (e.g. a 401)."""
+
+
 @st.cache_data(ttl=5)
+def _fetch_apps_cached() -> list[dict]:
+    try:
+        resp = api.get(f"{API_BASE}/apps", timeout=10)
+    except requests.ConnectionError as exc:
+        raise _FetchError from exc
+    if resp.status_code != 200:
+        raise _FetchError(resp.status_code)
+    return resp.json()
+
+
+@st.cache_data(ttl=5)
+def _fetch_entity_types_cached() -> list[str]:
+    try:
+        resp = api.get(f"{API_BASE}/supported-entities", timeout=10)
+    except requests.ConnectionError as exc:
+        raise _FetchError from exc
+    if resp.status_code != 200:
+        raise _FetchError(resp.status_code)
+    return resp.json()
+
+
 def fetch_apps() -> list[dict]:
     try:
-        resp = requests.get(f"{API_BASE}/apps", timeout=10)
-        return resp.json() if resp.status_code == 200 else []
-    except requests.ConnectionError:
+        return _fetch_apps_cached()
+    except _FetchError:
         return []
 
 
-@st.cache_data(ttl=5)
 def fetch_entity_types() -> list[str]:
     try:
-        resp = requests.get(f"{API_BASE}/supported-entities", timeout=10)
-        return resp.json() if resp.status_code == 200 else []
-    except requests.ConnectionError:
+        return _fetch_entity_types_cached()
+    except _FetchError:
         return []
 
 
@@ -45,8 +73,8 @@ def app_choices() -> dict[str, str]:
 
 
 def clear_cache():
-    fetch_apps.clear()
-    fetch_entity_types.clear()
+    _fetch_apps_cached.clear()
+    _fetch_entity_types_cached.clear()
 
 
 # ── Tabs ─────────────────────────────────────────────────────────────────────
@@ -74,8 +102,8 @@ with tab_apps:
             app_id = a["app_id"]
             config_str = ", ".join(f"{k}={v}" for k, v in a["config"].items()) or "(defaults)"
             try:
-                et = requests.get(f"{API_BASE}/apps/{app_id}/entity-type-allow-list", timeout=5).json().get("entity_type_allow_list", [])
-                ekw = requests.get(f"{API_BASE}/apps/{app_id}/entity-keyword-allow-list", timeout=5).json().get("entity_keyword_allow_list", {})
+                et = api.get(f"{API_BASE}/apps/{app_id}/entity-type-allow-list", timeout=5).json().get("entity_type_allow_list", [])
+                ekw = api.get(f"{API_BASE}/apps/{app_id}/entity-keyword-allow-list", timeout=5).json().get("entity_keyword_allow_list", {})
             except Exception:
                 et, ekw = [], {}
             et_str = ", ".join(et) if et else "(none)"
@@ -105,7 +133,7 @@ with tab_admin:
             if not reg_name.strip():
                 st.warning("Please enter an application name.")
             else:
-                resp = requests.post(f"{API_BASE}/apps", json={"app_name": reg_name.strip()})
+                resp = api.post(f"{API_BASE}/apps", json={"app_name": reg_name.strip()})
                 if resp.status_code == 201:
                     data = resp.json()
                     clear_cache()
@@ -124,7 +152,7 @@ with tab_admin:
                 if not lookup_id:
                     st.warning("Please select an application.")
                 else:
-                    resp = requests.get(f"{API_BASE}/apps/{lookup_id}")
+                    resp = api.get(f"{API_BASE}/apps/{lookup_id}")
                 if resp.status_code == 200:
                     st.json(resp.json())
                 else:
@@ -148,7 +176,7 @@ with tab_admin:
                 if not cfg_app_id:
                     st.warning("Please select an application.")
                 else:
-                    resp = requests.put(
+                    resp = api.put(
                         f"{API_BASE}/apps/{cfg_app_id}/config",
                         json={"entity_type": cfg_entity, "strategy": cfg_strategy},
                     )
@@ -173,7 +201,7 @@ with tab_admin:
                 if not del_app_id:
                     st.warning("Please select an application.")
                 else:
-                    resp = requests.delete(f"{API_BASE}/apps/{del_app_id}")
+                    resp = api.delete(f"{API_BASE}/apps/{del_app_id}")
                 if resp.status_code == 204:
                     clear_cache()
                     st.success(f"✅ Deleted: {del_app_id}")
@@ -207,7 +235,7 @@ with tab_allow:
                 entity_types = fetch_entity_types()
 
                 try:
-                    current_et = requests.get(f"{API_BASE}/apps/{al_app_id}/entity-type-allow-list", timeout=5).json().get("entity_type_allow_list", [])
+                    current_et = api.get(f"{API_BASE}/apps/{al_app_id}/entity-type-allow-list", timeout=5).json().get("entity_type_allow_list", [])
                 except Exception:
                     current_et = []
 
@@ -219,7 +247,7 @@ with tab_allow:
                 )
 
                 if st.button("Save Entity-Type Allow-List", key="et_save", type="primary"):
-                    resp = requests.put(
+                    resp = api.put(
                         f"{API_BASE}/apps/{al_app_id}/entity-type-allow-list",
                         json={"entity_type_allow_list": selected_et},
                     )
@@ -237,7 +265,7 @@ with tab_allow:
                 )
 
                 try:
-                    ekw_data = requests.get(f"{API_BASE}/apps/{al_app_id}/entity-keyword-allow-list", timeout=5).json().get("entity_keyword_allow_list", {})
+                    ekw_data = api.get(f"{API_BASE}/apps/{al_app_id}/entity-keyword-allow-list", timeout=5).json().get("entity_keyword_allow_list", {})
                 except Exception:
                     ekw_data = {}
 
@@ -278,7 +306,7 @@ with tab_allow:
                             kw = str(row["Keyword"]).strip() if pd.notna(row["Keyword"]) else ""
                             if et and kw:
                                 ekw_to_save.setdefault(et, []).append(kw)
-                    resp = requests.put(
+                    resp = api.put(
                         f"{API_BASE}/apps/{al_app_id}/entity-keyword-allow-list",
                         json={"entity_keyword_allow_list": ekw_to_save},
                     )
@@ -333,13 +361,18 @@ with tab_audit:
         params["action"] = audit_action
 
     try:
-        resp = requests.get(f"{API_BASE}/audit-log", params=params, timeout=10)
+        resp = api.get(f"{API_BASE}/audit-log", params=params, timeout=10)
         if resp.status_code == 200:
             entries = resp.json()
             if entries:
                 df = pd.DataFrame(entries)
                 if "details" in df.columns:
                     df["details"] = df["details"].astype(str)
+                if "actor" in df.columns and "action" in df.columns:
+                    # Show who performed each action right next to the action itself.
+                    columns = [c for c in df.columns if c != "actor"]
+                    columns.insert(columns.index("action") + 1, "actor")
+                    df = df[columns]
                 st.dataframe(df, use_container_width=True, hide_index=True)
             else:
                 st.info("No audit entries found.")

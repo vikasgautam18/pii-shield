@@ -13,6 +13,12 @@ Prerequisites:
 Usage:
     python examples/run_indian_banking_tests.py [--api-url URL] [--output FILE]
 
+Authentication:
+    When the API runs with AUTH_ENABLED=true the suite needs an admin-role token, because it registers
+    applications. Export it as API_ACCESS_TOKEN (or pass --access-token); docs/authentication.md
+    ("Running the bundled test suites") shows how to get one from the local Keycloak or the Entra test
+    services. The token is checked before any test runs, and the run stops if it stops working midway.
+
 Defaults:
     --api-url   http://localhost:8000
     --output    examples/__results/test_report.html
@@ -34,6 +40,8 @@ from typing import Any
 import re
 
 import requests
+
+from _auth import ApiAccessError, add_token_argument, check_api_access, install_bearer_token  # noqa: E402
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
 
@@ -278,8 +286,9 @@ class PIIShieldClient:
 
     def ensure_app(self, app_name: str) -> str:
         """Return app_id for *app_name*, creating it if needed."""
-        existing = self.list_apps()
-        matches = [a for a in existing if a["app_name"] == app_name]
+        resp = requests.get(f"{self.base_url}/apps", timeout=self.timeout)
+        resp.raise_for_status()  # an error body (for example a 401) is not a list of apps
+        matches = [a for a in resp.json() if a["app_name"] == app_name]
         if matches:
             return matches[0]["app_id"]
         return self.register_app(app_name)["app_id"]
@@ -3445,6 +3454,12 @@ class TestRunner:
         for name, fn in sections:
             try:
                 fn()
+            except requests.HTTPError as exc:
+                print(f"  ❌ {name} FAILED: {exc}")
+                if exc.response is not None and exc.response.status_code == 401:
+                    print("\n❌ The API stopped accepting the access token (it may have expired), so the remaining "
+                          "sections cannot run.\n   Fetch a fresh token and re-run; no report was written.")
+                    sys.exit(1)
             except Exception as exc:
                 print(f"  ❌ {name} FAILED: {exc}")
 
@@ -5157,7 +5172,9 @@ def main() -> None:
         default=DEFAULT_OUTPUT,
         help=f"HTML report output path (default: {DEFAULT_OUTPUT})",
     )
+    add_token_argument(parser)
     args = parser.parse_args()
+    install_bearer_token(args.access_token, args.api_url)
 
     # Resolve test data path
     data_path = Path("indian_banking_test_data.json")
@@ -5180,6 +5197,13 @@ def main() -> None:
     except Exception as exc:
         print(f"❌ Cannot reach API at {args.api_url}: {exc}")
         print("   Start the server: docker compose up -d")
+        sys.exit(1)
+
+    # An API with authentication on answers /apps with a 401 body instead of raising, so check access here
+    try:
+        print(f"  {check_api_access(args.api_url, args.access_token)}")
+    except ApiAccessError as exc:
+        print(f"❌ {exc}")
         sys.exit(1)
 
     # Run tests

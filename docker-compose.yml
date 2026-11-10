@@ -45,6 +45,19 @@ services:
       - SESSION_TTL_SECONDS=${SESSION_TTL_SECONDS:-86400}
       - DISABLED_RECOGNIZERS=${DISABLED_RECOGNIZERS:-InAadhaarRecognizer,NhsRecognizer,UsBankRecognizer,SgFinRecognizer,AuAbnRecognizer,AuAcnRecognizer,AuTfnRecognizer,AuMedicareRecognizer,MedicalLicenseRecognizer}
       - CONTEXT_SIMILARITY_FACTOR=${CONTEXT_SIMILARITY_FACTOR:-0.45}
+      # Authentication (see .env.example). Empty values mean "unset"; defaults live in code.
+      - AUTH_ENABLED=${AUTH_ENABLED:-false}
+      - OIDC_ISSUER_URL=${OIDC_ISSUER_URL:-}
+      - OIDC_AUDIENCE=${OIDC_AUDIENCE:-}
+      - OIDC_ROLES_CLAIM=${OIDC_ROLES_CLAIM:-}
+      - AUTH_USER_ROLES=${AUTH_USER_ROLES:-}
+      - AUTH_ADMIN_ROLES=${AUTH_ADMIN_ROLES:-}
+      - OIDC_ISSUER=${OIDC_ISSUER:-}
+      - OIDC_JWKS_URL=${OIDC_JWKS_URL:-}
+      - OIDC_ALGORITHMS=${OIDC_ALGORITHMS:-}
+      - OIDC_CLOCK_SKEW_SECONDS=${OIDC_CLOCK_SKEW_SECONDS:-}
+      - OIDC_JWKS_CACHE_SECONDS=${OIDC_JWKS_CACHE_SECONDS:-}
+      - OIDC_ALLOW_INSECURE_HTTP=${OIDC_ALLOW_INSECURE_HTTP:-}
     depends_on:
       redis:
         condition: service_healthy
@@ -56,12 +69,25 @@ services:
       args:
         NLP_ENGINE: ${NLP_ENGINE:-spacy}
         TRANSFORMERS_MODEL: ${TRANSFORMERS_MODEL:-dslim/bert-base-NER}
-    command: streamlit run app/streamlit_app.py --server.port 7860 --server.address 0.0.0.0 --server.headless true --client.toolbarMode minimal
+    # The launcher renders Streamlit's OIDC secrets from the environment when
+    # AUTH_ENABLED=true, then starts Streamlit with the same flags as before.
+    command: python -m app.ui_launcher playground
     ports:
       - "7860:7860"
     environment:
       - API_BASE=http://app:8000
       - PII_SHIELD_THEME=${PII_SHIELD_THEME:-maroon}
+      - AUTH_ENABLED=${AUTH_ENABLED:-false}
+      - OIDC_ISSUER_URL=${OIDC_ISSUER_URL:-}
+      - OIDC_ALLOW_INSECURE_HTTP=${OIDC_ALLOW_INSECURE_HTTP:-}
+      - OIDC_CLIENT_ID=${OIDC_CLIENT_ID:-}
+      - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET:-}
+      - OIDC_API_SCOPE=${OIDC_API_SCOPE:-}
+      - OIDC_UI_SCOPES=${OIDC_UI_SCOPES:-}
+      - OIDC_SERVER_METADATA_URL=${OIDC_SERVER_METADATA_URL:-}
+      - OIDC_PROMPT=${OIDC_PROMPT:-}
+      - AUTH_COOKIE_SECRET=${AUTH_COOKIE_SECRET:-}
+      - UI_REDIRECT_URI=${PLAYGROUND_REDIRECT_URI:-}
     depends_on:
       - app
 
@@ -72,14 +98,51 @@ services:
       args:
         NLP_ENGINE: ${NLP_ENGINE:-spacy}
         TRANSFORMERS_MODEL: ${TRANSFORMERS_MODEL:-dslim/bert-base-NER}
-    command: streamlit run app/streamlit_admin.py --server.port 7861 --server.address 0.0.0.0 --server.headless true --client.toolbarMode minimal
+    command: python -m app.ui_launcher admin
     ports:
       - "7861:7861"
     environment:
       - API_BASE=http://app:8000
       - PII_SHIELD_THEME=${PII_SHIELD_THEME:-maroon}
+      - AUTH_ENABLED=${AUTH_ENABLED:-false}
+      - OIDC_ISSUER_URL=${OIDC_ISSUER_URL:-}
+      - OIDC_ALLOW_INSECURE_HTTP=${OIDC_ALLOW_INSECURE_HTTP:-}
+      - OIDC_CLIENT_ID=${OIDC_CLIENT_ID:-}
+      - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET:-}
+      - OIDC_API_SCOPE=${OIDC_API_SCOPE:-}
+      - OIDC_UI_SCOPES=${OIDC_UI_SCOPES:-}
+      - OIDC_SERVER_METADATA_URL=${OIDC_SERVER_METADATA_URL:-}
+      - OIDC_PROMPT=${OIDC_PROMPT:-}
+      - AUTH_COOKIE_SECRET=${AUTH_COOKIE_SECRET:-}
+      - UI_REDIRECT_URI=${ADMIN_REDIRECT_URI:-}
     depends_on:
       - app
+
+  # Optional dev-only identity provider for trying authentication without Entra ID.
+  # Start with:  docker compose --profile auth-dev up --build   (see dev/keycloak/dev.env.example)
+  keycloak:
+    profiles: ["auth-dev"]
+    image: quay.io/keycloak/keycloak:26.0
+    command: start-dev --import-realm
+    environment:
+      - KC_BOOTSTRAP_ADMIN_USERNAME=admin
+      - KC_BOOTSTRAP_ADMIN_PASSWORD=admin
+      # Tokens carry the browser-facing issuer; back-channel endpoints (token, JWKS) follow the
+      # host the caller used, so containers can reach them as http://keycloak:8080.
+      - KC_HOSTNAME=http://localhost:8080
+      - KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true
+      - KC_HTTP_ENABLED=true
+    # Loopback only: the dev realm ships public credentials (admin/admin, fixed client secrets) and tokens are
+    # issued for http://localhost:8080, so other machines gain nothing from reaching it, but could abuse it.
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./dev/keycloak/pii-shield-realm.json:/opt/keycloak/data/import/pii-shield-realm.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /realms/pii-shield HTTP/1.1\\r\\nHost: localhost:8080\\r\\nConnection: close\\r\\n\\r\\n' >&3 && head -n1 <&3 | grep -q ' 200 '"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
 
 volumes:
   redis-data:

@@ -32,6 +32,7 @@ import requests
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "examples"))
+from _auth import add_token_argument, install_bearer_token  # noqa: E402
 from _config import load_section  # noqa: E402
 
 TEST_SECTIONS = {"local", "azure", "scale", "library", "lib"}
@@ -59,6 +60,7 @@ def main() -> int:
         help="List matching apps without deleting them",
     )
     parser.add_argument("--timeout", type=float, default=15.0, help="Per-request timeout in seconds")
+    add_token_argument(parser)
     args = parser.parse_args()
 
     section = "library" if args.test == "lib" else args.test
@@ -77,6 +79,7 @@ def main() -> int:
             return 2
 
     base = api_url.rstrip("/") + "/"
+    install_bearer_token(args.access_token, base)
     match_all = args.prefix == "*"
     prefix_desc = "<ALL APPS>" if match_all else repr(args.prefix)
     print(f"Target: {base}  (section: {section}, prefix: {prefix_desc})")
