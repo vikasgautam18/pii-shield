@@ -9,15 +9,21 @@
 #   --mode azure   examples/run_indian_banking_tests_azure.py against the deployed API
 #
 # Steps:
-#   1. On first use, creates .venv with the two packages the example tools need (requests, pyyaml).
+#   1. azure: finds the API URL, in the Terraform state of this checkout unless --api-url is given.
 #   2. Checks that the API answers (azure: waits for an app that scaled to zero to wake up) and whether
 #      authentication is on.
-#   3. With authentication on, gets an admin-role token (the suite registers applications):
+#   3. On first use, creates .venv with the two packages the example tools need (requests, pyyaml).
+#   4. With authentication on, gets an admin-role token (the suite registers applications):
 #        local  gives the bundled dev Keycloak's service account the admin role for the length of the run
 #        azure  uses the admin test service from the Entra env file that infra/scripts/07-setup-entra.sh writes
-#   4. Runs the suite.
-#   5. Always, also after a failure or Ctrl-C: deletes the test applications the suite leaves behind (unless
+#   5. Runs the suite.
+#   6. Always, also after a failure or Ctrl-C: deletes the test applications the suite leaves behind (unless
 #      --keep-apps) and, locally, takes the admin role away again unless it was already granted before the run.
+#
+# The azure API URL is looked up the way infra/scripts/03-verify.sh does it: the resource group and app name
+# from the Terraform outputs (RG_NAME and API_APP_NAME override them), then the app's host name from Azure.
+# If that is not possible (no Terraform state, not logged in, app not deployed), the runner's built-in default
+# URL is used, which goes stale whenever the deployment is re-created.
 #
 # --env-file and --api-url only apply to --mode azure. Locally the script talks to the dev Keycloak with its
 # public dev credentials, so there --api-url and --access-token are refused.
@@ -59,7 +65,8 @@ runs the suite, then deletes the test applications and undoes any temporary perm
   --keep-apps         keep the test applications (default: delete them when the run ends)
   --env-file FILE     azure: the Entra env file written by infra/scripts/07-setup-entra.sh
                       (default: $ENTRA_ENV_FILE, else the only *.entra.env in ~/.config/pii-shield)
-  --api-url URL       azure: another deployment, https only (default: the runner's own)
+  --api-url URL       azure: another deployment, https only (default: found in the Terraform state of this
+                      checkout, else the runner's built-in URL)
   -h, --help          show this help
 
 Other options, for example --output FILE, go to the runner (relative paths are relative to the repository root).
@@ -131,14 +138,40 @@ resolve_env_file() {
   fi
 }
 
+# Azure only: the API URL of the deployment this checkout manages, found the way infra/scripts/03-verify.sh finds
+# it. Terraform state gives the resource group and app name (RG_NAME and API_APP_NAME override them), and Azure
+# gives the app's ingress host name. Fails quietly when any step is not possible.
+terraform_api_url() {
+  local rg="${RG_NAME:-}" app="${API_APP_NAME:-}" fqdn
+  if [ -z "$rg" ]; then
+    rg="$(terraform -chdir="$ROOT/infra/terraform" output -raw resource_group_name 2>/dev/null)" || return 1
+  fi
+  if [ -z "$app" ]; then
+    app="$(terraform -chdir="$ROOT/infra/terraform" output -raw api_app_name 2>/dev/null)" || return 1
+  fi
+  [ -n "$rg" ] && [ -n "$app" ] || return 1
+  fqdn="$(az containerapp show --name "$app" --resource-group "$rg" \
+    --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null)" || return 1
+  [ -n "$fqdn" ] || return 1
+  printf 'https://%s' "$fqdn"
+}
+
 if [ "$MODE" = local ]; then
   RUNNER=examples/run_indian_banking_tests.py
   API_URL="http://localhost:8000"
 else
   RUNNER=examples/run_indian_banking_tests_azure.py
-  API_URL="${API_URL_ARG:-$(sed -n 's/^DEFAULT_API_URL = "\(.*\)"$/\1/p' "$ROOT/$RUNNER")}"
+  API_URL="$API_URL_ARG"
+  if [ -z "$API_URL" ]; then
+    echo "==> Looking up the API URL in the Terraform state"
+    if ! API_URL="$(terraform_api_url)"; then
+      API_URL="$(sed -n 's/^DEFAULT_API_URL = "\(.*\)"$/\1/p' "$ROOT/$RUNNER")"
+      echo "WARNING: could not find the deployment through Terraform and Azure CLI (stack not provisioned, not logged in," >&2
+      echo "         or the apps not deployed yet); using the runner's built-in URL. Pass --api-url if that is not it." >&2
+    fi
+  fi
   API_URL="${API_URL%/}"
-  [ -n "$API_URL" ] || die "Could not find DEFAULT_API_URL in $RUNNER; pass --api-url."
+  [ -n "$API_URL" ] || die "Could not determine the API URL; pass --api-url."
   case "$API_URL" in
     https://*) ;;
     *) bad_usage "--api-url must start with https:// (the token must not travel in the clear)." ;;
@@ -259,23 +292,13 @@ finish() {
 
 echo "==> Mode: $MODE ($API_URL)"
 
-if [ ! -x "$PY" ]; then
-  command -v python3 >/dev/null 2>&1 || die "python3 not found."
-  echo "==> Creating .venv"
-  python3 -m venv .venv
-fi
-if ! "$PY" -c 'import requests, yaml' 2>/dev/null; then
-  echo "==> Installing requests and pyyaml into .venv"
-  "$PY" -m pip install -q requests pyyaml
-fi
-
 if [ "$MODE" = local ]; then
   curl -fsS --max-time 10 "$API_URL/health" >/dev/null 2>&1 ||
     die "The API is not reachable at $API_URL. Start the stack first, for example: docker compose --profile auth-dev up -d"
 else
   echo "==> Contacting the API (an app that scaled to zero needs about a minute to wake up)"
   curl -fsS --max-time 150 --retry 1 --retry-delay 5 "$API_URL/health" >/dev/null 2>&1 ||
-    die "The API did not answer at $API_URL. Check the deployment, for example with infra/scripts/03-verify.sh."
+    die "The API did not answer at $API_URL. Check the deployment (infra/scripts/03-verify.sh) or pass --api-url."
 fi
 
 # /me answers 200 without a token only when authentication is off.
@@ -288,6 +311,17 @@ esac
 if [ "$AUTH" = on ] && [ "$MODE" = azure ]; then
   [ -n "$ENV_FILE" ] || die "$ENV_FILE_ERROR"
   check_entra_env
+fi
+
+# Only now: an API that does not answer should fail fast, before any package is installed.
+if [ ! -x "$PY" ]; then
+  command -v python3 >/dev/null 2>&1 || die "python3 not found."
+  echo "==> Creating .venv"
+  python3 -m venv .venv
+fi
+if ! "$PY" -c 'import requests, yaml' 2>/dev/null; then
+  echo "==> Installing requests and pyyaml into .venv"
+  "$PY" -m pip install -q requests pyyaml
 fi
 
 trap 'finish' EXIT

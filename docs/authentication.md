@@ -344,9 +344,11 @@ examples/run_indian_banking_tests.sh --mode azure     # the Azure deployment
 It creates `.venv` (requests, pyyaml) on first use, gets the admin token when authentication is on, runs the suite,
 deletes the test applications and, locally, takes the temporary admin role from the dev Keycloak's service account
 away again (only if it granted it), also after a failure or Ctrl-C. `--keep-apps` keeps the test applications and
-`--output FILE` and other runner options are passed on. For Azure it wakes a scaled-to-zero API first and reads the
-Entra env file that `07-setup-entra.sh` wrote (`--env-file FILE`, `$ENTRA_ENV_FILE`, or the only `*.entra.env` in
-`~/.config/pii-shield`); `--api-url` selects another deployment. Locally it refuses `--api-url` and `--access-token`.
+`--output FILE` and other runner options are passed on. For Azure it finds the API URL in the Terraform state
+(resource group and app name from the outputs, then the app's host name from Azure, as `03-verify.sh` does;
+`--api-url` selects another deployment), wakes a scaled-to-zero API, and reads the Entra env file that
+`07-setup-entra.sh` wrote (`--env-file FILE`, `$ENTRA_ENV_FILE`, or the only `*.entra.env` in
+`~/.config/pii-shield`). Locally it refuses `--api-url` and `--access-token`.
 It exits with the runner's status, and the runner exits 0 even when a section reports fewer passes than expected, so
 read the summary. The same steps by hand, which also cover `scale_test.py`:
 
