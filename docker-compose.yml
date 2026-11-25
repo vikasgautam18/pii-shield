@@ -79,6 +79,7 @@ services:
     environment:
       - API_BASE=http://app:8000
       - PII_SHIELD_THEME=${PII_SHIELD_THEME:-maroon}
+      - TRACE_URL_TEMPLATE=${TRACE_URL_TEMPLATE:-}
       - AUTH_ENABLED=${AUTH_ENABLED:-false}
       - OIDC_ISSUER_URL=${OIDC_ISSUER_URL:-}
       - OIDC_ALLOW_INSECURE_HTTP=${OIDC_ALLOW_INSECURE_HTTP:-}
