@@ -46,6 +46,11 @@ class AnonymizeStats:
     total_ms: float = 0.0
     entity_count: int = 0
     entity_counts: dict[str, int] = field(default_factory=dict)
+    # Where ``detect_ms`` went: the first NLP pass (tokenising, tagging, the NER model), and the case-recovery
+    # pass (a second trip through the NER model) when the text had ALL-CAPS or uncased names to recover.
+    nlp_ms: float = 0.0
+    recovery_ms: float = 0.0
+    recovery_pass: bool = False
 
 
 @dataclass

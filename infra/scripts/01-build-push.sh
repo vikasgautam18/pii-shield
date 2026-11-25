@@ -21,6 +21,9 @@ REPO_ROOT="$SCRIPT_DIR/../.."
 # Defaults (match .env)
 NLP_ENGINE="${NLP_ENGINE:-onnx}"
 TRANSFORMERS_MODEL="${TRANSFORMERS_MODEL:-protectai/bert-base-NER-onnx}"
+# true fuses the BERT graph before INT8 quantization: faster on some CPUs, slightly different entity spans.
+# Measure it with scripts/bench_onnx_models.py and run the test suites before using it.
+ONNX_FUSE="${ONNX_FUSE:-false}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 
 # Parse CLI args
@@ -41,6 +44,7 @@ RG_NAME="${RG_NAME:-$(cd "$TF_DIR" && terraform output -raw resource_group_name)
 echo " Building image in ACR: ${ACR_NAME}/pii-shield:${IMAGE_TAG}"
 echo "   NLP_ENGINE=$NLP_ENGINE"
 echo "   TRANSFORMERS_MODEL=$TRANSFORMERS_MODEL"
+echo "   ONNX_FUSE=$ONNX_FUSE"
 echo ""
 
 az acr build \
@@ -49,6 +53,7 @@ az acr build \
   --image "pii-shield:${IMAGE_TAG}" \
   --build-arg "NLP_ENGINE=${NLP_ENGINE}" \
   --build-arg "TRANSFORMERS_MODEL=${TRANSFORMERS_MODEL}" \
+  --build-arg "ONNX_FUSE=${ONNX_FUSE}" \
   "$REPO_ROOT"
 
 echo ""

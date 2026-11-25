@@ -64,10 +64,31 @@ API_MAX_REPLICAS="${API_MAX_REPLICAS:-96}"
 # an idle spell waits for a cold start (image pull, model load, warm-up: up to a minute). Use 1 for
 # UAT and production; an idle 2 vCPU / 4 GiB replica costs roughly $45/month.
 API_MIN_REPLICAS="${API_MIN_REPLICAS:-0}"
-# Concurrent requests one API replica holds before the HTTP scaler adds another. Detection is CPU-bound
-# (2 vCPU per replica), so a replica holding many requests answers all of them slowly: keep this close
-# to the number of vCPUs. Raise it to run fewer, busier replicas.
-API_HTTP_CONCURRENCY="${API_HTTP_CONCURRENCY:-2}"
+# Size of one API replica. Detection is CPU-bound, so this sets how fast one request is answered and how many
+# are answered at once. Container Apps (consumption plan) allows 1-4 vCPU, with 2 GiB of memory per vCPU.
+API_CPU="${API_CPU:-2}"
+case "$API_CPU" in
+  1|2|3|4) ;;
+  *) echo "ERROR: API_CPU must be 1, 2, 3 or 4 (got '$API_CPU')." >&2; exit 1 ;;
+esac
+API_MEMORY="${API_MEMORY:-$((API_CPU * 2))Gi}"
+# Worker processes per replica, detections each worker runs at once, and the ONNX Runtime threads one
+# detection uses. Together they should roughly fill API_CPU: the default (2 workers x 1 detection x 2 threads)
+# fills 2 vCPU; with 4 vCPU the threads per detection double, so a lone request is about 1.6x faster.
+WEB_CONCURRENCY="${WEB_CONCURRENCY:-2}"
+NLP_THREAD_POOL_SIZE="${NLP_THREAD_POOL_SIZE:-1}"
+for var in WEB_CONCURRENCY NLP_THREAD_POOL_SIZE; do
+  case "${!var}" in
+    ""|*[!0-9]*|0) echo "ERROR: $var must be a positive integer (got '${!var}')." >&2; exit 1 ;;
+  esac
+done
+threads_per_worker=$((API_CPU / WEB_CONCURRENCY))
+ORT_INTRA_OP_THREADS="${ORT_INTRA_OP_THREADS:-$((threads_per_worker > 2 ? threads_per_worker : 2))}"
+ORT_INTER_OP_THREADS="${ORT_INTER_OP_THREADS:-1}"
+# Concurrent requests one API replica holds before the HTTP scaler adds another. A replica answers as many
+# requests as it runs detections at once (workers x pool size); one holding more answers all of them slowly.
+# Raise it to run fewer, busier replicas.
+API_HTTP_CONCURRENCY="${API_HTTP_CONCURRENCY:-$((WEB_CONCURRENCY * NLP_THREAD_POOL_SIZE))}"
 
 API_AUTH_ENV=("AUTH_ENABLED=$AUTH_ENABLED")
 yaml_str() { python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
@@ -211,8 +232,8 @@ az containerapp create \
   --ingress external \
   --min-replicas "$API_MIN_REPLICAS" \
   --max-replicas "$API_MAX_REPLICAS" \
-  --cpu 2 \
-  --memory 4Gi \
+  --cpu "$API_CPU" \
+  --memory "$API_MEMORY" \
   $REDIS_SECRET_ARGS \
   --env-vars \
     $REDIS_ENV_ARGS \
@@ -223,10 +244,10 @@ az containerapp create \
     TRANSFORMERS_MODEL="$TRANSFORMERS_MODEL" \
     TRANSFORMERS_SPACY_MODEL="$TRANSFORMERS_SPACY_MODEL" \
     SESSION_TTL_SECONDS="$SESSION_TTL_SECONDS" \
-    WEB_CONCURRENCY="${WEB_CONCURRENCY:-2}" \
-    NLP_THREAD_POOL_SIZE="${NLP_THREAD_POOL_SIZE:-1}" \
-    ORT_INTRA_OP_THREADS="${ORT_INTRA_OP_THREADS:-2}" \
-    ORT_INTER_OP_THREADS="${ORT_INTER_OP_THREADS:-1}" \
+    WEB_CONCURRENCY="$WEB_CONCURRENCY" \
+    NLP_THREAD_POOL_SIZE="$NLP_THREAD_POOL_SIZE" \
+    ORT_INTRA_OP_THREADS="$ORT_INTRA_OP_THREADS" \
+    ORT_INTER_OP_THREADS="$ORT_INTER_OP_THREADS" \
     DISABLED_RECOGNIZERS="${DISABLED_RECOGNIZERS:-InAadhaarRecognizer,NhsRecognizer,UsBankRecognizer,SgFinRecognizer,AuAbnRecognizer,AuAcnRecognizer,AuTfnRecognizer,AuMedicareRecognizer,MedicalLicenseRecognizer}" \
     CONTEXT_SIMILARITY_FACTOR="${CONTEXT_SIMILARITY_FACTOR:-0.45}" \
     "${API_AUTH_ENV[@]}"

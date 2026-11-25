@@ -18,12 +18,16 @@ def client():
     return TestClient(main.app)
 
 
-def _blocked_pool(**kwargs):
-    """A one-thread pool whose only thread is busy until the returned event is set."""
+def _blocked_pool(blocker_chars=0, **kwargs):
+    """A one-thread pool whose only thread is busy until the returned event is set.
+
+    The blocker is a text of *blocker_chars* characters: with an express lane it must be a long one to
+    occupy the main thread.
+    """
     pool = DetectionPool(1, **kwargs)
     release = threading.Event()
     started = threading.Event()
-    blocker = pool.submit(0, lambda: (started.set(), release.wait(5)))
+    blocker = pool.submit(blocker_chars, lambda: (started.set(), release.wait(5)))
     assert started.wait(2)
     return pool, release, blocker
 
@@ -92,6 +96,57 @@ class TestDetectionPool:
         pool.submit(10, lambda: ran.append(2)).result(5)
         assert ran == [2]
 
+    def test_a_short_text_does_not_wait_for_the_long_document_that_is_running(self):
+        pool, release, blocker = _blocked_pool(blocker_chars=5000, express_chars=1000)
+        assert pool.submit(300, lambda: "express").result(2) == "express"
+        assert not blocker.done()
+        release.set()
+        blocker.result(5)
+
+    def test_without_an_express_lane_the_short_text_waits_for_it(self):
+        pool, release, blocker = _blocked_pool(express_chars=0)
+        short = pool.submit(300, lambda: "queued")
+        time.sleep(0.2)
+        assert not short.done()
+        release.set()
+        assert short.result(5) == "queued"
+
+    def test_a_long_text_never_takes_the_express_lane(self):
+        pool, release, blocker = _blocked_pool(blocker_chars=5000, express_chars=1000)
+        long_job = pool.submit(1001, lambda: "long")
+        time.sleep(0.2)
+        assert not long_job.done()
+        release.set()
+        assert long_job.result(5) == "long"
+
+    def test_the_express_lane_has_its_own_cap(self):
+        pool = DetectionPool(1, express_chars=1000, express_workers=2)
+        running, peak, lock = 0, 0, threading.Lock()
+
+        def job():
+            nonlocal running, peak
+            with lock:
+                running += 1
+                peak = max(peak, running)
+            time.sleep(0.03)
+            with lock:
+                running -= 1
+
+        for f in [pool.submit(100, job) for _ in range(12)]:
+            f.result(5)
+        assert peak == 2
+
+    def test_express_texts_are_served_first_come_first_served(self):
+        pool = DetectionPool(1, express_chars=1000, express_workers=1)
+        release, order = threading.Event(), []
+        first = pool.submit(900, lambda: release.wait(5))
+        time.sleep(0.05)
+        jobs = [pool.submit(n, lambda n=n: order.append(n)) for n in (800, 10, 500)]
+        release.set()
+        for f in [first, *jobs]:
+            f.result(5)
+        assert order == [800, 10, 500]
+
     @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork")
     def test_a_forked_process_starts_its_own_threads(self):
         pool = DetectionPool(1)
@@ -109,6 +164,10 @@ class TestDetectionPool:
 
 def test_the_pool_size_follows_the_setting_and_is_never_below_one():
     assert main._nlp_pool.max_workers == main._NLP_THREAD_POOL_SIZE >= 1
+
+
+def test_the_express_lane_is_on_by_default_for_texts_up_to_a_kilobyte():
+    assert main._nlp_pool.express_chars == 1000 and main._nlp_pool.express_workers == 1
 
 
 def test_anonymization_runs_on_an_nlp_thread_not_the_event_loop(client, monkeypatch):
@@ -133,4 +192,8 @@ def test_the_callers_context_reaches_the_pool_thread():
         marker.set("request-123")
         return await main._run_in_nlp_pool(10, marker.get)
 
-    assert asyncio.run(call()) == "request-123"
+    loop = asyncio.new_event_loop()  # not asyncio.run(): that leaves later tests without a current loop
+    try:
+        assert loop.run_until_complete(call()) == "request-123"
+    finally:
+        loop.close()

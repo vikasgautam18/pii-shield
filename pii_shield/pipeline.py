@@ -7,6 +7,7 @@ FastAPI service layer.
 """
 
 import re
+from bisect import bisect_right
 
 from presidio_analyzer import RecognizerResult
 
@@ -17,6 +18,34 @@ from pii_shield.text_lines import (
     block_start,
     line_end,
 )
+
+# ---------------------------------------------------------------------------
+# Noise runs — text the NER model should not spend tokens on
+# ---------------------------------------------------------------------------
+
+# Runs in which every character is a token of its own to the NER model (a 64-character hash costs 63 tokens, a
+# 2,000-dot leader line 2,000): eight or more of one punctuation mark (leader dots, rules, masked digits), a hash
+# or hex dump, and a base64 payload.  No name hides in them.
+_NOISE_RUN = re.compile(
+    r"((?:[^\w\s]|_))\1{7,}"
+    r"|[0-9a-fA-F]{32,}"
+    r"|[A-Za-z0-9+/]{64,}={0,2}"
+)
+
+
+def shorten_noise_for_ner(text: str) -> str:
+    """*text* with the inside of every long noise run blanked, for the NER model's eyes only.
+
+    A document with an attachment, a hash column or dotted leaders spent seconds of model time on runs that hold
+    no entity.  The result has **exactly the same length**, so every offset still applies to the original text,
+    and keeps the first and last character of each run, so a token still sits at each end of it (Presidio's
+    context step looks the token up for a match that starts inside the run).  Text without such a run comes back
+    unchanged.  The recognizers that read the text itself (PAN, e-mail, URL, ...) still get all of it.
+    """
+    if len(text) < 32:
+        return text
+    return _NOISE_RUN.sub(lambda m: m.group()[0] + " " * (len(m.group()) - 2) + m.group()[-1], text)
+
 
 # ---------------------------------------------------------------------------
 # DATE_TIME validation — filter SpaCy NER false positives
@@ -1384,6 +1413,45 @@ def needs_name_recovery(
                 and _is_uncased_name_word(*neighbour, ordinary)
             ):
                 return True
+    return False
+
+
+def has_recoverable_case_change(
+    text: str,
+    normalized: str,
+    validated: list[tuple[int, int]],
+    common: frozenset[int],
+) -> bool:
+    """Whether re-casing changed a word that a second NER pass could still turn into a name.
+
+    ``normalize_case`` opens for any ALL-CAPS word or run of lowercase words, and then re-cases every
+    uncased word in the text.  An e-mail address ("rajesh.kumar@gmail.com"), a URL or a UPI id is a run of
+    lowercase words by itself, so a document whose only case oddity is one of them paid for a whole second
+    NER pass that cannot find anything: a recovered span that overlaps a validated entity is dropped, or cut
+    back to what lies outside a key=value pair (``merge_recovered_results``).  Such words are ignored here, as are lowercase words that are ordinary
+    English vocabulary (*common*, see ``common_word_starts``), which the re-cased copy only capitalises
+    ("visited", "branch") and NER does not read as names.
+
+    *validated* holds the spans of the entities that are not NER types.  Every ALL-CAPS word counts, and so
+    does every lowercase word that is not common vocabulary: an unknown lowercase word is a possible
+    uncased name ("hi this is priya").
+    """
+    merged: list[list[int]] = []
+    for start, end in sorted(validated):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    starts = [span[0] for span in merged]
+    for match in _ALPHA_RUN.finditer(text):
+        begin, end = match.span()
+        if normalized[begin:end] == text[begin:end]:
+            continue  # not re-cased
+        i = bisect_right(starts, begin) - 1
+        if i >= 0 and end <= merged[i][1]:
+            continue  # inside a validated entity
+        if match.group(0).isupper() or begin not in common:
+            return True
     return False
 
 

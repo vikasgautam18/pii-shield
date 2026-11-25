@@ -33,6 +33,9 @@ class Event:
     duration_ms: float = 0.0
     detect_ms: float = 0.0
     anonymize_ms: float = 0.0
+    nlp_ms: float = 0.0
+    recovery_ms: float = 0.0
+    recovery_pass: bool = False
 
 
 EventHook = Callable[[Event], None]

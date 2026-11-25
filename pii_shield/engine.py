@@ -12,6 +12,7 @@ import hashlib
 import logging
 import os
 import re
+import threading
 import time
 from collections import Counter
 
@@ -20,6 +21,7 @@ from pathlib import Path
 from presidio_analyzer import AnalyzerEngine, RecognizerResult
 
 from pii_shield.context_config import apply_recognizer_contexts, load_recognizer_contexts
+from pii_shield import fast_analysis
 from pii_shield.context_enhancer import KeyValueContextEnhancer
 from pii_shield.errors import DetectionError, InvalidInputError
 from pii_shield.models import AnonymizeResult, AnonymizeStats, DetectedEntity, EntityConfig
@@ -32,6 +34,7 @@ from pii_shield.pipeline import (
     extend_person_over_initials,
     filter_attributive_nrp,
     filter_person_false_positives,
+    has_recoverable_case_change,
     is_valid_datetime,
     merge_address_entities,
     merge_adjacent_person_tokens,
@@ -45,6 +48,7 @@ from pii_shield.pipeline import (
     reclassify_phone_as_bank_account,
     remove_allowed_overlaps,
     remove_overlapping,
+    shorten_noise_for_ner,
     split_at_line_breaks,
 )
 from pii_shield.recognizers import (
@@ -149,6 +153,12 @@ class PiiShieldEngine:
     context_file : str, optional
         Path to a YAML file with recognizer context overrides.
         Falls back to ``RECOGNIZER_CONTEXTS_FILE`` env var if not provided.
+    case_recovery_gate : str, optional
+        ``"smart"`` (default) or ``"legacy"``; falls back to the ``CASE_RECOVERY_GATE`` env var.  The
+        case-recovery NER pass (ALL-CAPS and lowercase names) is skipped when the only words it would
+        re-case are inside e-mail addresses, URLs, IDs and other validated entities, or are ordinary
+        English words.  ``"legacy"`` runs it whenever the text holds any ALL-CAPS word or run of lowercase
+        words, an e-mail address included, which costs a second NER pass on most documents.
     """
 
     def __init__(
@@ -157,7 +167,14 @@ class PiiShieldEngine:
         extra_recognizers: list | None = None,
         disabled_recognizers: list[str] | None = None,
         context_file: str | None = None,
+        case_recovery_gate: str | None = None,
     ):
+        gate = (case_recovery_gate or os.getenv("CASE_RECOVERY_GATE", "smart")).strip().lower()
+        if gate not in ("smart", "legacy"):
+            raise ValueError(f"case_recovery_gate must be 'smart' or 'legacy', got {gate!r}")
+        self._case_recovery_gate = gate
+        self._trace = threading.local()
+        fast_analysis.install()
         nlp_engine = create_nlp_engine()
         context_factor = float(os.getenv("CONTEXT_SIMILARITY_FACTOR", "0.45"))
         enhancer_kwargs = {
@@ -324,7 +341,9 @@ class PiiShieldEngine:
         try:
             # Computed here rather than inside analyze() so the part-of-speech
             # tags can be reused below without a second NLP pass.
-            nlp_artifacts = self._analyzer.nlp_engine.process_text(text, language)
+            started = time.perf_counter()
+            nlp_artifacts = self._analyzer.nlp_engine.process_text(shorten_noise_for_ner(text), language)
+            nlp_ms = (time.perf_counter() - started) * 1000.0
             analyzer_results = self._analyzer.analyze(
                 text=text,
                 language=language,
@@ -338,6 +357,7 @@ class PiiShieldEngine:
         # Words tagged as verbs, prepositions, ... are never part of a name, so
         # case recovery may not glue them onto one ("Ramesh paid").
         ordinary = ordinary_word_starts(nlp_artifacts.tokens)
+        common = common_word_starts(nlp_artifacts.tokens, self._english_words)
 
         # Recover PII from badly-cased text.  Cased NER models mislabel or miss
         # ALL-CAPS and all-lowercase names, and stop at the first uncased word
@@ -345,17 +365,26 @@ class PiiShieldEngine:
         # over a re-cased copy and merge what it finds.  The copy is the same
         # length, so offsets map 1:1; the original text is never analysed
         # differently, leaving case-sensitive recognizers (PAN, SWIFT) untouched.
-        normalized = normalize_case(
-            text,
-            self._normalize_skip,
-            force=needs_name_recovery(
-                analyzer_results,
+        force = needs_name_recovery(analyzer_results, text, ordinary, common)
+        normalized = normalize_case(text, self._normalize_skip, force=force)
+        if (
+            normalized is not None
+            and not force
+            and ordinary is not None
+            and self._case_recovery_gate == "smart"
+            and not has_recoverable_case_change(
                 text,
-                ordinary,
-                common_word_starts(nlp_artifacts.tokens, self._english_words),
-            ),
-        )
+                normalized,
+                [(r.start, r.end) for r in analyzer_results if r.entity_type not in _NER_ENTITY_TYPES],
+                common,
+            )
+        ):
+            # Only e-mail addresses, URLs, IDs and ordinary words were re-cased: the second NER pass has
+            # nothing to recover, so it is not worth a second trip through the model.
+            normalized = None
+        recovery_ms = 0.0
         if normalized is not None:
+            started = time.perf_counter()
             try:
                 recovered = self._analyzer.analyze(
                     text=normalized,
@@ -363,6 +392,9 @@ class PiiShieldEngine:
                     entities=sorted(_NER_ENTITY_TYPES),
                     score_threshold=threshold,
                     allow_list=merged_allow or None,
+                    nlp_artifacts=self._analyzer.nlp_engine.process_text(
+                        shorten_noise_for_ner(normalized), language
+                    ),
                 )
             except Exception:
                 logger.warning(
@@ -370,6 +402,7 @@ class PiiShieldEngine:
                     exc_info=True,
                 )
                 recovered = []
+            recovery_ms = (time.perf_counter() - started) * 1000.0
             if recovered:
                 analyzer_results = merge_recovered_results(
                     analyzer_results, recovered, text, ordinary
@@ -466,7 +499,12 @@ class PiiShieldEngine:
             results = [
                 r for r in results if r.entity_type in entity_type_include_list
             ]
+        self._trace.last = (nlp_ms, recovery_ms, normalized is not None)
         return results
+
+    def _last_detection(self) -> tuple[float, float, bool]:
+        """``(nlp_ms, recovery_ms, recovery_pass)`` of the detection this thread ran last."""
+        return getattr(self._trace, "last", (0.0, 0.0, False))
 
     @property
     def supported_entities(self) -> list[str]:
@@ -639,6 +677,7 @@ class PiiShieldEngine:
             entity_type_include_list=entity_type_include_list,
         )
         _detect_ms = (time.perf_counter() - _t0) * 1000.0
+        _nlp_ms, _recovery_ms, _recovery_pass = self._last_detection()
 
         # Sort by start position descending so replacements don't shift indices
         _t1 = time.perf_counter()
@@ -685,6 +724,9 @@ class PiiShieldEngine:
             total_ms=(time.perf_counter() - _t0) * 1000.0,
             entity_count=len(entities),
             entity_counts=entity_counts,
+            nlp_ms=_nlp_ms,
+            recovery_ms=_recovery_ms,
+            recovery_pass=_recovery_pass,
         )
 
         logger.info(
@@ -701,6 +743,9 @@ class PiiShieldEngine:
                 duration_ms=stats.total_ms,
                 detect_ms=_detect_ms,
                 anonymize_ms=_anonymize_ms,
+                nlp_ms=_nlp_ms,
+                recovery_ms=_recovery_ms,
+                recovery_pass=_recovery_pass,
             ),
         )
 

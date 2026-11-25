@@ -21,10 +21,12 @@ from pathlib import Path
 
 import onnxruntime as ort
 import spacy
+import torch
 from optimum.onnxruntime import ORTModelForTokenClassification
 from spacy.language import Language
 from spacy_huggingface_pipelines.token_classification import HFTokenPipe
 from transformers import AutoTokenizer, pipeline
+from transformers.modeling_outputs import TokenClassifierOutput
 
 from presidio_analyzer.nlp_engine import TransformersNlpEngine
 
@@ -62,6 +64,48 @@ def _onnx_file(ort_model) -> Path:
         if path:
             return Path(path)
     raise RuntimeError("Cannot tell which .onnx file the ONNX Runtime model was loaded from")
+
+
+def _trim_padding_enabled() -> bool:
+    return os.getenv("ONNX_TRIM_PADDING", "true").strip().lower() == "true"
+
+
+def _trim_padding(model) -> None:
+    """Make *model* run every window at its real length instead of the longest window's.
+
+    The Hugging Face pipeline splits a long text into windows of up to 512 tokens and pads all of them to the
+    longest one, so the last, shorter window is computed as if it were full: a 3 KB text spends a quarter of
+    its model time on padding.  The padding sits at the end and is masked, so it is cut off before the model
+    runs and the logits are zero-padded back to the width the pipeline expects; it ignores those positions.
+    A text that fits one window has no padding and is left alone.  (The padding is not entirely neutral in an
+    INT8 model, whose activation ranges include it, so the last window of a long text can differ marginally.)
+    """
+    forward = model.forward
+
+    def trimmed(input_ids=None, attention_mask=None, token_type_ids=None, **kwargs):
+        untouched = (input_ids, attention_mask, token_type_ids)
+        if (
+            attention_mask is None
+            or not isinstance(input_ids, torch.Tensor)
+            or kwargs.get("return_dict") is False
+        ):
+            return forward(*untouched, **kwargs)
+        width = input_ids.shape[-1]
+        length = int(attention_mask.sum(dim=-1).max())
+        if length >= width or attention_mask[..., length:].any():
+            return forward(*untouched, **kwargs)
+        out = forward(
+            input_ids[..., :length],
+            attention_mask[..., :length],
+            None if token_type_ids is None else token_type_ids[..., :length],
+            **kwargs,
+        )
+        logits = out["logits"] if isinstance(out, dict) else out[0]
+        padded = logits.new_zeros((logits.shape[0], width, logits.shape[-1]))
+        padded[:, :length] = logits
+        return TokenClassifierOutput(logits=padded)
+
+    model.forward = trimmed
 
 
 def _build_session_options() -> ort.SessionOptions:
@@ -138,6 +182,8 @@ class OnnxTransformersNlpEngine(TransformersNlpEngine):
                 )
                 tokenizer = AutoTokenizer.from_pretrained(transformers_model)
 
+            if _trim_padding_enabled():
+                _trim_padding(ort_model)
             hf_pipe = pipeline(
                 task="token-classification",
                 model=ort_model,
@@ -187,6 +233,8 @@ class OnnxTransformersNlpEngine(TransformersNlpEngine):
                     session_options=_build_session_options(),
                     provider="CPUExecutionProvider",
                 )
+                if _trim_padding_enabled():
+                    _trim_padding(hf_pipe.model)
             self._owner_pid = os.getpid()
 
     def process_text(self, text: str, language: str):

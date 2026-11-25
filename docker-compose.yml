@@ -32,6 +32,7 @@ services:
       args:
         NLP_ENGINE: ${NLP_ENGINE:-spacy}
         TRANSFORMERS_MODEL: ${TRANSFORMERS_MODEL:-dslim/bert-base-NER}
+        ONNX_FUSE: ${ONNX_FUSE:-false}
     ports:
       - "8000:8000"
     environment:

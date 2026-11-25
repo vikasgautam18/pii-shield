@@ -109,7 +109,11 @@ This document is intended for:
 | D7 | **Post-quantum encryption default** — ML-KEM-768 (NIST FIPS 203) + AES-256-GCM for the ***encrypt*** strategy. | Provides future-proof security against quantum computing attacks (NIST Level 3). Each PII value gets its own KEM encapsulation, providing per-value forward secrecy. Legacy Fernet (AES-128-CBC + HMAC-SHA256) is retained as an alternative backend for environments that cannot install the keeper-mlkem dependency. Backend auto-detection on de-anonymization enables seamless migration. |
 | D8 | **Recognizer filtering** — removes US, UK, SG, and AU country-specific recognizers at startup. | Prevents false positives on Indian data. For example, the NhsRecognizer (UK NHS numbers) matches 10-digit Indian mobile numbers; UsBankRecognizer matches Indian bank account numbers. Removing these recognizers at engine initialization eliminates an entire class of false positives without impacting Indian entity detection. |
 | D9 | In-memory app-data cache with 5-second TTL on the hot path, cross-worker invalidation via Redis pub/sub. | Avoids repeated Redis round-trips for app configuration on every /anonymize_unique request. The cache stores the result of the pipelined Redis fetch and invalidates on config updates. When any Gunicorn worker updates app config, it publishes the app_id to a Redis pub/sub channel (pii-shield:cache-invalidate); all workers subscribe and evict the stale entry immediately. Max cache size of 1,000 entries with stale-entry eviction prevents unbounded memory growth. |
-| D10 | **Bounded pool for NLP inference** — a small `DetectionPool` (default: 1 thread per worker, `NLP_THREAD_POOL_SIZE`) that serves short texts ahead of long documents. | Detection is CPU-bound and a replica has only a few vCPUs: every inference in flight beyond them stretches all the others, so latency grows with the number in flight while throughput does not (measured on 2 vCPUs with 8 concurrent clients: the median 3 KB document took about 12 s with six inferences per worker and about 5 s with one, and the 99th percentile fell from about 26 s to about 15 s). Concurrency comes from the gunicorn workers (`WEB_CONCURRENCY`), because the Python parts of detection hold the GIL. A request that finds the pool busy waits its turn and the HTTP scaler still counts it as in flight. Jobs are taken by deadline (arrival plus one second per thousand characters by default) so a short text is not stuck behind a long document, and long ones are not starved; a short text can still wait for the document already running, because a running inference is never interrupted. |
+| D10 | **Bounded pool for NLP inference** — a small `DetectionPool` (default: 1 thread per worker, `NLP_THREAD_POOL_SIZE`) that serves short texts ahead of long documents. | Detection is CPU-bound and a replica has only a few vCPUs: every inference in flight beyond them stretches all the others, so latency grows with the number in flight while throughput does not (measured on 2 vCPUs with 8 concurrent clients: the median 3 KB document took about 12 s with six inferences per worker and about 5 s with one, and the 99th percentile fell from about 26 s to about 15 s). Concurrency comes from the gunicorn workers (`WEB_CONCURRENCY`), because the Python parts of detection hold the GIL. A request that finds the pool busy waits its turn and the HTTP scaler still counts it as in flight. Jobs are taken by deadline (arrival plus one second per thousand characters by default) so a short text is not stuck behind a long document, and long ones are not starved; a short text can still wait for the document already running, because a running inference is never interrupted. An *express lane* (`NLP_EXPRESS_MAX_CHARS`, default 1000 characters, `NLP_EXPRESS_THREADS`) therefore runs short texts on a thread of their own beside the document in progress: with the pool alone, the 95th percentile of 300-character requests under load rose from 0.3-0.7 s to 1.8-3.6 s (they waited for a 3-6 KB document); with the lane it is 0.3-0.7 s again, at the price of long documents waiting somewhat longer for the CPU the short texts use (closed-loop benchmark, 4 clients, 2 vCPUs). |
+| D11 | **Case-recovery gate** — the second NER pass (over a re-cased copy of the text, to recover ALL-CAPS and lowercase names) runs only when a word it would re-case lies outside validated entities and is not ordinary English vocabulary (`CASE_RECOVERY_GATE=smart`, default; `legacy` restores the old rule). | The model is 85-95% of a detection and the second pass doubles it. `normalize_case` opened for any ALL-CAPS word or run of lowercase words, and an e-mail address, a URL or a UPI id is a run of lowercase words, so most real documents paid for two passes that could not find anything: a recovered span overlapping a validated entity is dropped. The gate ignores words inside non-NER entities and common vocabulary, and keeps the pass for every ALL-CAPS word and every unknown lowercase word, which may be an uncased name ("hi this is priya"). Over 1,642 texts (everything the test suites and the banking runner send, case-stressed copies of them, and 22 documents of up to 12 KB) the output was identical; documents with mixed-case names and e-mail addresses ran about 1.9x faster with the gate alone. Over 1,800 adversarial texts (a lowercase first name beside an e-mail address) three lost a PERSON: a lowercase name that is also a dictionary word ("lakshmi", "anil"), which the old rule recovered only because the e-mail address happened to open the gate. ALL-CAPS documents such as statements still run both passes: running the model once, on the re-cased text, and deriving the first pass from it changed 17% of outputs and was rejected. |
+| D12 | **Windows run at their real length** — the last, shorter window of a long text is not padded to 512 tokens (`ONNX_TRIM_PADDING=true`). | The Hugging Face pipeline pads every window of a text to the longest one, so a 3 KB text spent a quarter of its model time on padding. The padding is masked, but an INT8 model's activation ranges include it, so the last window of a long text can come out marginally different (6 of 22 large documents in the check above, each at its tail; single-window texts are untouched). |
+| D13 | **Linear-time duplicate removal and context enhancer** (`pii_shield/fast_analysis.py`, `KeyValueContextEnhancer`; `FAST_ANALYSIS=false` switches them off). | Presidio compares every candidate with every result kept so far, and its enhancer deep-copies every result and scans the token list and a keyword list per result, so both grow with the square of the matches. On a 12 KB dense statement they cost 0.55 s of 5.4 s, and more with more recognizers. The replacements return exactly what Presidio's code returns (checked against it on random inputs in `tests/test_fast_analysis.py` and on the 1,642-text corpus), for the Presidio version pinned in `requirements.txt`. |
+| D14 | **Noise runs are blanked for the NER model** (`shorten_noise_for_ner`) — eight or more of one punctuation mark, 32 or more hex digits, and 64 or more base64 characters keep their first and last character and become spaces in between, in the copy of the text the NER model reads. | Every character of such a run is a token of its own to the model (a 64-character hash costs 63 tokens, a 2,000-dot leader line 2,000), and none holds a name. A 100 KB base64 attachment cost about 50 s of model time, a table of 150 hashes 2.9 s, a dotted leader 0.7 s; blanked they cost 0.33 s, 0.45 s and 0.02 s. The copy has the same length, so every offset still applies to the original text, which the pattern recognizers (PAN, e-mail, URL, ...) still read in full; the first and last character keep a token at each end, because Presidio's context step looks up the token of a match. Text without such a run is untouched, so the 1,642-text corpus produced identical results. |
 
 ## 3. High-Level Design
 
@@ -591,6 +595,7 @@ PII Shield supports four NLP backends, selected via the NLP_ENGINE environment v
 | QUANTIZED_MODEL_DIR | /app/models/onnx-int8 | ONNX only |
 | ORT_INTRA_OP_THREADS | 2 | ONNX only |
 | ORT_INTER_OP_THREADS | 1 | ONNX only |
+| ONNX_TRIM_PADDING | true | ONNX only |
 
 **NER entity mapping** (backend-specific labels → Presidio types):
 
@@ -1414,6 +1419,10 @@ Complete reference of all environment variables, organized by category.
 | AUDIT_DB_PATH | data/audit.db | No | Path to SQLite audit log file |
 | NLP_THREAD_POOL_SIZE | 1 | No | Inference threads per worker in the bounded NLP pool (app/nlp_pool.py) |
 | NLP_PRIORITY_SECONDS_PER_KCHAR | 1 | No | Seconds of queue priority per 1,000 characters: short texts overtake long documents that arrived just before them. 0 = first come, first served |
+| NLP_EXPRESS_MAX_CHARS | 1000 | No | Texts up to this many characters run on an express thread beside a long document instead of waiting for it. 0 = no express lane |
+| NLP_EXPRESS_THREADS | 1 | No | Express threads per worker |
+| CASE_RECOVERY_GATE | smart | No | `smart` skips the second, case-recovery NER pass when the only words it would re-case are inside validated entities (e-mail, URL, IDs) or are ordinary English words; `legacy` runs it for any ALL-CAPS word or run of lowercase words |
+| FAST_ANALYSIS | true | No | Linear-time duplicate removal and context enhancer (identical results); `false` uses Presidio's own |
 | WEB_CONCURRENCY | 6 | No | Gunicorn worker count |
 
 #### 7.4.2 NLP Engine
@@ -1430,6 +1439,7 @@ Complete reference of all environment variables, organized by category.
 |----|----|----|----|
 | ORT_INTRA_OP_THREADS | 2 | No | ONNX Runtime intra-operator parallelism |
 | ORT_INTER_OP_THREADS | 1 | No | ONNX Runtime inter-operator parallelism |
+| ONNX_TRIM_PADDING | true | No | Run the last, shorter window of a long text at its real length instead of padded to 512 tokens |
 
 #### 7.4.4 Encryption
 
@@ -1724,6 +1734,7 @@ All entity types support all four strategies. The strategy is determined by (in 
 | TRANSFORMERS_SPACY_MODEL | en_core_web_sm | No | NLP | spaCy tokenizer model for transformers/onnx |
 | ORT_INTRA_OP_THREADS | 2 | No | ONNX | ONNX Runtime intra-op parallelism |
 | ORT_INTER_OP_THREADS | 1 | No | ONNX | ONNX Runtime inter-op parallelism |
+| ONNX_TRIM_PADDING | true | No | ONNX | Run the last, shorter window of a long text at its real length |
 | ENCRYPTION_BACKEND | pqc | No | Encryption | pqc or fernet |
 | PII_SHIELD_ENCRYPTION_KEY | — | If fernet | Encryption | Fernet symmetric encryption key |
 | PQC_ENCAPSULATION_KEY | Auto-generated | No | Encryption | ML-KEM-768 public key (base64) |
@@ -1733,6 +1744,10 @@ All entity types support all four strategies. The strategy is determined by (in 
 | AUDIT_DB_PATH | data/audit.db | No | Runtime | SQLite audit log file path |
 | NLP_THREAD_POOL_SIZE | 1 | No | Runtime | Inference threads per worker in the bounded NLP pool |
 | NLP_PRIORITY_SECONDS_PER_KCHAR | 1 | No | Runtime | Queue priority allowance per 1,000 characters (0 = first come, first served) |
+| NLP_EXPRESS_MAX_CHARS | 1000 | No | Runtime | Texts up to this long run on an express thread beside a long document (0 = off) |
+| NLP_EXPRESS_THREADS | 1 | No | Runtime | Express threads per worker |
+| CASE_RECOVERY_GATE | smart | No | Runtime | smart or legacy: when the second, case-recovery NER pass runs |
+| FAST_ANALYSIS | true | No | Runtime | Linear-time duplicate removal and context enhancer |
 | WEB_CONCURRENCY | 6 | No | Runtime | Gunicorn worker count |
 | OTEL_SERVICE_NAME | pii-shield | No | Telemetry | OTel service name |
 | OTEL_SERVICE_INSTANCE_ID | pii-shield-1 | No | Telemetry | OTel instance ID |

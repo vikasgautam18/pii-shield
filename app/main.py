@@ -46,6 +46,16 @@ error_counter = meter.create_counter(
     description="Total errors by endpoint and type",
     unit="errors",
 )
+detect_duration = meter.create_histogram(
+    "pii.detect.duration",
+    description="Time to identify the PII in one request (NLP and NER passes, recognizers, post-processing)",
+    unit="ms",
+)
+detect_queue_wait = meter.create_histogram(
+    "pii.detect.queue_wait",
+    description="Time one request waited for a free detection slot before its identification started",
+    unit="ms",
+)
 
 
 def _record_error(
@@ -138,21 +148,50 @@ get_auth_state()
 # WEB_CONCURRENCY (processes), not threads: the Python parts of detection hold the GIL.  A request that
 # finds the pool busy waits its turn, and the platform's HTTP scaler still sees it as in flight.  Short
 # texts are served ahead of the long documents that arrived just before them (app/nlp_pool.py).
+# Texts up to NLP_EXPRESS_MAX_CHARS characters run on an express thread beside the long document instead of
+# waiting for it: a short text costs about a tenth of a second of CPU, a long one seconds (0 = no express lane).
 _NLP_THREAD_POOL_SIZE = max(1, int(os.getenv("NLP_THREAD_POOL_SIZE", "1")))
 _nlp_pool = DetectionPool(
     _NLP_THREAD_POOL_SIZE,
     seconds_per_kchar=float(os.getenv("NLP_PRIORITY_SECONDS_PER_KCHAR", "1")),  # 0 = first come, first served
+    express_chars=int(os.getenv("NLP_EXPRESS_MAX_CHARS", "1000")),
+    express_workers=int(os.getenv("NLP_EXPRESS_THREADS", "1")),
 )
 
 
-async def _run_in_nlp_pool(text_length: int, func, /, *args, **kwargs):
+async def _run_in_nlp_pool_timed(text_length: int, func, /, *args, **kwargs):
     """Run *func* on the NLP pool for a text of *text_length* characters, like ``asyncio.to_thread``.
 
-    The caller's context (the trace span) is kept.
+    Returns ``(result, queue_ms)``, the milliseconds the job waited for a free thread.  The caller's context
+    (the trace span) is kept.
     """
     context = contextvars.copy_context()
     call = functools.partial(context.run, func, *args, **kwargs)
-    return await asyncio.wrap_future(_nlp_pool.submit(text_length, call))
+    submitted = time.perf_counter()
+    started: list[float] = []
+
+    def timed_call():
+        started.append(time.perf_counter())
+        return call()
+
+    result = await asyncio.wrap_future(_nlp_pool.submit(text_length, timed_call))
+    return result, (started[0] - submitted) * 1000.0
+
+
+async def _run_in_nlp_pool(text_length: int, func, /, *args, **kwargs):
+    """``_run_in_nlp_pool_timed`` without the queue time."""
+    return (await _run_in_nlp_pool_timed(text_length, func, *args, **kwargs))[0]
+
+
+def _size_class(chars: int) -> str:
+    """A low-cardinality label for the length of a text, for metrics."""
+    if chars <= 500:
+        return "small"
+    if chars <= 2000:
+        return "medium"
+    if chars <= 8000:
+        return "large"
+    return "xlarge"
 
 
 @asynccontextmanager
@@ -369,7 +408,7 @@ async def anonymize_unique_text(
         with tracer.start_as_current_span("pii_shield.anonymize") as span:
             span.set_attribute("pii.language", request.language)
             # Offload CPU-bound NLP inference to the bounded pool so the event loop stays free
-            anon_result = await _run_in_nlp_pool(
+            anon_result, queue_ms = await _run_in_nlp_pool_timed(
                 len(request.text),
                 engine.anonymize,
                 text=request.text,
@@ -381,6 +420,13 @@ async def anonymize_unique_text(
             )
             span.set_attribute("pii.entities_found", len(anon_result.entities))
             span.set_attribute("pii.placeholders_created", len(anon_result.entity_mapping))
+            stats = anon_result.stats
+            span.set_attribute("pii.chars", len(request.text))
+            span.set_attribute("pii.queue_ms", round(queue_ms, 1))
+            span.set_attribute("pii.detect_ms", round(stats.detect_ms, 1))
+            span.set_attribute("pii.nlp_ms", round(stats.nlp_ms, 1))
+            span.set_attribute("pii.recovery_ms", round(stats.recovery_ms, 1))
+            span.set_attribute("pii.recovery_pass", stats.recovery_pass)
 
         record = AnonymizationRecord(
             original_text=request.text,
@@ -395,10 +441,26 @@ async def anonymize_unique_text(
         for entity in anon_result.entities:
             pii_entities_detected.add(1, {"endpoint": "/anonymize_unique", "entity_type": entity.entity_type, "app_id": x_app_id or "", "app_name": app_name})
         anonymize_request_counter.add(1, {"endpoint": "/anonymize_unique", "app_id": x_app_id or "", "app_name": app_name})
+        timing_labels = {
+            "endpoint": "/anonymize_unique",
+            "app_id": x_app_id or "",
+            "app_name": app_name,
+            "size": _size_class(len(request.text)),
+            "recovery_pass": str(stats.recovery_pass).lower(),
+        }
+        detect_duration.record(stats.detect_ms, timing_labels)
+        detect_queue_wait.record(queue_ms, timing_labels)
         logger.info(
-            "Unique anonymization complete: %d entities, id=%s",
+            "Unique anonymization complete: %d entities, id=%s, chars=%d, queue_ms=%.0f, detect_ms=%.0f "
+            "(nlp_ms=%.0f, recovery_pass=%s, recovery_ms=%.0f)",
             len(anon_result.entities),
             record_id,
+            len(request.text),
+            queue_ms,
+            stats.detect_ms,
+            stats.nlp_ms,
+            stats.recovery_pass,
+            stats.recovery_ms,
         )
 
         return AnonymizeUniqueResponse(

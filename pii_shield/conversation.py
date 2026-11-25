@@ -119,6 +119,8 @@ class ConversationAnonymizer:
             entity_type_include_list=self._policy.entity_type_include_list or None,
         )
         detect_ms = (time.perf_counter() - t0) * 1000.0
+        last_detection = getattr(self._engine, "_last_detection", None)
+        nlp_ms, recovery_ms, recovery_pass = last_detection() if last_detection else (0.0, 0.0, False)
 
         t1 = time.perf_counter()
         sorted_results = sorted(non_overlapping, key=lambda r: r.start, reverse=True)
@@ -158,6 +160,9 @@ class ConversationAnonymizer:
             total_ms=total_ms,
             entity_count=len(entities),
             entity_counts=entity_counts,
+            nlp_ms=nlp_ms,
+            recovery_ms=recovery_ms,
+            recovery_pass=recovery_pass,
         )
 
         emit(
@@ -170,6 +175,9 @@ class ConversationAnonymizer:
                 duration_ms=total_ms,
                 detect_ms=detect_ms,
                 anonymize_ms=anonymize_ms,
+                nlp_ms=nlp_ms,
+                recovery_ms=recovery_ms,
+                recovery_pass=recovery_pass,
             ),
         )
 

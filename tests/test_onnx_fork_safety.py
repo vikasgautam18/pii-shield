@@ -27,7 +27,7 @@ class _Recorder:
 
     def from_pretrained(self, path, **kwargs):
         self.calls.append((Path(path), kwargs))
-        return SimpleNamespace(path=Path(path) / kwargs["file_name"], rebuilt=True)
+        return SimpleNamespace(path=Path(path) / kwargs["file_name"], rebuilt=True, forward=lambda *a, **k: None)
 
 
 def _engine(owner_pid):

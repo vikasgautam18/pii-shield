@@ -4,6 +4,8 @@ WORKDIR /app
 
 ARG NLP_ENGINE=spacy
 ARG TRANSFORMERS_MODEL=dslim/bert-base-NER
+# true: fuse the BERT graph before INT8 quantization (see scripts/quantize_model.py; measure it on your CPU first)
+ARG ONNX_FUSE=false
 
 # Install system deps required by spaCy / Presidio / Stanza
 RUN apt-get update && \
@@ -18,7 +20,7 @@ RUN pip install --no-cache-dir -r requirements.txt && \
     elif [ "$NLP_ENGINE" = "onnx" ]; then \
         python -m spacy download en_core_web_sm && \
         python -c "model='${TRANSFORMERS_MODEL}'; need_export='-onnx' not in model.lower(); print(f'Downloading ONNX model: {model} (export={need_export})'); from optimum.onnxruntime import ORTModelForTokenClassification; from transformers import AutoTokenizer; ORTModelForTokenClassification.from_pretrained(model, export=need_export); AutoTokenizer.from_pretrained(model); print('ONNX model cached successfully')" && \
-        python /tmp/quantize_model.py "${TRANSFORMERS_MODEL}" /app/models/onnx-int8 ; \
+        ONNX_FUSE="${ONNX_FUSE}" python /tmp/quantize_model.py "${TRANSFORMERS_MODEL}" /app/models/onnx-int8 ; \
     elif [ "$NLP_ENGINE" = "transformers" ]; then \
         python -m spacy download en_core_web_sm && \
         python -c "from transformers import AutoTokenizer, AutoModelForTokenClassification; AutoTokenizer.from_pretrained('${TRANSFORMERS_MODEL}'); AutoModelForTokenClassification.from_pretrained('${TRANSFORMERS_MODEL}')"; \

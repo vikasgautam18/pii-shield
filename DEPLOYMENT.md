@@ -254,6 +254,12 @@ authoritative list. Highlights:
 | `WEB_CONCURRENCY` | `2` | Gunicorn workers per replica (about one per vCPU) |
 | `NLP_THREAD_POOL_SIZE` | `1` | Concurrent NLP inferences per worker. Detection is CPU-bound, so concurrency comes from workers, not threads |
 | `NLP_PRIORITY_SECONDS_PER_KCHAR` | `1` | Short texts are served ahead of long documents queued just before them; `0` = first come, first served |
+| `NLP_EXPRESS_MAX_CHARS` | `1000` | Texts up to this many characters run on an express thread beside a long document instead of waiting for it; `0` = no express lane |
+| `NLP_EXPRESS_THREADS` | `1` | Express threads per worker |
+| `ORT_INTRA_OP_THREADS` | `2` (more on a bigger replica, see `API_CPU`) | ONNX Runtime threads one detection uses |
+| `CASE_RECOVERY_GATE` | `smart` | `smart` skips the second NER pass when the only words it would re-case are inside e-mail addresses, URLs or IDs, or are ordinary English words; `legacy` runs it for any ALL-CAPS word or run of lowercase words |
+| `ONNX_TRIM_PADDING` | `true` | Runs the last, shorter window of a long text at its real length instead of padding it to 512 tokens |
+| `FAST_ANALYSIS` | `true` | Linear-time duplicate removal and context enhancer; the results are identical, only faster on documents with many matches |
 | `DISABLED_RECOGNIZERS` | (see `.env.example`) | Comma-separated Presidio recognizer class names |
 | `AUTH_ENABLED` | `false` | One switch for sign-in on the API and both UIs (see below) |
 | `OIDC_ISSUER_URL` / `OIDC_AUDIENCE` | — | Required when `AUTH_ENABLED=true`: the identity provider's issuer, and the audience the API accepts |
@@ -343,14 +349,49 @@ The transformers/onnx engine loads its model on first request. With the default
 waits for the cold start (image pull, model load, warm-up: up to a minute). Deploy with
 `API_MIN_REPLICAS=1 ./02-deploy-apps.sh` to keep one replica warm.
 
-### Requests take several seconds when many arrive together
+### Requests take several seconds
 
-Detection is CPU-bound: a replica has 2 vCPU, so every request it holds beyond the second one slows
-all the others. `02-deploy-apps.sh` therefore asks the HTTP scaler for a new replica at
-`API_HTTP_CONCURRENCY=2` concurrent requests per replica (default 2; the earlier default was 4), and
-each worker runs one inference at a time (`NLP_THREAD_POOL_SIZE=1`). Keep `API_HTTP_CONCURRENCY` close
-to the number of vCPUs, and add capacity with more replicas (or `WEB_CONCURRENCY` on bigger ones), not
-with more threads.
+Detection is CPU-bound: the NER model is 85-95% of a request, and a text that has ALL-CAPS or uncased names
+goes through it twice. First tell *waiting* from *computing*. Every `/anonymize_unique` logs
+
+```
+Unique anonymization complete: 41 entities, id=..., chars=3120, queue_ms=2850, detect_ms=410 (nlp_ms=395, recovery_pass=False, recovery_ms=0)
+```
+
+and records the same as span attributes (`pii.queue_ms`, `pii.detect_ms`, `pii.nlp_ms`, `pii.recovery_ms`,
+`pii.recovery_pass`, `pii.chars`) and as histograms (`pii.detect.queue_wait`, `pii.detect.duration`, labelled
+by `size` and `recovery_pass`).
+
+- **`queue_ms` is large:** the replicas are saturated. A replica answers as many requests at once as it has
+  workers x `NLP_THREAD_POOL_SIZE` (2 by default) and a request beyond that waits, which is faster than sharing
+  the CPU (measured: with 8 clients on 2 vCPUs the median 3 KB document took about 12 s with six inferences per
+  worker and about 5 s with one). Add capacity: `API_CPU=4` (2 GiB of memory per vCPU follows), more replicas
+  (`API_MAX_REPLICAS`), and a warm one (`API_MIN_REPLICAS=1`, so the first request after an idle spell does not
+  wait for a cold start). `API_HTTP_CONCURRENCY` should stay at the number of detections a replica runs at once
+  (its default), so the scaler adds a replica before requests queue.
+- **`detect_ms` is large and `queue_ms` is small:** the request itself is expensive. `recovery_pass=True` means
+  the text has ALL-CAPS words or uncased names, so it ran through the model twice; a long text costs time in
+  proportion to its length. `python scripts/profile_detection.py --file slow.txt` (inside a replica with
+  `az containerapp exec`, or locally) prints the first pass, the recovery pass, the model windows and the cost
+  of every recognizer, which finds a slow custom regular expression.
+- **One large document:** a request uses `ORT_INTRA_OP_THREADS` threads, so on a replica with more vCPUs give it
+  more: `API_CPU=4 WEB_CONCURRENCY=1` runs one four-thread detection (about 1.6x faster for a lone request), while
+  `API_CPU=4` with two workers answers twice as many requests at once.
+
+Short texts (up to `NLP_EXPRESS_MAX_CHARS`, 1000 characters) run on an express thread beside the long document
+instead of waiting for it. Without that, a 300-character text queued behind a 6 KB document waited seconds for
+a tenth of a second of work; the cost is that long documents wait a little longer for the CPU they share.
+`NLP_EXPRESS_MAX_CHARS=0` turns the lane off.
+
+What the engine skips, and what it does not. The second NER pass is skipped when the only words it would re-case
+are inside e-mail addresses, URLs or IDs, or are ordinary English words (`CASE_RECOVERY_GATE`); the last, shorter
+window of a long text is not padded to 512 tokens (`ONNX_TRIM_PADDING`); runs of dots, hex digits and base64
+are not fed to the model; and Presidio's quadratic duplicate removal and context enhancer are replaced by
+equivalent linear ones (`FAST_ANALYSIS`). A document full of ALL-CAPS names (a bank statement) still needs both
+passes, so it gains the least; the remaining levers are more vCPUs, and a faster model file on your CPU:
+`ONNX_FUSE=true` fuses the BERT graph before quantization (1.57x per window on an Apple M4; x86 untested, entity
+spans change slightly for about one text in ten). Measure with `scripts/bench_onnx_models.py` on the replica and
+run the test suites before using it: `ONNX_FUSE=true ./01-build-push.sh`.
 
 ### `04-deploy-dashboards.sh` fails with `Insufficient privileges`
 
