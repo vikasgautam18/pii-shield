@@ -21,6 +21,15 @@ from typing import Callable
 
 logger = logging.getLogger("pii-shield")
 
+# The high-level steps of one anonymize() call, in execution order.  They are exclusive (they never overlap), so
+# the time of a call is their sum plus what the call does between them.  Dashboards, the Server-Timing header
+# and the tests rely on these names: add one only together with everything that reads it.
+LIBRARY_STEPS = ("nlp_pass1", "analyze", "recovery_pass2", "post_processing", "handling")
+
+# Inclusive sub-measures of a step, reported as "<step>.<detail>": time inside the NER model, in the context
+# scoring and in duplicate removal, summed over what runs inside that step.
+DETAIL_NAMES = ("ner_model", "context_enhance", "dedup")
+
 
 @dataclass
 class Event:
@@ -36,6 +45,7 @@ class Event:
     nlp_ms: float = 0.0
     recovery_ms: float = 0.0
     recovery_pass: bool = False
+    steps: dict[str, float] = field(default_factory=dict)  # as AnonymizeStats.steps
 
 
 EventHook = Callable[[Event], None]
