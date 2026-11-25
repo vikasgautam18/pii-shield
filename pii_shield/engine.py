@@ -20,10 +20,11 @@ from pathlib import Path
 from presidio_analyzer import AnalyzerEngine, RecognizerResult
 
 from pii_shield.context_config import apply_recognizer_contexts, load_recognizer_contexts
+from pii_shield import presidio_timing
 from pii_shield.context_enhancer import KeyValueContextEnhancer
 from pii_shield.errors import DetectionError, InvalidInputError
 from pii_shield.models import AnonymizeResult, AnonymizeStats, DetectedEntity, EntityConfig
-from pii_shield.observability import Event, EventHook, emit
+from pii_shield.observability import Event, EventHook, StepRecorder, current_recorder, emit
 from pii_shield.nlp_engine import create_nlp_engine, get_nlp_engine_name
 from pii_shield.operator_config import ENCRYPTION_BACKEND, _DEFAULTS
 from pii_shield.pipeline import (
@@ -71,6 +72,9 @@ from presidio_analyzer.predefined_recognizers import (
 )
 
 logger = logging.getLogger("pii-shield")
+
+# Times Presidio's duplicate removal as the "dedup" detail of anonymize(); idempotent.
+presidio_timing.install()
 
 _DEFAULT_DISABLED_RECOGNIZERS = (
     "InAadhaarRecognizer,InPanRecognizer,NhsRecognizer,UsBankRecognizer,SgFinRecognizer,"
@@ -303,7 +307,14 @@ class PiiShieldEngine:
         score_threshold: float | None = None,
         entity_type_include_list: set[str] | None = None,
     ) -> list[RecognizerResult]:
-        """Run Presidio analysis + full PII Shield post-processing pipeline."""
+        """Run Presidio analysis + full PII Shield post-processing pipeline.
+
+        The steps of ``pii_shield.observability.LIBRARY_STEPS`` that happen here are timed on the recorder of the
+        running ``anonymize()`` call, which is found through ``current_recorder()`` rather than an argument so
+        that engines and tests that call this method with the plain arguments keep working; ``detect()`` runs
+        without one and records nothing.
+        """
+        recorder = current_recorder()
         # Merge per-request allow_list with global allow_list
         merged_allow = list(self._global_allow_list)
         if allow_list:
@@ -315,14 +326,16 @@ class PiiShieldEngine:
         try:
             # Computed here rather than inside analyze() so the part-of-speech
             # tags can be reused below without a second NLP pass.
-            nlp_artifacts = self._analyzer.nlp_engine.process_text(text, language)
-            analyzer_results = self._analyzer.analyze(
-                text=text,
-                language=language,
-                score_threshold=threshold,
-                allow_list=merged_allow or None,
-                nlp_artifacts=nlp_artifacts,
-            )
+            with recorder.step("nlp_pass1"):
+                nlp_artifacts = self._analyzer.nlp_engine.process_text(text, language)
+            with recorder.step("analyze"):
+                analyzer_results = self._analyzer.analyze(
+                    text=text,
+                    language=language,
+                    score_threshold=threshold,
+                    allow_list=merged_allow or None,
+                    nlp_artifacts=nlp_artifacts,
+                )
         except Exception as exc:
             raise DetectionError(f"PII detection failed: {exc}") from exc
 
@@ -347,116 +360,118 @@ class PiiShieldEngine:
             ),
         )
         if normalized is not None:
-            try:
-                recovered = self._analyzer.analyze(
-                    text=normalized,
-                    language=language,
-                    entities=sorted(_NER_ENTITY_TYPES),
-                    score_threshold=threshold,
-                    allow_list=merged_allow or None,
-                )
-            except Exception:
-                logger.warning(
-                    "Case-recovery pass failed; using primary results only",
-                    exc_info=True,
-                )
-                recovered = []
-            if recovered:
-                analyzer_results = merge_recovered_results(
-                    analyzer_results, recovered, text, ordinary
-                )
+            with recorder.step("recovery_pass2"):
+                try:
+                    recovered = self._analyzer.analyze(
+                        text=normalized,
+                        language=language,
+                        entities=sorted(_NER_ENTITY_TYPES),
+                        score_threshold=threshold,
+                        allow_list=merged_allow or None,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Case-recovery pass failed; using primary results only",
+                        exc_info=True,
+                    )
+                    recovered = []
+                if recovered:
+                    analyzer_results = merge_recovered_results(
+                        analyzer_results, recovered, text, ordinary
+                    )
 
-        # Resolve honorific / professional titles ("CA Abhay", "Er. Ram"), which
-        # NER labels ORGANIZATION or splits into a title-only span.  This runs
-        # before the allow-list filters so that an app allow-listing
-        # ORGANIZATION does not end up exempting a person's name.
-        analyzer_results = normalize_person_titles(analyzer_results, text)
+        with recorder.step("post_processing"):
+            # Resolve honorific / professional titles ("CA Abhay", "Er. Ram"), which
+            # NER labels ORGANIZATION or splits into a title-only span.  This runs
+            # before the allow-list filters so that an app allow-listing
+            # ORGANIZATION does not end up exempting a person's name.
+            analyzer_results = normalize_person_titles(analyzer_results, text)
 
-        # NER reads a line break as plain whitespace, so a name ending one line
-        # can swallow the first word of the next.  Keep every NER span on its
-        # own line before any later step reasons about the words inside it.
-        # Splitting after the title step keeps a surname that doubles as a
-        # title ("Sunita\nKumari") from being dropped as a stray title.
-        analyzer_results = split_at_line_breaks(analyzer_results, text, merged_allow)
+            # NER reads a line break as plain whitespace, so a name ending one line
+            # can swallow the first word of the next.  Keep every NER span on its
+            # own line before any later step reasons about the words inside it.
+            # Splitting after the title step keeps a surname that doubles as a
+            # title ("Sunita\nKumari") from being dropped as a stray title.
+            analyzer_results = split_at_line_breaks(analyzer_results, text, merged_allow)
 
-        # A context-only ID whose keyword sits on another line yields to a
-        # recognizer with its own keyword on the number's line.
-        analyzer_results = prefer_line_context(
-            analyzer_results, text, self._context_patterns
-        )
+            # A context-only ID whose keyword sits on another line yields to a
+            # recognizer with its own keyword on the number's line.
+            analyzer_results = prefer_line_context(
+                analyzer_results, text, self._context_patterns
+            )
 
-        # Filter entity types in allow-list (and suppress overlapping entities)
-        if entity_type_allow_list:
-            allowed_spans: list[tuple[int, int]] = []
-            kept: list[RecognizerResult] = []
-            for r in analyzer_results:
-                if r.entity_type in entity_type_allow_list:
-                    allowed_spans.append((r.start, r.end))
+            # Filter entity types in allow-list (and suppress overlapping entities)
+            if entity_type_allow_list:
+                allowed_spans: list[tuple[int, int]] = []
+                kept: list[RecognizerResult] = []
+                for r in analyzer_results:
+                    if r.entity_type in entity_type_allow_list:
+                        allowed_spans.append((r.start, r.end))
+                    else:
+                        kept.append(r)
+                # Remove entities that overlap with allowed spans (e.g., URL inside
+                # EMAIL); NER spans keep their parts outside them.
+                if allowed_spans:
+                    analyzer_results = remove_allowed_overlaps(kept, text, allowed_spans)
                 else:
-                    kept.append(r)
-            # Remove entities that overlap with allowed spans (e.g., URL inside
-            # EMAIL); NER spans keep their parts outside them.
-            if allowed_spans:
-                analyzer_results = remove_allowed_overlaps(kept, text, allowed_spans)
-            else:
-                analyzer_results = kept
+                    analyzer_results = kept
 
-        # Filter entity-keyword combinations (and suppress overlapping entities)
-        if entity_keyword_allow_list:
-            allowed_spans = []
-            kept = []
-            for r in analyzer_results:
-                matched_text = text[r.start:r.end]
-                if (r.entity_type in entity_keyword_allow_list
-                        and matched_text in entity_keyword_allow_list[r.entity_type]):
-                    allowed_spans.append((r.start, r.end))
+            # Filter entity-keyword combinations (and suppress overlapping entities)
+            if entity_keyword_allow_list:
+                allowed_spans = []
+                kept = []
+                for r in analyzer_results:
+                    matched_text = text[r.start:r.end]
+                    if (r.entity_type in entity_keyword_allow_list
+                            and matched_text in entity_keyword_allow_list[r.entity_type]):
+                        allowed_spans.append((r.start, r.end))
+                    else:
+                        kept.append(r)
+                if allowed_spans:
+                    analyzer_results = remove_allowed_overlaps(kept, text, allowed_spans)
                 else:
-                    kept.append(r)
-            if allowed_spans:
-                analyzer_results = remove_allowed_overlaps(kept, text, allowed_spans)
-            else:
-                analyzer_results = kept
+                    analyzer_results = kept
 
-        # Filter SpaCy NER DATE_TIME false positives
-        analyzer_results = [
-            r for r in analyzer_results
-            if r.entity_type != "DATE_TIME"
-            or r.recognition_metadata.get("recognizer_name") != "SpacyRecognizer"
-            or is_valid_datetime(text[r.start : r.end])
-        ]
-
-        # Reclassify PERSON → LOCATION when preceded by location context
-        analyzer_results = reclassify_person_as_location(analyzer_results, text)
-
-        # Extend PERSON spans to adjacent capitalized name tokens NER may have missed
-        analyzer_results = merge_adjacent_person_tokens(analyzer_results, text)
-
-        # Dotted initials end the entity in cased NER ("R.K." from "R.K.
-        # Sharma"), so pull the following surname back into the span.
-        analyzer_results = extend_person_over_initials(analyzer_results, text)
-
-        # Drop sentence-initial PERSON false positives (e.g. "Email me ...")
-        analyzer_results = filter_person_false_positives(analyzer_results, text)
-
-        # Merge adjacent LOCATION / IN_PIN_CODE entities into ADDRESS
-        analyzer_results = merge_address_entities(analyzer_results, text)
-
-        # Drop NRP that describes a thing rather than a person ("South Indian
-        # branches").  Runs after address merging so a building name already
-        # promoted to ADDRESS is not affected.
-        analyzer_results = filter_attributive_nrp(analyzer_results, text)
-
-        results = remove_overlapping(analyzer_results)
-
-        # A bare 10-digit number matches both the Indian mobile and bank
-        # account patterns; resolve it from the nearest surrounding cue.
-        results = reclassify_phone_as_bank_account(results, text)
-
-        # Positive inclusion filter: keep ONLY the requested entity types.
-        if entity_type_include_list is not None:
-            results = [
-                r for r in results if r.entity_type in entity_type_include_list
+            # Filter SpaCy NER DATE_TIME false positives
+            analyzer_results = [
+                r for r in analyzer_results
+                if r.entity_type != "DATE_TIME"
+                or r.recognition_metadata.get("recognizer_name") != "SpacyRecognizer"
+                or is_valid_datetime(text[r.start : r.end])
             ]
+
+            # Reclassify PERSON → LOCATION when preceded by location context
+            analyzer_results = reclassify_person_as_location(analyzer_results, text)
+
+            # Extend PERSON spans to adjacent capitalized name tokens NER may have missed
+            analyzer_results = merge_adjacent_person_tokens(analyzer_results, text)
+
+            # Dotted initials end the entity in cased NER ("R.K." from "R.K.
+            # Sharma"), so pull the following surname back into the span.
+            analyzer_results = extend_person_over_initials(analyzer_results, text)
+
+            # Drop sentence-initial PERSON false positives (e.g. "Email me ...")
+            analyzer_results = filter_person_false_positives(analyzer_results, text)
+
+            # Merge adjacent LOCATION / IN_PIN_CODE entities into ADDRESS
+            analyzer_results = merge_address_entities(analyzer_results, text)
+
+            # Drop NRP that describes a thing rather than a person ("South Indian
+            # branches").  Runs after address merging so a building name already
+            # promoted to ADDRESS is not affected.
+            analyzer_results = filter_attributive_nrp(analyzer_results, text)
+
+            results = remove_overlapping(analyzer_results)
+
+            # A bare 10-digit number matches both the Indian mobile and bank
+            # account patterns; resolve it from the nearest surrounding cue.
+            results = reclassify_phone_as_bank_account(results, text)
+
+            # Positive inclusion filter: keep ONLY the requested entity types.
+            if entity_type_include_list is not None:
+                results = [
+                    r for r in results if r.entity_type in entity_type_include_list
+                ]
         return results
 
     @property
@@ -611,7 +626,11 @@ class PiiShieldEngine:
         -------
         AnonymizeResult
             Contains ``anonymized_text``, ``entity_mapping``,
-            ``hash_mapping``, ``encrypt_mapping``, and ``entities``.
+            ``hash_mapping``, ``encrypt_mapping``, ``entities`` and ``stats``.
+            ``stats`` says where the time went: ``steps`` (milliseconds per
+            high-level step, see ``pii_shield.observability.LIBRARY_STEPS``),
+            ``details`` (``"<step>.<detail>"`` sub-measures), ``timeline`` and
+            ``ner_windows``.
         """
         if not isinstance(text, str):
             raise InvalidInputError(
@@ -623,37 +642,39 @@ class PiiShieldEngine:
         strategies = dict(_DEFAULTS)
         strategies.update(config.strategies)
 
-        _t0 = time.perf_counter()
-        non_overlapping = self._run_pipeline(
-            text, language, allow_list, entity_type_allow_list,
-            entity_keyword_allow_list, score_threshold=score_threshold,
-            entity_type_include_list=entity_type_include_list,
-        )
-        _detect_ms = (time.perf_counter() - _t0) * 1000.0
+        recorder = StepRecorder()
+        _t0 = recorder.started
+        with recorder:  # the hooks inside Presidio, the NER model and the context scorer find it from here
+            non_overlapping = self._run_pipeline(
+                text, language, allow_list, entity_type_allow_list,
+                entity_keyword_allow_list, score_threshold=score_threshold,
+                entity_type_include_list=entity_type_include_list,
+            )
+            _detect_ms = (time.perf_counter() - _t0) * 1000.0
 
-        # Sort by start position descending so replacements don't shift indices
-        _t1 = time.perf_counter()
-        sorted_results = sorted(
-            non_overlapping, key=lambda r: r.start, reverse=True
-        )
+            with recorder.step("handling") as handling:
+                # Sort by start position descending so replacements don't shift indices
+                sorted_results = sorted(
+                    non_overlapping, key=lambda r: r.start, reverse=True
+                )
 
-        # Fresh per-call mapping state
-        type_counters: dict[str, int] = {}
-        value_to_placeholder: dict[tuple[str, str], str] = {}
-        entity_mapping: dict[str, str] = {}
-        hash_mapping: dict[str, str] = {}
-        encrypt_mapping: dict[str, str] = {}
+                # Fresh per-call mapping state
+                type_counters: dict[str, int] = {}
+                value_to_placeholder: dict[tuple[str, str], str] = {}
+                entity_mapping: dict[str, str] = {}
+                hash_mapping: dict[str, str] = {}
+                encrypt_mapping: dict[str, str] = {}
 
-        replacements = self._assign_replacements(
-            text, sorted_results, strategies,
-            type_counters=type_counters,
-            value_to_placeholder=value_to_placeholder,
-            entity_mapping=entity_mapping,
-            hash_mapping=hash_mapping,
-            encrypt_mapping=encrypt_mapping,
-        )
-        result_text = self._build_text(text, replacements)
-        _anonymize_ms = (time.perf_counter() - _t1) * 1000.0
+                replacements = self._assign_replacements(
+                    text, sorted_results, strategies,
+                    type_counters=type_counters,
+                    value_to_placeholder=value_to_placeholder,
+                    entity_mapping=entity_mapping,
+                    hash_mapping=hash_mapping,
+                    encrypt_mapping=encrypt_mapping,
+                )
+                result_text = self._build_text(text, replacements)
+            _anonymize_ms = handling.ms
 
         entities = sorted(
             [
@@ -670,12 +691,20 @@ class PiiShieldEngine:
         )
 
         entity_counts = dict(Counter(e.entity_type for e in entities))
+        steps = dict(recorder.steps)
         stats = AnonymizeStats(
             detect_ms=_detect_ms,
             anonymize_ms=_anonymize_ms,
             total_ms=(time.perf_counter() - _t0) * 1000.0,
             entity_count=len(entities),
             entity_counts=entity_counts,
+            nlp_ms=steps.get("nlp_pass1", 0.0),
+            recovery_ms=steps.get("recovery_pass2", 0.0),
+            recovery_pass="recovery_pass2" in steps,
+            steps=steps,
+            details=recorder.ordered_details(),
+            timeline=list(recorder.timeline),
+            ner_windows=recorder.ner_windows,
         )
 
         logger.info(
@@ -692,6 +721,10 @@ class PiiShieldEngine:
                 duration_ms=stats.total_ms,
                 detect_ms=_detect_ms,
                 anonymize_ms=_anonymize_ms,
+                nlp_ms=stats.nlp_ms,
+                recovery_ms=stats.recovery_ms,
+                recovery_pass=stats.recovery_pass,
+                steps=dict(stats.steps),
             ),
         )
 

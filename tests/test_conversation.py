@@ -81,6 +81,16 @@ def test_stats_populated(conv):
     assert r.stats.total_ms >= 0.0
 
 
+def test_the_handling_step_is_timed_for_an_engine_that_records_no_steps(conv):
+    events = []
+    stats = conv.anonymize("Contact John Smith at john@x.com", on_event=events.append).stats
+    assert list(stats.steps) == ["handling"] and stats.steps["handling"] == stats.anonymize_ms
+    assert [name for name, _, _ in stats.timeline] == ["handling"]
+    assert stats.details == {} and stats.ner_windows == 0
+    assert (stats.nlp_ms, stats.recovery_ms, stats.recovery_pass) == (0.0, 0.0, False)
+    assert events[0].steps == stats.steps
+
+
 def test_on_event_callback(conv):
     events = []
     conv.anonymize("John Smith here", on_event=events.append)

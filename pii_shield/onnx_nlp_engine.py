@@ -16,6 +16,7 @@ Usage::
 
 import logging
 import os
+import time
 
 import onnxruntime as ort
 import spacy
@@ -25,6 +26,8 @@ from spacy_huggingface_pipelines.token_classification import HFTokenPipe
 from transformers import AutoTokenizer, pipeline
 
 from presidio_analyzer.nlp_engine import TransformersNlpEngine
+
+from pii_shield.observability import current_recorder
 
 logger = logging.getLogger("pii-shield")
 
@@ -47,6 +50,28 @@ def _is_onnx_model(model_name_or_path: str) -> bool:
     if os.path.isdir(model_name_or_path):
         return any(f.endswith(".onnx") for f in os.listdir(model_name_or_path))
     return "-onnx" in model_name_or_path.lower()
+
+
+def _time_forward(model) -> None:
+    """Report every forward pass of *model* to the recorder of the running ``anonymize()`` call.
+
+    One pass is one window of up to 512 tokens, so this yields the ``ner_model`` time and the window count of
+    the step that is running.  The recorder is found through a ``ContextVar``, so detection threads that share
+    the model each report to their own call; outside a call it is the no-op recorder and the cost is two clock
+    reads.
+    """
+    forward = model.forward
+
+    def timed(*args, **kwargs):
+        recorder = current_recorder()
+        started = time.perf_counter()
+        try:
+            return forward(*args, **kwargs)
+        finally:
+            recorder.add_detail("ner_model", (time.perf_counter() - started) * 1000.0)
+            recorder.add_windows()
+
+    model.forward = timed
 
 
 def _build_session_options() -> ort.SessionOptions:
@@ -109,6 +134,7 @@ class OnnxTransformersNlpEngine(TransformersNlpEngine):
                 )
                 tokenizer = AutoTokenizer.from_pretrained(transformers_model)
 
+            _time_forward(ort_model)
             hf_pipe = pipeline(
                 task="token-classification",
                 model=ort_model,

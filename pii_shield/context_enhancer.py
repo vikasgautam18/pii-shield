@@ -9,9 +9,12 @@ too low to be kept without its context word, so it leaked.
 """
 
 import re
+import time
 from bisect import bisect_right
 
 from presidio_analyzer.context_aware_enhancers import LemmaContextAwareEnhancer
+
+from pii_shield.observability import current_recorder
 
 # Characters a key may hold: "aadhaar", "aadhaar_no", "customer.pan", "acct-no".
 _KEY_CHARS = frozenset(
@@ -63,6 +66,14 @@ class KeyValueContextEnhancer(LemmaContextAwareEnhancer):
     each recognizer's own context list and boost the score by the same amount
     as any other context word.
     """
+
+    def enhance_using_context(self, text, raw_results, nlp_artifacts, recognizers, context=None):
+        """Presidio's context scoring, timed as the ``context_enhance`` detail of the ``anonymize()`` call in progress."""
+        started = time.perf_counter()
+        try:
+            return super().enhance_using_context(text, raw_results, nlp_artifacts, recognizers, context)
+        finally:
+            current_recorder().add_detail("context_enhance", (time.perf_counter() - started) * 1000.0)
 
     def _extract_surrounding_words(self, nlp_artifacts, word: str, start: int) -> list[str]:
         words = super()._extract_surrounding_words(nlp_artifacts, word, start)
