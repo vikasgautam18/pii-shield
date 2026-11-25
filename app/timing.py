@@ -29,6 +29,7 @@ from fastapi import Response
 from opentelemetry import metrics, trace
 from opentelemetry.trace import Span
 
+from app.telemetry import BOUNDS_MS
 from pii_shield.models import AnonymizeStats
 from pii_shield.observability import DETAIL_NAMES, LIBRARY_STEPS
 
@@ -232,7 +233,7 @@ def deanonymize_log_fields(report: StepReport | None) -> str:
 
 
 def create_step_histogram(meter: metrics.Meter) -> metrics.Histogram:
-    """The ``pii.step.duration`` instrument (milliseconds)."""
+    """The ``pii.step.duration`` instrument; ``BOUNDS_MS`` keeps a step of tens of seconds out of the last bucket."""
     return meter.create_histogram(
         "pii.step.duration",
         unit="ms",
@@ -240,6 +241,7 @@ def create_step_histogram(meter: metrics.Meter) -> metrics.Histogram:
             "Time one request spent in each step of /anonymize_unique (a name with a dot is a detail inside a step, "
             "not to be added to the steps)"
         ),
+        explicit_bucket_boundaries_advisory=BOUNDS_MS,
     )
 
 

@@ -7,14 +7,23 @@ process-wide tracer provider, metrics from an ``InMemoryMetricReader`` on a priv
 can be set only once per process).
 """
 
+import json
 import logging
 import re
+import subprocess
+import sys
+import textwrap
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from opentelemetry import trace
+from opentelemetry.instrumentation import propagators
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.propagators import TraceResponsePropagator, get_global_response_propagator
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace import TracerProvider
@@ -25,11 +34,14 @@ from opentelemetry.trace import SpanKind
 
 from app import audit_store, main, timing
 from app.auth import JwksCache, TokenValidator, configure_auth
+from app.telemetry import BOUNDS_MS, build_meter_provider
 from app.timing import PoolTiming, RequestClock, Step, StepReport
 from pii_shield.models import AnonymizeResult, AnonymizeStats, DetectedEntity
 from pii_shield.nlp_engine import get_nlp_engine_name
 from pii_shield.observability import DETAIL_NAMES, LIBRARY_STEPS
 from tests._auth_helpers import FakeIdp
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 ALLOWED_SPANS = set(timing.ANONYMIZE_STEPS) | set(timing.DEANONYMIZE_STEPS)
 
@@ -51,6 +63,7 @@ LIB_TIMELINE = [
 ]
 
 ENTRY = re.compile(r"^(?P<name>[a-z_0-9]+(?:\.[a-z_0-9]+)?);dur=(?P<ms>\d+\.\d{2})$")
+TRACERESPONSE = re.compile(r"^00-(?P<trace>[0-9a-f]{32})-(?P<span>[0-9a-f]{16})-0[01]$")
 
 
 def parse_server_timing(header: str) -> list[tuple[str, float]]:
@@ -107,7 +120,7 @@ def spans(_exporter):
 def step_metrics(monkeypatch):
     """The ``pii.step.duration`` histogram of the app, redirected to a reader the test can look into."""
     reader = InMemoryMetricReader()
-    provider = MeterProvider(metric_readers=[reader], shutdown_on_exit=False)
+    provider = build_meter_provider([reader], shutdown_on_exit=False)
     monkeypatch.setattr(timing, "step_duration", timing.create_step_histogram(provider.get_meter("test")))
     return reader
 
@@ -232,6 +245,7 @@ class TestSwitches:
         monkeypatch.setenv("SERVER_TIMING", value)
         response = anonymize(client)
         assert "server-timing" not in response.headers
+        assert TRACERESPONSE.match(response.headers["traceresponse"])  # a different header, a different switch
 
     @pytest.mark.parametrize("value", ["true", "1", "yes", "on", ""])
     def test_anything_else_leaves_it_on(self, client, fake_library, monkeypatch, value):
@@ -461,6 +475,11 @@ class TestHistogram:
             assert points[key].sum == pytest.approx(expected)
         assert all(("." in key) == (key in LIB_DETAILS) for key in points)  # only details have a dot
 
+    def test_the_bounds_reach_two_minutes(self, client, fake_library, step_metrics):
+        anonymize(client)
+        for point in histogram_points(step_metrics, "pii.step.duration"):
+            assert tuple(point.explicit_bounds) == BOUNDS_MS and 120000 in point.explicit_bounds
+
     def test_the_size_label_follows_the_text(self, client, fake_library, step_metrics):
         anonymize(client, "x" * 600)
         sizes = {p.attributes["size"] for p in histogram_points(step_metrics, "pii.step.duration")}
@@ -474,12 +493,148 @@ class TestHistogram:
         assert points["other"].sum == pytest.approx(entries["other"], abs=0.06)
 
 
+class TestBucketBounds:
+    def test_a_25_second_request_lands_in_a_real_bucket(self):
+        """FastAPI's ``http.server.duration`` stopped at 10,000 ms: everything above was the overflow bucket."""
+        points = []
+        for make_provider in (MeterProvider, build_meter_provider):  # the SDK's own, then ours
+            reader = InMemoryMetricReader()
+            meter = make_provider([reader], shutdown_on_exit=False).get_meter("opentelemetry.instrumentation.fastapi")
+            meter.create_histogram("http.server.duration", unit="ms").record(25_000)
+            (point,) = histogram_points(reader, "http.server.duration")
+            points.append(point)
+        default, ours = points
+        assert default.bucket_counts[-1] == 1  # the control: the default boundaries put it in the overflow bucket
+        assert tuple(ours.explicit_bounds) == BOUNDS_MS
+        index = list(ours.bucket_counts).index(1)
+        assert index < len(BOUNDS_MS) and ours.explicit_bounds[index - 1] < 25_000 <= ours.explicit_bounds[index]
+
+    def test_the_stable_semantic_convention_duration_is_covered_in_seconds(self):
+        reader = InMemoryMetricReader()
+        provider = build_meter_provider([reader], shutdown_on_exit=False)
+        provider.get_meter("opentelemetry.instrumentation.asgi").create_histogram(
+            "http.server.request.duration", unit="s"
+        ).record(25.0)
+        (point,) = histogram_points(reader, "http.server.request.duration")
+        assert tuple(point.explicit_bounds) == tuple(bound / 1000 for bound in BOUNDS_MS)
+        assert list(point.bucket_counts).index(1) < len(BOUNDS_MS)
+
+    def test_an_instrument_of_ours_keeps_the_view_out_of_its_way(self):
+        reader = InMemoryMetricReader()
+        provider = build_meter_provider([reader], shutdown_on_exit=False)
+        provider.get_meter("m").create_histogram("pii.other", unit="ms").record(5)
+        (point,) = histogram_points(reader, "pii.other")
+        assert point.explicit_bounds[0] == 0.0  # the SDK's own defaults: no view matched
+
+    def test_every_duration_histogram_uses_the_bounds_when_bound_to_the_real_provider(self):
+        """What production does: instruments are created at import, the provider is set later by init_telemetry()."""
+        script = textwrap.dedent(
+            """
+            import itertools, json
+            from unittest import mock
+
+            import fakeredis, fakeredis.aioredis
+            from opentelemetry import metrics
+            from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+            import pii_shield.engine as engine_module
+            from pii_shield.models import AnonymizeResult, AnonymizeStats
+
+
+            class StubEngine:
+                _analyzer = None
+                supported_entities = []
+
+                def anonymize(self, **kwargs):
+                    stats = AnonymizeStats(steps={"nlp_pass1": 1.0}, timeline=[("nlp_pass1", 0.0, 1.0)])
+                    return AnonymizeResult("x", stats=stats)
+
+
+            engine_module.PiiShieldEngine = StubEngine
+            import app.main as main
+            import app.state_store as state_store
+            import app.telemetry as telemetry
+            import app.timing as timing
+
+            server = fakeredis.FakeServer()
+            factory = lambda: fakeredis.aioredis.FakeRedis(server=server, decode_responses=True)
+            main.get_async_redis_client = state_store.get_async_redis_client = factory
+
+            reader = InMemoryMetricReader()
+            metrics.set_meter_provider(telemetry.build_meter_provider([reader]))
+
+            from fastapi.testclient import TestClient
+
+            client = TestClient(main.app)
+            assert client.post("/anonymize_unique", json={"text": "hello"}).status_code == 200
+            timing.step_duration.record(25000, {"step": "nlp_pass1", "size": "xlarge"})
+            timings = itertools.chain([0.0], itertools.repeat(25.0))  # the request seems to take 25 s
+            with mock.patch("opentelemetry.instrumentation.asgi.default_timer", side_effect=lambda: next(timings)):
+                assert client.get("/health").status_code == 200
+
+            found = {}
+            for rm in reader.get_metrics_data().resource_metrics:
+                for sm in rm.scope_metrics:
+                    for metric in sm.metrics:
+                        if metric.name in ("pii.step.duration", "http.server.duration"):
+                            found[metric.name] = [
+                                {"bounds": list(p.explicit_bounds), "counts": list(p.bucket_counts), "sum": p.sum}
+                                for p in metric.data.data_points
+                            ]
+            print("RESULT " + json.dumps(found))
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script], cwd=REPO_ROOT, capture_output=True, text=True, timeout=180
+        )
+        assert result.returncode == 0, result.stdout[-1500:] + result.stderr[-1500:]
+        found = json.loads(next(line for line in result.stdout.splitlines() if line.startswith("RESULT "))[7:])
+        assert set(found) == {"pii.step.duration", "http.server.duration"}
+        for name, points in found.items():
+            assert points, name
+            for point in points:
+                assert point["bounds"] == list(BOUNDS_MS), name
+        for name in ("pii.step.duration", "http.server.duration"):
+            (long_point,) = [p for p in found[name] if p["sum"] >= 25000]
+            assert long_point["counts"][-1] == 0, f"{name}: the 25 s observation is in the overflow bucket"
+            assert long_point["counts"][BOUNDS_MS.index(30000)] == 1, name
+
+
+class TestTraceResponse:
+    def test_it_names_the_server_span(self, client, fake_library, spans):
+        response = anonymize(client)
+        match = TRACERESPONSE.match(response.headers["traceresponse"])
+        assert match
+        server = server_span(spans)
+        assert int(match["trace"], 16) == server.context.trace_id
+        assert int(match["span"], 16) == server.context.span_id
+
+    def test_it_is_on_every_response_including_errors_and_unknown_routes(self, client):
+        responses = [client.get("/health"), client.get("/no-such-route"), client.post("/anonymize_unique", json={})]
+        assert [r.status_code for r in responses] == [200, 404, 422]
+        for response in responses:
+            assert TRACERESPONSE.match(response.headers["traceresponse"]), response.status_code
+
+    def test_the_propagator_is_registered_without_starting_anything(self):
+        assert isinstance(get_global_response_propagator(), TraceResponsePropagator)
+
+    def test_it_does_not_matter_whether_it_is_registered_before_or_after_instrument_app(self, monkeypatch):
+        """The ASGI middleware looks the propagator up on every response, not when it is built."""
+        monkeypatch.setattr(propagators, "_RESPONSE_PROPAGATOR", None)
+        tiny = FastAPI()
+        tiny.get("/x")(lambda: {})
+        FastAPIInstrumentor.instrument_app(tiny, exclude_spans=["receive", "send"])
+        assert "traceresponse" not in TestClient(tiny).get("/x").headers
+        propagators.set_global_response_propagator(TraceResponsePropagator())
+        assert TRACERESPONSE.match(TestClient(tiny).get("/x").headers["traceresponse"])
+
+
 class TestErrorPathsAreUnaffected:
     def test_an_unknown_application_is_still_a_404_without_timing(self, client, fake_library):
         response = client.post("/anonymize_unique", json={"text": "x"}, headers={"X-App-Id": "missing"})
         assert response.status_code == 404
         assert response.json() == {"detail": "Application 'missing' not found."}
-        assert "server-timing" not in response.headers
+        assert "server-timing" not in response.headers and "traceresponse" in response.headers
 
     def test_an_unknown_session_is_still_a_404_without_timing(self, client):
         response = client.post("/deanonymize", json={"id": "nope", "text": "x"})

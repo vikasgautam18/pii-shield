@@ -1,6 +1,7 @@
 """Validate the structure of provisioned Grafana dashboard JSON files."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -71,3 +72,17 @@ class TestDashboardStructure:
                 assert gp[key] >= 0, (
                     f"Panel '{panel['title']}' has negative gridPos.{key}: {gp[key]}"
                 )
+
+    def test_prometheus_queries_aggregate_across_workers(self, dashboard):
+        """Each worker process exports its metrics under its own service.instance.id (app/telemetry.py), so a
+        query that selects a metric without aggregating returns one series per worker, and a Stat panel then
+        shows the same number once for each of them."""
+        raw = []
+        for panel in dashboard["panels"]:
+            for target in panel.get("targets", []):
+                ds = target.get("datasource", {})
+                if not (isinstance(ds, dict) and ds.get("uid") == "prometheus" and "expr" in target):
+                    continue
+                if not re.match(r"\s*(sum|max|min|avg|count|topk|bottomk|histogram_quantile)\b", target["expr"]):
+                    raw.append((panel["title"], target["expr"]))
+        assert not raw, f"Prometheus queries that do not aggregate across workers: {raw}"
