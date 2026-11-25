@@ -197,3 +197,48 @@ def test_the_callers_context_reaches_the_pool_thread():
         assert loop.run_until_complete(call()) == "request-123"
     finally:
         loop.close()
+
+
+def _run(coroutine):
+    loop = asyncio.new_event_loop()  # not asyncio.run(): that leaves later tests without a current loop
+    try:
+        return loop.run_until_complete(coroutine)
+    finally:
+        loop.close()
+
+
+class TestPoolTiming:
+    """``_run_in_nlp_pool_traced`` also says when the job started on the wall clock, the origin of the step spans."""
+
+    def test_the_wall_clock_start_lies_inside_the_call(self):
+        async def call():
+            before = time.time_ns()
+            result, pool = await main._run_in_nlp_pool_traced(10, lambda: "x")
+            return before, time.time_ns(), result, pool
+
+        before, after, result, pool = _run(call())
+        assert result == "x"
+        assert before <= pool.started_ns <= after
+        assert 0 <= pool.queue_ms < 100
+
+    def test_a_job_that_waited_starts_late_by_about_what_it_waited(self, monkeypatch):
+        monkeypatch.setattr(main, "_nlp_pool", DetectionPool(1))
+
+        async def scenario():
+            release = threading.Event()
+            running = asyncio.create_task(main._run_in_nlp_pool_traced(10, release.wait, 5))
+            await asyncio.sleep(0.05)
+            submitted_ns = time.time_ns()
+            waiting = asyncio.create_task(main._run_in_nlp_pool_traced(10, lambda: "done"))
+            await asyncio.sleep(0.25)
+            release.set()
+            (_, first), (value, second) = await asyncio.gather(running, waiting)
+            return submitted_ns, first, second
+
+        submitted_ns, first, second = _run(scenario())
+        assert first.queue_ms < 100 and second.queue_ms >= 200
+        assert (second.started_ns - submitted_ns) / 1e6 == pytest.approx(second.queue_ms, abs=50)
+
+    def test_the_timed_helper_keeps_returning_the_result_and_the_wait(self):
+        result, queue_ms = _run(main._run_in_nlp_pool_timed(10, lambda: "x"))
+        assert result == "x" and isinstance(queue_ms, float) and queue_ms >= 0
