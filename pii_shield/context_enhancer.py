@@ -10,6 +10,7 @@ too low to be kept without its context word, so it leaked.
 
 import copy
 import re
+import time
 from bisect import bisect_right
 
 from presidio_analyzer import RecognizerResult
@@ -17,6 +18,7 @@ from presidio_analyzer.context_aware_enhancers import LemmaContextAwareEnhancer
 from presidio_analyzer.context_aware_enhancers.context_aware_enhancer import ContextAwareEnhancer
 
 from pii_shield import fast_analysis
+from pii_shield.observability import current_recorder
 
 # Characters a key may hold: "aadhaar", "aadhaar_no", "customer.pan", "acct-no".
 _KEY_CHARS = frozenset(
@@ -76,6 +78,14 @@ class KeyValueContextEnhancer(LemmaContextAwareEnhancer):
     """
 
     def enhance_using_context(self, text, raw_results, nlp_artifacts, recognizers, context=None):
+        started = time.perf_counter()
+        try:
+            return self._enhance(text, raw_results, nlp_artifacts, recognizers, context)
+        finally:
+            current_recorder().add_detail("context_enhance", (time.perf_counter() - started) * 1000.0)
+
+    def _enhance(self, text, raw_results, nlp_artifacts, recognizers, context):
+        """``enhance_using_context`` itself, so that both of its paths are timed by one wrapper."""
         if not fast_analysis.enabled():
             return super().enhance_using_context(text, raw_results, nlp_artifacts, recognizers, context)
         results = [_copy_result(r) for r in raw_results]

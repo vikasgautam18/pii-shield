@@ -16,6 +16,7 @@ import pytest
 pytest.importorskip("optimum.onnxruntime")
 
 from pii_shield import onnx_nlp_engine  # noqa: E402
+from pii_shield.observability import StepRecorder  # noqa: E402
 from pii_shield.onnx_nlp_engine import OnnxTransformersNlpEngine, _onnx_file  # noqa: E402
 
 
@@ -116,6 +117,16 @@ def test_a_real_fork_rebuilds_in_the_child_only(recorder):
     _, status = os.waitpid(pid, 0)
     assert os.waitstatus_to_exitcode(status) == 0
     assert recorder.calls == [] and pipe.model is inherited, "the parent keeps its own session"
+
+
+def test_the_model_rebuilt_after_a_fork_is_timed_too(recorder):
+    engine, pipe, _ = _engine(os.getpid() + 1)
+    engine._ensure_own_session()
+    steps = StepRecorder()
+    with steps, steps.step("nlp_pass1"):
+        pipe.model.forward()
+        pipe.model.forward()
+    assert steps.ner_windows == 2 and steps.details["nlp_pass1.ner_model"] >= 0
 
 
 def test_the_model_file_is_found_under_either_optimum_attribute():

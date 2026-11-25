@@ -29,7 +29,7 @@ from collections import Counter
 
 from pii_shield.engine import PiiShieldEngine
 from pii_shield.models import AnonymizeResult, AnonymizeStats, DetectedEntity
-from pii_shield.observability import Event, EventHook, emit
+from pii_shield.observability import Event, EventHook, StepRecorder, emit
 from pii_shield.operator_config import _DEFAULTS
 from pii_shield.policy import AnonymizationPolicy
 from pii_shield.session_store import (
@@ -96,7 +96,8 @@ class ConversationAnonymizer:
         accumulated** conversation mappings (a superset each turn), so the
         caller can de-anonymize this turn's downstream output immediately.
         """
-        t0 = time.perf_counter()
+        recorder = StepRecorder()
+        t0 = recorder.started
         state = self._store.load(self._conversation_id) or ConversationState()
 
         # Strategy lookup: engine defaults overlaid with the policy.
@@ -109,33 +110,36 @@ class ConversationAnonymizer:
         if state.entity_mapping:
             allow_list.extend(state.entity_mapping.keys())
 
-        non_overlapping = self._engine._run_pipeline(
-            text,
-            self._policy.language,
-            allow_list or None,
-            self._policy.entity_type_allow_list or None,
-            self._policy.entity_keyword_allow_list or None,
-            score_threshold=self._policy.score_threshold,
-            entity_type_include_list=self._policy.entity_type_include_list or None,
-        )
+        # The engine finds the recorder through ``current_recorder()``, so an engine that knows nothing of it
+        # (a test double) is called as before and its steps are simply missing.
+        with recorder:
+            non_overlapping = self._engine._run_pipeline(
+                text,
+                self._policy.language,
+                allow_list or None,
+                self._policy.entity_type_allow_list or None,
+                self._policy.entity_keyword_allow_list or None,
+                score_threshold=self._policy.score_threshold,
+                entity_type_include_list=self._policy.entity_type_include_list or None,
+            )
         detect_ms = (time.perf_counter() - t0) * 1000.0
         last_detection = getattr(self._engine, "_last_detection", None)
         nlp_ms, recovery_ms, recovery_pass = last_detection() if last_detection else (0.0, 0.0, False)
 
-        t1 = time.perf_counter()
-        sorted_results = sorted(non_overlapping, key=lambda r: r.start, reverse=True)
-        replacements = self._engine._assign_replacements(
-            text,
-            sorted_results,
-            strategies,
-            type_counters=state.type_counters,
-            value_to_placeholder=state.value_to_placeholder,
-            entity_mapping=state.entity_mapping,
-            hash_mapping=state.hash_mapping,
-            encrypt_mapping=state.encrypt_mapping,
-        )
-        result_text = self._engine._build_text(text, replacements)
-        anonymize_ms = (time.perf_counter() - t1) * 1000.0
+        with recorder.step("handling") as handling:
+            sorted_results = sorted(non_overlapping, key=lambda r: r.start, reverse=True)
+            replacements = self._engine._assign_replacements(
+                text,
+                sorted_results,
+                strategies,
+                type_counters=state.type_counters,
+                value_to_placeholder=state.value_to_placeholder,
+                entity_mapping=state.entity_mapping,
+                hash_mapping=state.hash_mapping,
+                encrypt_mapping=state.encrypt_mapping,
+            )
+            result_text = self._engine._build_text(text, replacements)
+        anonymize_ms = handling.ms
 
         self._store.save(self._conversation_id, state, ttl=self._ttl)
 
@@ -163,6 +167,10 @@ class ConversationAnonymizer:
             nlp_ms=nlp_ms,
             recovery_ms=recovery_ms,
             recovery_pass=recovery_pass,
+            steps=dict(recorder.steps),
+            details=recorder.ordered_details(),
+            timeline=list(recorder.timeline),
+            ner_windows=recorder.ner_windows,
         )
 
         emit(
@@ -178,6 +186,7 @@ class ConversationAnonymizer:
                 nlp_ms=nlp_ms,
                 recovery_ms=recovery_ms,
                 recovery_pass=recovery_pass,
+                steps=dict(stats.steps),
             ),
         )
 

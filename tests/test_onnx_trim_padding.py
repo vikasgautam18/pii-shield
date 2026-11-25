@@ -9,7 +9,8 @@ import pytest
 pytest.importorskip("optimum.onnxruntime")
 torch = pytest.importorskip("torch")
 
-from pii_shield.onnx_nlp_engine import _trim_padding, _trim_padding_enabled  # noqa: E402
+from pii_shield.observability import NO_RECORDER, StepRecorder  # noqa: E402
+from pii_shield.onnx_nlp_engine import _prepare_model, _trim_padding, _trim_padding_enabled  # noqa: E402
 
 LABELS = 3
 
@@ -85,3 +86,38 @@ def test_the_switch(monkeypatch):
     assert _trim_padding_enabled() is True
     monkeypatch.setenv("ONNX_TRIM_PADDING", "false")
     assert _trim_padding_enabled() is False
+
+
+@pytest.mark.parametrize("trim", ("true", "false"))
+def test_every_forward_pass_is_timed_as_one_window_with_or_without_trimming(monkeypatch, trim):
+    monkeypatch.setenv("ONNX_TRIM_PADDING", trim)
+    model = _Model()
+    _prepare_model(model)
+    recorder = StepRecorder()
+    with recorder, recorder.step("nlp_pass1"):
+        model.forward(**_inputs(real=5, width=8))
+        model.forward(**_inputs(real=8, width=8))
+    assert model.widths == ([5, 8] if trim == "true" else [8, 8])
+    assert recorder.ner_windows == 2
+    assert recorder.details["nlp_pass1.ner_model"] > 0
+
+
+def test_a_forward_pass_that_fails_is_still_timed_and_the_error_reaches_the_caller():
+    def failing(*args, **kwargs):
+        raise RuntimeError("session failed")
+
+    model = _Model()
+    model.forward = failing
+    _prepare_model(model)
+    recorder = StepRecorder()
+    with recorder, recorder.step("nlp_pass1"):
+        with pytest.raises(RuntimeError, match="session failed"):
+            model.forward(**_inputs(real=5, width=8))
+    assert recorder.ner_windows == 1 and "nlp_pass1.ner_model" in recorder.details
+
+
+def test_a_forward_pass_outside_an_anonymize_call_records_nothing():
+    model = _Model()
+    _prepare_model(model)
+    model.forward(**_inputs(real=5, width=8))
+    assert NO_RECORDER.ner_windows == 0 and NO_RECORDER.details == {}

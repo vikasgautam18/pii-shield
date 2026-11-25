@@ -17,6 +17,7 @@ from presidio_analyzer.nlp_engine import NlpArtifacts
 from pii_shield import fast_analysis
 from pii_shield.context_enhancer import KeyValueContextEnhancer, _key_words_in_token
 from pii_shield.fast_analysis import fast_remove_duplicates
+from pii_shield.observability import StepRecorder
 
 TYPES = ("PERSON", "IN_PAN", "PHONE_NUMBER")
 
@@ -56,13 +57,49 @@ class TestRemoveDuplicates:
         zero = RecognizerResult("PERSON", 10, 15, 0)
         assert _signature(fast_remove_duplicates([a, b, zero])) == [("PERSON", 0, 5, 0.9)]
 
-    def test_install_replaces_and_uninstall_restores_presidio_s_function(self):
+    def test_install_puts_a_timed_wrapper_in_and_uninstall_restores_presidio_s_function(self, monkeypatch):
+        # Registers the current state for restoring: later tests keep the engine's installed function.
+        monkeypatch.setattr(EntityRecognizer, "remove_duplicates", EntityRecognizer.__dict__["remove_duplicates"])
         try:
             assert fast_analysis.install() is True
-            assert EntityRecognizer.remove_duplicates is fast_remove_duplicates
+            assert EntityRecognizer.remove_duplicates.__wrapped__ is fast_remove_duplicates
         finally:
             fast_analysis.uninstall()
         assert EntityRecognizer.remove_duplicates is fast_analysis._presidio_remove_duplicates
+
+    def test_installing_again_never_stacks_wrappers(self, monkeypatch):
+        monkeypatch.setattr(EntityRecognizer, "remove_duplicates", EntityRecognizer.__dict__["remove_duplicates"])
+        fast_analysis.install()
+        first = EntityRecognizer.remove_duplicates
+        fast_analysis.install()
+        fast_analysis.install()
+        assert EntityRecognizer.remove_duplicates is first
+        assert first.__wrapped__ is fast_remove_duplicates
+
+    def test_with_the_switch_off_presidio_s_own_function_is_installed_timed(self, monkeypatch):
+        monkeypatch.setattr(EntityRecognizer, "remove_duplicates", EntityRecognizer.__dict__["remove_duplicates"])
+        monkeypatch.setenv("FAST_ANALYSIS", "false")
+        assert fast_analysis.install() is False
+        assert EntityRecognizer.remove_duplicates.__wrapped__ is fast_analysis._presidio_remove_duplicates
+        monkeypatch.setenv("FAST_ANALYSIS", "true")
+        assert fast_analysis.install() is True
+        assert EntityRecognizer.remove_duplicates.__wrapped__ is fast_remove_duplicates
+
+    @pytest.mark.parametrize("fast", ("true", "false"))
+    def test_the_installed_function_returns_what_the_original_returns_and_reports_its_time(self, monkeypatch, fast):
+        monkeypatch.setattr(EntityRecognizer, "remove_duplicates", EntityRecognizer.__dict__["remove_duplicates"])
+        monkeypatch.setenv("FAST_ANALYSIS", fast)
+        fast_analysis.install()
+        rnd = random.Random(3)
+        results = [
+            RecognizerResult(rnd.choice(TYPES), s, s + rnd.randint(1, 20), rnd.choice((0.3, 0.5, 0.85)))
+            for s in (rnd.randint(0, 40) for _ in range(50))
+        ]
+        recorder = StepRecorder()
+        with recorder, recorder.step("analyze"):
+            kept = EntityRecognizer.remove_duplicates(list(results))
+        assert _signature(kept) == _signature(fast_analysis._presidio_remove_duplicates(list(results)))
+        assert recorder.details["analyze.dedup"] > 0
 
     def test_the_switch_and_an_unchecked_presidio_turn_it_off(self, monkeypatch):
         monkeypatch.setenv("FAST_ANALYSIS", "false")

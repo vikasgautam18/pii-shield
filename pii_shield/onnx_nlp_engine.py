@@ -17,6 +17,7 @@ Usage::
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 
 import onnxruntime as ort
@@ -29,6 +30,8 @@ from transformers import AutoTokenizer, pipeline
 from transformers.modeling_outputs import TokenClassifierOutput
 
 from presidio_analyzer.nlp_engine import TransformersNlpEngine
+
+from pii_shield.observability import current_recorder
 
 logger = logging.getLogger("pii-shield")
 
@@ -108,6 +111,33 @@ def _trim_padding(model) -> None:
     model.forward = trimmed
 
 
+def _time_forward(model) -> None:
+    """Report every forward pass of *model* to the recorder of the running ``anonymize()`` call.
+
+    One pass is one window of up to 512 tokens, so this yields the ``ner_model`` time and the window count of
+    the step that is running.  Outside such a call the recorder is the no-op one and the cost is two clock reads.
+    """
+    forward = model.forward
+
+    def timed(*args, **kwargs):
+        recorder = current_recorder()
+        started = time.perf_counter()
+        try:
+            return forward(*args, **kwargs)
+        finally:
+            recorder.add_detail("ner_model", (time.perf_counter() - started) * 1000.0)
+            recorder.add_windows()
+
+    model.forward = timed
+
+
+def _prepare_model(model) -> None:
+    """Wrap the forward pass of *model*: cut the padding off (when enabled), outermost the timing."""
+    if _trim_padding_enabled():
+        _trim_padding(model)
+    _time_forward(model)
+
+
 def _build_session_options() -> ort.SessionOptions:
     """Build tuned ONNX Runtime session options for concurrent inference.
 
@@ -182,8 +212,7 @@ class OnnxTransformersNlpEngine(TransformersNlpEngine):
                 )
                 tokenizer = AutoTokenizer.from_pretrained(transformers_model)
 
-            if _trim_padding_enabled():
-                _trim_padding(ort_model)
+            _prepare_model(ort_model)
             hf_pipe = pipeline(
                 task="token-classification",
                 model=ort_model,
@@ -233,8 +262,7 @@ class OnnxTransformersNlpEngine(TransformersNlpEngine):
                     session_options=_build_session_options(),
                     provider="CPUExecutionProvider",
                 )
-                if _trim_padding_enabled():
-                    _trim_padding(hf_pipe.model)
+                _prepare_model(hf_pipe.model)
             self._owner_pid = os.getpid()
 
     def process_text(self, text: str, language: str):

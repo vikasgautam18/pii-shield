@@ -10,16 +10,22 @@ thousands of raw matches, and these two steps then cost as much as a third of a 
 return exactly what Presidio's code returns, in the same order; ``tests/test_fast_analysis.py`` checks that
 against Presidio's own implementation on random inputs.  They apply to the Presidio version they were checked
 against (``requirements.txt`` pins it) and can be switched off with ``FAST_ANALYSIS=false``.
+
+``install()`` also times duplicate removal, whichever implementation runs, as the ``dedup`` detail of the
+``anonymize()`` call in progress (``pii_shield.observability``).
 """
 
 import functools
 import logging
 import os
+import time
 from bisect import bisect_left, bisect_right
 from importlib import metadata
 
 from presidio_analyzer import RecognizerResult
 from presidio_analyzer.entity_recognizer import EntityRecognizer
+
+from pii_shield.observability import current_recorder
 
 logger = logging.getLogger("pii-shield")
 
@@ -77,13 +83,42 @@ def fast_remove_duplicates(results: list[RecognizerResult]) -> list[RecognizerRe
     return [r for r in results if id(r) in kept]
 
 
+def _timed(remove_duplicates):
+    """*remove_duplicates* that adds its duration to the ``dedup`` detail of the running ``anonymize()`` call.
+
+    Duplicate removal runs once per pattern recognizer and once more at the end of ``analyze()``, some 34 times
+    for one request, so the hook is two clock reads and one dict update, and does nothing outside a call.
+    """
+
+    @functools.wraps(remove_duplicates)
+    def timed(results):
+        started = time.perf_counter()
+        try:
+            return remove_duplicates(results)
+        finally:
+            current_recorder().add_detail("dedup", (time.perf_counter() - started) * 1000.0)
+
+    return timed
+
+
+# Built once from the original functions, never from what is installed, so installing again never stacks wrappers.
+_timed_fast_remove_duplicates = _timed(fast_remove_duplicates)
+_timed_presidio_remove_duplicates = _timed(_presidio_remove_duplicates)
+
+
 def install() -> bool:
-    """Replace Presidio's ``remove_duplicates`` (idempotent); False when the fast paths are off or do not fit."""
-    if not enabled():
+    """Put a timed ``remove_duplicates`` in place of Presidio's (idempotent).
+
+    It runs the linear-time version when the fast paths are on, Presidio's own when they are off or do not fit,
+    so ``analyze.dedup`` is measured either way.  Returns whether the fast paths are on.
+    """
+    fast = enabled()
+    if not fast:
         logger.info("Fast analysis paths are off (FAST_ANALYSIS=false or an unchecked Presidio version)")
-        return False
-    EntityRecognizer.remove_duplicates = staticmethod(fast_remove_duplicates)
-    return True
+    EntityRecognizer.remove_duplicates = staticmethod(
+        _timed_fast_remove_duplicates if fast else _timed_presidio_remove_duplicates
+    )
+    return fast
 
 
 def uninstall() -> None:
