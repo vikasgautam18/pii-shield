@@ -285,7 +285,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "pii_registered_apps{service_name=\"pii-shield\"}",
+          "expr": "max(pii_registered_apps{service_name=\"pii-shield\"})",
           "instant": true,
           "refId": "A"
         }

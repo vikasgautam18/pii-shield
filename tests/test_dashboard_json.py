@@ -74,6 +74,26 @@ class TestDashboardStructure:
                     f"Panel '{panel['title']}' has negative gridPos.{key}: {gp[key]}"
                 )
 
+    def test_prometheus_queries_aggregate_across_workers(self, dashboard):
+        """Each worker process exports its metrics under its own service.instance.id (app/telemetry.py), so a query
+        that selects a metric without aggregating returns one series per worker, and a Stat panel then shows the
+        same number once for each of them."""
+        aggregating = re.compile(r"\s*(\d+(\.\d+)?\s*\*\s*)?(sum|max|min|avg|count|topk|bottomk|histogram_quantile)\b")
+
+        def panels(items):
+            for panel in items:
+                yield panel
+                yield from panels(panel.get("panels", []))
+
+        raw = []
+        for panel in panels(dashboard["panels"]):
+            for target in panel.get("targets", []):
+                ds = target.get("datasource", {})
+                if isinstance(ds, dict) and ds.get("uid") == "prometheus" and "expr" in target:
+                    if not aggregating.match(target["expr"]):
+                        raw.append((panel["title"], target["expr"]))
+        assert not raw, f"Prometheus queries that do not aggregate across workers: {raw}"
+
 
 # ---------------------------------------------------------------------------------------------------------------
 # The latency dashboard: it reads the per-step timing contract (metrics, step names, span and log names). Each
