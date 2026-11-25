@@ -143,7 +143,7 @@ class TestStepRecorder:
                 raise RuntimeError("boom")
         assert current_recorder() is NO_RECORDER
 
-    def test_a_timer_costs_well_under_a_few_microseconds(self):
+    def test_a_timer_costs_microseconds_not_milliseconds(self):
         # Priced as the best of several runs, so a busy machine does not fail it; typically ~0.4 us. The bound is
         # loose on purpose: a slow CI runner or a tracing tool (coverage) multiplies it.
         runs, best = 20_000, float("inf")
