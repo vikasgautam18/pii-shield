@@ -12,7 +12,7 @@ An intelligent anonymization layer that sits between your AI application and LLM
 - **REST API** — `POST /anonymize_unique`, `POST /deanonymize`, and app registration endpoints built with FastAPI.
 - **Application Registration** — Register consuming applications via `POST /apps`. Each app gets its own per-entity PII strategy config stored in Redis. Pass `X-App-Id` header to use app-specific settings.
 - **Reversible Anonymization** — Anonymize text with unique placeholders, pass it through an LLM, then restore the original PII via a session-based in-memory store.
-- **Observability** — OpenTelemetry traces, metrics, and logs with dual-backend support: Azure Monitor (production) or OTLP gRPC (local dev). Pre-built Grafana dashboards for both environments.
+- **Observability** — OpenTelemetry traces, metrics, and logs with dual-backend support: Azure Monitor (production) or OTLP gRPC (local dev). Pre-built Grafana dashboards for both environments. Every request is also timed step by step (a `Server-Timing` header, a timing panel in the Playground, one span per step, a step histogram); see [Where a request spends its time](#where-a-request-spends-its-time).
 - **Standalone Library** — Use `pii_shield` as an importable Python package for batch processing without FastAPI, Redis, or Docker. See [Using as a Library](#using-as-a-library) below.
 - **Docker Support** — `docker-compose.yml` orchestrates Redis, Grafana LGTM, and the PII Shield app.
 - **Optional Authentication** — One `AUTH_ENABLED` switch adds OpenID Connect sign-in (Microsoft Entra ID, Keycloak, or any OIDC provider) to the playground and admin UI, and bearer-token validation with role-based access to the API. Off by default. See [docs/authentication.md](docs/authentication.md).
@@ -246,6 +246,19 @@ for e in entities:
 
 See [`examples/library_usage.py`](examples/library_usage.py) for a full test suite using the Indian banking dataset (22 scenarios) with HTML report generation.
 
+### Timing: where did the time go?
+
+Every `anonymize()` result carries `result.stats`, which splits the call into steps that do not overlap, as plain numbers (milliseconds); the library imports no telemetry package:
+
+```python
+stats = engine.anonymize("Rahul Sharma's Aadhaar is 2345 6789 0123 and he lives in Pune 411001").stats
+print(stats.steps)        # {'nlp_pass1': 18.0, 'analyze': 9.0, 'post_processing': 0.05, 'handling': 0.01}
+print(stats.details)      # {'nlp_pass1.ner_model': 12.4, 'analyze.context_enhance': 0.09, 'analyze.dedup': 0.06}
+print(stats.ner_windows)  # 1  (windows of up to 512 tokens the NER model ran)
+```
+
+`recovery_pass2` appears in `steps` only when the second, case-recovery NER pass ran. A detail is part of its step, so never add it to the steps. `stats.timeline` lists `(step, offset_ms, duration_ms)` for laying the steps out as spans in your own tracing, and the `Event` that an `on_event` callback passed to `anonymize()` receives carries the same `steps`. (The values above are from one run on a development machine.) The API turns the same numbers into a header, spans and a histogram: see [Where a request spends its time](#where-a-request-spends-its-time).
+
 ## Prerequisites
 
 - Python 3.10+
@@ -373,8 +386,8 @@ Set the `API_BASE` environment variable if the API is not at `http://localhost:8
 
 Opens at **http://localhost:7860** with:
 
-- **Anonymize tab** — Enter text (and optionally an Application ID) → see detected PIIs and anonymized output using app-specific or global config.
-- **De-anonymize tab** — Paste anonymized text (and optionally an Application ID) → see the PII ↔ placeholder mapping and restored text.
+- **Anonymize tab** — Enter text (and optionally an Application ID) → see detected PIIs and anonymized output using app-specific or global config, and a timing panel with where the request spent its time (see [Where a request spends its time](#where-a-request-spends-its-time)).
+- **De-anonymize tab** — Paste anonymized text (and optionally an Application ID) → see the PII ↔ placeholder mapping and restored text, with the same timing panel.
 
 The session ID is shared between tabs via `st.session_state`.
 
@@ -545,6 +558,37 @@ python examples/anonymize_request.py
 ```
 
 See [`examples/anonymize_request.py`](examples/anonymize_request.py) for the full source.
+
+## Where a request spends its time
+
+Every `POST /anonymize_unique` is timed in steps that do not overlap (waiting for a detection thread, the first NLP pass, the recognizers, the second NER pass for ALL-CAPS or uncased names, post-processing, applying the strategies, saving the session). The numbers reach the `Server-Timing` response header, the Playground, one span per step in the trace, the `pii.step.duration` histogram (and the "PII Shield — Latency" Grafana dashboard) and the request's log line. [DEPLOYMENT.md](DEPLOYMENT.md#requests-take-several-seconds) explains how to read them and what to do about each step; the design is in [docs/design.md](docs/design.md) (section 6.7 and decisions D15-D17).
+
+### Playground timing panel
+
+After *Anonymize* and *De-anonymize* the Playground shows a "⏱ Timing breakdown" panel under the result: the server total, the round trip as the Playground measured it, the slowest step, a bar chart and a table of the steps with their share (details indented under their step), and the request's trace id. Set `TRACE_URL_TEMPLATE` (an http(s) URL that contains `{trace_id}`) for the Playground to add an *Open trace* link to your trace viewer:
+
+```bash
+TRACE_URL_TEMPLATE='https://traces.example.com/trace/{trace_id}' python -m app.ui_launcher playground --port 7860
+```
+
+With Docker Compose, put `TRACE_URL_TEMPLATE=...` in `.env` (or export it): the `playground` service passes it through.
+
+The panel is built from the API's `Server-Timing` header; with `SERVER_TIMING=false` on the API it only shows the round trip. To see the header itself: `curl -si http://localhost:8000/anonymize_unique -H 'Content-Type: application/json' -d '{"text": "Rahul Sharma, 9876543210"}' | grep -i server-timing`.
+
+### Comparing main with a branch
+
+`scripts/compare_branches.py` answers "did this change make the service faster or slower?" with Docker and git, and nothing but the standard library. It exports each ref with `git archive` (`WORKTREE` is the current working tree, uncommitted changes included) and mounts its code read-only over the same app image (by default the app image of this repository's compose project, so build it first with `docker compose build app`; `--image` picks another), so both sides run identical dependencies, under the same CPU cap (`--cpus`, default 2), on the same seeded documents, one container at a time, with Redis in a throwaway container. The Markdown report has one section per phase:
+
+- **steps:** the time of one `anonymize()` call split into steps (recognizers, NER model, context scoring, dedup, second NER pass, post-processing, handling); it also works on a ref that does not have the library's own step timing;
+- **load:** the real API's latency per document size for lone requests, then a closed loop of concurrent clients (p50 / p95 / p99 and requests per second); the refs run interleaved (base, head, base, head) and the report gives the spread between rounds, so a difference smaller than that is noise;
+- **check:** the entities each ref detected in the same documents; differences are reported and never fail the run.
+
+```bash
+# the main branch against the working tree, report written to report.md
+python scripts/compare_branches.py --base origin/main --head WORKTREE --out report.md
+```
+
+Run `--base HEAD --head HEAD --load-only` first to see the noise floor of your machine, and shorten a run with `--steps-only` or `--load-only`, `--docs`, `--seconds` and `--rounds` (the defaults run the closed loop for 40 s per document family, ref and round). `python scripts/compare_branches.py --help` lists every option.
 
 ## Azure Deployment
 

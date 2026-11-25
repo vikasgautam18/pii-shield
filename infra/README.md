@@ -250,13 +250,14 @@ cd infra/scripts
 ./04-deploy-dashboards.sh
 ```
 
-This uploads 3 dashboards to a "PII Shield" folder in Managed Grafana:
+This uploads 4 dashboards to a "PII Shield" folder in Managed Grafana:
 
 | Dashboard | Description |
 |-----------|-------------|
 | PII Shield Analytics (Azure) | Request rates, entity categories, HTTP latency |
 | PII Shield — By Application (Azure) | Per-app breakdown with dynamic app selector |
 | PII Shield — Errors (Azure) | Error rates, error logs, traces |
+| PII Shield — Latency (Azure) | Where requests spend their time: waiting vs computing, time per step, slow requests (queries not yet run against a real workspace) |
 
 Dashboards use **KQL queries** against the Azure Monitor datasource (App Insights / Log Analytics). The Grafana instance's system-assigned identity is pre-configured with the required RBAC roles (Monitoring Reader, Log Analytics Reader).
 
@@ -281,6 +282,17 @@ The deploy script configures these automatically. For reference:
 | `OIDC_ISSUER_URL`, `OIDC_AUDIENCE`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `AUTH_COOKIE_SECRET` | — | Required when `AUTH_ENABLED=true`; taken from your shell, `OIDC_CLIENT_SECRET` and `AUTH_COOKIE_SECRET` stored as ACA secrets |
 
 > **Note:** The app exports telemetry directly to Application Insights using the `azure-monitor-opentelemetry-exporter` SDK — not via a managed OTel sidecar. The Container Apps OTel agent configuration is for platform-level metrics only.
+
+**Optional timing settings.** The deploy script does not set these; the defaults apply. They control the per-step timing of each request (see [Requests take several seconds](../DEPLOYMENT.md#requests-take-several-seconds)):
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `SERVER_TIMING` | `true` | `Server-Timing` response header with the time of each step; `false` removes it (and the Playground's timing panel) |
+| `PII_STEP_SPANS` | `true` | One span per step in each trace, which become `dependencies` rows with `type == "InProc"` in Application Insights; `false` keeps only the earlier spans |
+| `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` | `parentbased_always_on` | Standard OpenTelemetry sampling for span volume and ingestion cost, e.g. `parentbased_traceidratio` and `0.25`. Metrics, logs and the header are not sampled |
+| `TRACE_URL_TEMPLATE` | empty | **Playground app only**: a link pattern containing `{trace_id}` for its timing panel |
+
+Set one on a running app with `az containerapp update --name pii-shield --resource-group <rg> --set-env-vars PII_STEP_SPANS=false` (the Playground app is `playground`). Application Insights receives histograms as sum, count, min and max without buckets, so per-step percentiles come from the step spans, not from `pii.step.duration`; none of this has been tried on Azure yet.
 
 ---
 

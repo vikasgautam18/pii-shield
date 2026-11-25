@@ -235,7 +235,10 @@ VERIFY_ACCESS_TOKEN="$(python ../../scripts/get_token.py)" ./03-verify.sh
 
 This uploads the dashboards from `observability/grafana/dashboards-azure/` into
 the Azure Managed Grafana instance. Open the URL printed at the end of the
-script in a browser — Entra ID SSO is configured automatically.
+script in a browser — Entra ID SSO is configured automatically. One of them,
+*PII Shield — Latency (Azure)*, shows where requests spend their time (see
+[Requests take several seconds](#requests-take-several-seconds)); its queries have
+not been run against a real workspace yet.
 
 ---
 
@@ -261,6 +264,10 @@ authoritative list. Highlights:
 | `ONNX_TRIM_PADDING` | `true` | Runs the last, shorter window of a long text at its real length instead of padding it to 512 tokens |
 | `FAST_ANALYSIS` | `true` | Linear-time duplicate removal and context enhancer; the results are identical, only faster on documents with many matches |
 | `DISABLED_RECOGNIZERS` | (see `.env.example`) | Comma-separated Presidio recognizer class names |
+| `SERVER_TIMING` | `true` | `Server-Timing` response header with the time of each step, on `/anonymize_unique` and `/deanonymize`; `false`, `0`, `no` or `off` removes it, and with it the Playground's timing panel (see [Requests take several seconds](#requests-take-several-seconds)) |
+| `PII_STEP_SPANS` | `true` | One child span per step in every trace (Tempo, Application Insights); `false` keeps only the spans that existed before. Metrics, the header and the log line are not affected |
+| `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` | `parentbased_always_on` (every trace) | Standard OpenTelemetry settings that decide which traces, and so which step spans, are exported; use them to limit span volume and Application Insights ingestion. `parentbased_traceidratio` with `0.25` keeps about a quarter of the traces. Metrics, logs and the header are not sampled |
+| `TRACE_URL_TEMPLATE` | empty | Playground only: a link pattern that contains `{trace_id}`; the timing panel then links each request to its trace |
 | `AUTH_ENABLED` | `false` | One switch for sign-in on the API and both UIs (see below) |
 | `OIDC_ISSUER_URL` / `OIDC_AUDIENCE` | — | Required when `AUTH_ENABLED=true`: the identity provider's issuer, and the audience the API accepts |
 | `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | — | Required when `AUTH_ENABLED=true`: the client the UIs sign in with |
@@ -351,29 +358,207 @@ waits for the cold start (image pull, model load, warm-up: up to a minute). Depl
 
 ### Requests take several seconds
 
-Detection is CPU-bound: the NER model is 85-95% of a request, and a text that has ALL-CAPS or uncased names
-goes through it twice. First tell *waiting* from *computing*. Every `/anonymize_unique` logs
+Detection is CPU-bound: the NER model is 85-95% of a request (713 of 785 ms in the one text we profiled, 2.7 KB on two
+vCPUs), and a text that has ALL-CAPS or uncased names goes through it twice. To see where *one* slow request spent its
+time, read its **step breakdown**. Every `/anonymize_unique` request is timed in steps that do not overlap, so they add
+up to the time the server spent on it (`total`):
 
-```
-Unique anonymization complete: 41 entities, id=..., chars=3120, queue_ms=2850, detect_ms=410 (nlp_ms=395, recovery_pass=False, recovery_ms=0)
-```
+| Step | What it covers | Present |
+|------|----------------|---------|
+| `auth` | Bearer-token validation | only with `AUTH_ENABLED=true` |
+| `app_config` | The application's settings from Redis (cached for 5 s per worker) | only with an `X-App-Id` header |
+| `queue_wait` | Waiting for a free detection thread | always (close to 0 on an idle replica) |
+| `nlp_pass1` | First NLP pass: spaCy tokenizer, tagger and lemmatizer, the NER model, decoding | always |
+| `analyze` | Presidio `analyze()` of that pass: regex and validator recognizers, reading the NER result, context scoring, duplicate removal, threshold, allow-lists | always |
+| `recovery_pass2` | The second NER pass, over the re-cased text, with its own recognition and merge | only when the pass ran (ALL-CAPS or uncased names) |
+| `post_processing` | The pipeline functions after recognition: titles, line breaks, address merge, overlap removal | always |
+| `handling` | Applying the strategies (replace / hash / fake / encrypt) and rebuilding the text | always |
+| `store_save` | Writing the session mapping to Redis | always |
+| `other` | `total` minus the steps above, never below 0: whatever is not timed (the small work between the steps, such as merging allow-lists, the check that decides on the second pass, counting entities, and hand-offs between threads) | always |
 
-and records the same as span attributes (`pii.queue_ms`, `pii.detect_ms`, `pii.nlp_ms`, `pii.recovery_ms`,
-`pii.recovery_pass`, `pii.chars`) and as histograms (`pii.detect.queue_wait`, `pii.detect.duration`, labelled
-by `size` and `recovery_pass`).
+A step can have **details**, written `<step>.<detail>`: `nlp_pass1.ner_model` (time inside the ONNX model),
+`analyze.context_enhance`, `analyze.dedup` (duplicate removal), and the same three under `recovery_pass2`. A detail is
+*part of* its step, so never add it to the steps. What is left of `nlp_pass1` after `ner_model` is spaCy and decoding;
+what is left of `analyze` after `context_enhance` and `dedup` is the regex and validator recognizers. `ner_windows`
+counts the windows of up to 512 tokens the NER model ran over all passes, and model time grows with it.
+`/deanonymize` has a lighter breakdown, in the `Server-Timing` header and the Playground only (no spans, no histogram,
+no log fields): `auth`, `app_config`, `store_get`, `restore` (placeholders back to the original values) and `other`.
+Everything below about spans, histograms and the log line is about `/anonymize_unique`.
 
-- **`queue_ms` is large:** the replicas are saturated. A replica answers as many requests at once as it has
-  workers x `NLP_THREAD_POOL_SIZE` (2 by default) and a request beyond that waits, which is faster than sharing
-  the CPU (measured: with 8 clients on 2 vCPUs the median 3 KB document took about 12 s with six inferences per
-  worker and about 5 s with one). Add capacity: `API_CPU=4` (2 GiB of memory per vCPU follows), more replicas
-  (`API_MAX_REPLICAS`), and a warm one (`API_MIN_REPLICAS=1`, so the first request after an idle spell does not
-  wait for a cold start). `API_HTTP_CONCURRENCY` should stay at the number of detections a replica runs at once
+**Reading the breakdown.** The same numbers reach five places:
+
+1. **The log line.** Every `/anonymize_unique` logs one line. The fields that were always there stay; `ner_windows`
+   and `steps` (the steps that ran in execution order, then `other`, in milliseconds with one decimal) are new:
+
+   ```
+   Unique anonymization complete: 2 entities, id=..., chars=49, queue_ms=0, detect_ms=14 (nlp_ms=13, recovery_pass=False, recovery_ms=0) ner_windows=1 steps=queue_wait:0.1,nlp_pass1:13.1,analyze:0.8,post_processing:0.0,handling:0.0,store_save:0.4,other:0.3
+   ```
+
+   Locally: `docker compose logs app | grep "Unique anonymization complete"`. In Grafana, Explore the Loki data source
+   with `{service_name="pii-shield"} |= "Unique anonymization complete"`; each line carries the trace id of its
+   request. The same values are span attributes (`pii.queue_ms`, `pii.detect_ms`, `pii.nlp_ms`, `pii.recovery_ms`,
+   `pii.recovery_pass`, `pii.chars`) and, with `size` and `recovery_pass` labels, the histograms
+   `pii.detect.queue_wait` and `pii.detect.duration`.
+
+2. **The `Server-Timing` header**, on successful `/anonymize_unique` and `/deanonymize` responses (a W3C header:
+   `name;dur=<ms>`, steps in execution order, each followed by its details, then `other` and `total`). `total` runs
+   from the start of authentication (of the handler, with authentication off) to the moment the headers are built, so
+   it leaves out reading the request, writing the response and the network:
+
+   ```bash
+   curl -si http://localhost:8000/anonymize_unique -H 'Content-Type: application/json' \
+     -d '{"text": "Hi, I am Rahul Sharma, call me on +91 98765 43210"}' | grep -iE '^(server-timing|traceresponse):'
+   ```
+
+   ```
+   server-timing: queue_wait;dur=0.06, nlp_pass1;dur=13.05, nlp_pass1.ner_model;dur=8.82, analyze;dur=0.80, analyze.context_enhance;dur=0.04, analyze.dedup;dur=0.03, post_processing;dur=0.03, handling;dur=0.01, store_save;dur=0.38, other;dur=0.26, total;dur=14.59
+   traceresponse: 00-f8ee2d1eb7cda7a91b3be0cfdc7bef13-883a4ebe6e8e358f-01
+   ```
+
+   (Both samples are from a development machine, to show the shape; the milliseconds mean nothing for your
+   deployment.) The same request with an ALL-CAPS text, which makes the second NER pass run, adds its steps:
+   `... analyze;dur=1.20, ..., recovery_pass2;dur=18.78, recovery_pass2.ner_model;dur=14.48,
+   recovery_pass2.context_enhance;dur=0.02, recovery_pass2.dedup;dur=0.02, post_processing;dur=0.07, ...`.
+
+   On a deployment, use its URL, and add `-H "Authorization: Bearer $TOKEN"` when authentication is on. The
+   `traceresponse` header (every response carries it) names the trace of the request: the second field is the trace
+   id, and a last field of `00` means the sampler dropped that trace, so no step spans were exported for it. An error
+   response (such as a 404 for an unknown `X-App-Id`) carries `traceresponse` but no `Server-Timing`.
+   `SERVER_TIMING=false` removes the `Server-Timing` header.
+
+3. **The Playground.** After *Anonymize* and *De-anonymize* it shows the timing of that request: the
+   server total, the round trip as the Playground measured it, the slowest step, a chart and a table of the steps
+   with their share (details indented under their step), and the trace id, with an *Open trace* link when
+   `TRACE_URL_TEMPLATE` is set (an http(s) URL that contains `{trace_id}`; for a trace the sampler dropped it says so
+   instead of linking). To make a template for your Grafana, open any trace in Explore, copy the address from the
+   browser and replace the trace id in it with `{trace_id}` (no template format was tried here). The panel reads the
+   header, so without `Server-Timing` it can only show the round trip.
+
+4. **The Tempo waterfall.** Each request is one trace: the HTTP server span, below it `pii_shield.anonymize` with
+   `queue_wait` and the library steps as children, and `auth`, `app_config` and `store_save` beside it. A step span
+   carries `pii.step` and, when it has details, `pii.detail.<detail>_ms`; `pii_shield.anonymize` carries
+   `pii.ner_windows`. Open a trace by its id (from the header or the Playground), or search with TraceQL (queries of
+   this form ran against Tempo's HTTP API on the local stack, on test spans of the same shape; Grafana's Explore
+   screen itself was not tried):
+
+   ```
+   # the first NLP pass took more than 0.5 s
+   { resource.service.name="pii-shield" && name="nlp_pass1" && duration > 500ms }
+
+   # traces whose steps average over 100 ms
+   { resource.service.name="pii-shield" && span.pii.step != nil } | avg(duration) > 100ms
+
+   # the steps of each trace
+   { resource.service.name="pii-shield" && span.pii.step != nil } | select(span.pii.step)
+
+   # p50 and p95 per step (a metrics query, see below)
+   { resource.service.name="pii-shield" && span.pii.step != nil } | quantile_over_time(duration, .5, .95) by (name)
+   ```
+
+   Through the API (inside the `otel-lgtm` container) pass `start` and `end` in Unix seconds: without them the same
+   search returned no traces.
+
+   ```bash
+   docker compose exec -T otel-lgtm curl -s -G localhost:3200/api/search \
+     --data-urlencode 'q={ resource.service.name="pii-shield" && name="nlp_pass1" && duration > 500ms }' \
+     --data-urlencode "start=$(( $(date +%s) - 3600 ))" --data-urlencode "end=$(date +%s)" --data-urlencode limit=20
+   ```
+
+   `select()` returns 3 spans per trace unless you raise `spss` (the API) to the number of steps. The last query is a
+   TraceQL metrics query: send it to `/api/metrics/query_range` with a `step` (such as `300`), which returned values
+   for spans two hours old, while the instant `/api/metrics/query` returned the series without values. Allow a few
+   minutes after the spans arrive (a first attempt about a minute after ingestion returned empty series). Its
+   percentiles are coarse, because Tempo's buckets double in size.
+
+5. **The Grafana dashboard "PII Shield — Latency"** (local stack: Grafana at http://localhost:3000, then Dashboards;
+   it is provisioned from `observability/grafana/dashboards/pii-shield-latency.json`). Its `size` variable limits the
+   metric panels to one text-size class (`small` up to 500 characters, `medium` up to 2,000, `large` up to 8,000,
+   `xlarge` above), and `slow_ms` sets what counts as a slow request. Three rows:
+   - *Waiting or computing?* request time p95, the share of time requests spent waiting for a detection thread, the
+     share of requests that ran a second NER pass, queue wait against detect time (p95), and detect time with and
+     without the second pass.
+   - *Where the time goes:* the average time per step (stacked), the share of the time per step, the p95 per step,
+     the details (NER model, context scoring, duplicate removal: inclusive, never stacked with the steps) and two
+     tables with the numbers (calls, average, p95, share).
+   - *Slow requests:* the requests slower than `slow_ms` from Tempo (a TraceQL table: open one to see its steps), the
+     per-step averages, p95 and call rates from Tempo's span metrics (sampled traces only, and coarse), and the log
+     lines of the slow requests from Loki.
+
+   The step panels read `pii_step_duration_milliseconds_{bucket,sum,count}` (labels `step` and `size`; a `step` with
+   a dot is a detail) and the others read `pii_detect_*` and `http_server_duration_milliseconds_*`. The buckets reach
+   120 s, so a 10 to 20 s request is no longer drawn as exactly 10 s. The step panels stay empty until the API that
+   records `pii.step.duration` runs.
+
+**On Azure** you get less, and none of it has been tried there (there was no Azure access while this was built):
+
+- The log line and the `Server-Timing` and `traceresponse` headers come from the app, whatever the telemetry backend.
+  Whether the Container Apps ingress passes the headers through unchanged has not been tested.
+- The step spans are exported to Application Insights as `dependencies` rows with `type == "InProc"`, `name` = the
+  step name, `operation_Id` = the trace id and the step in `customDimensions["pii.step"]` (details in
+  `customDimensions["pii.detail.<detail>_ms"]`). This was checked by converting this app's spans with the installed
+  exporter, offline (the server span became a `requests` row), not by a query against a workspace. The exporter
+  rounds a duration to whole milliseconds, so a step shorter than half a millisecond reads 0 there.
+- The histograms (`pii.step.duration`, `pii.detect.duration`, `pii.detect.queue_wait`) reach `customMetrics` as sum,
+  count, min and max, **without buckets** (the exporter puts the sum in `value`, which Microsoft's data model
+  documents as equal to `Sum` for a pre-aggregated metric, so an average is `sum(value) / sum(valueCount)`), and
+  there are no exemplars and no Tempo span metrics. That gives averages and maxima per step, not percentiles;
+  percentiles per step have to come from the span rows. Fractions of a millisecond survive in the metric (a
+  converted sample point kept its 0.4 ms minimum), not in the span durations.
+- `04-deploy-dashboards.sh` uploads a fourth dashboard, "PII Shield — Latency (Azure)": request time from `requests`,
+  the step spans and the `pii_shield.anonymize` attributes from `dependencies`, the average per step from
+  `customMetrics` (not affected by sampling), the log lines of slow requests from `traces`, and a `trace_id` variable
+  to see one request step by step. It is as unverified as the queries below.
+- Every KQL query below is **unverified**: it was never run against a real workspace and follows the exporter's source
+  and Microsoft's documentation. Whether the step spans nest under the request in the portal's end-to-end
+  transaction view was not seen either.
+
+  ```kusto
+  // latency per step, from the step spans
+  dependencies
+  | where timestamp > ago(1h) and cloud_RoleName == "pii-shield" and type == "InProc"
+  | where isnotempty(tostring(customDimensions["pii.step"]))
+  | summarize calls = count(), avg_ms = avg(duration), p50 = percentile(duration, 50), p95 = percentile(duration, 95), max_ms = max(duration)
+      by step = tostring(customDimensions["pii.step"])
+  | order by avg_ms desc
+
+  // one request's waterfall; the id comes from the traceresponse header
+  union requests, dependencies
+  | where operation_Id == "<trace id>"
+  | project timestamp, itemType, name, duration, id, operation_ParentId
+  | order by timestamp asc
+  ```
+
+- Span volume is the cost to watch. A request now makes 8 to 11 spans (the server span, `pii_shield.anonymize` and 6 to
+  9 steps) where it made 5 before (the server span, `pii_shield.anonymize` and three ASGI `receive` / `send` spans of
+  about 0 ms, which are gone), and each span is a row in Application Insights. What that costs has not been measured.
+  To reduce it, set `OTEL_TRACES_SAMPLER=parentbased_traceidratio` with `OTEL_TRACES_SAMPLER_ARG=0.25` (a quarter of
+  the traces, whole traces at a time; no step spans are created for a trace that is dropped, and a percentile taken
+  from the span rows then describes that quarter, while the histograms, the log line and the header still cover every
+  request), or set `PII_STEP_SPANS=false` to keep only `pii_shield.anonymize` under the server span.
+
+**What the numbers tell you.**
+
+| You see | It means | What to do |
+|---------|----------|------------|
+| `queue_wait` large (`queue_ms` in the log line) | The request waited for a free detection thread: the replicas are saturated | Add capacity (below) |
+| `nlp_pass1` large, mostly `nlp_pass1.ner_model` | The text is long, or the model is slow on this CPU: look at `ner_windows` (many windows = a long text; few windows and still slow = the model itself) | Shorter texts, or more vCPUs per detection (below) |
+| `recovery_pass2` present | The text has ALL-CAPS words or uncased names, so the model ran a second time, about as long as the first (377 ms against 388 ms in the profiled text) | Expected for statements and similar documents; `CASE_RECOVERY_GATE=smart` (the default) already skips it when it cannot find anything |
+| `analyze` large while `nlp_pass1.ner_model` is small | The regex and validator recognizers (what is left after `analyze.context_enhance` and `analyze.dedup`) | `python scripts/profile_detection.py --file slow.txt` (inside a replica with `az containerapp exec`, or locally) prints every recognizer's cost, which finds a slow custom regular expression |
+| `analyze.dedup` or `analyze.context_enhance` large | Very many matches in the document | `FAST_ANALYSIS=true` (the default) keeps both linear |
+| `post_processing` large | The pipeline functions after recognition (1 ms in the profiled text) | Find the document that triggers it and profile it |
+| `handling` large | Applying the strategies and rebuilding the text (0.06 ms for `replace` in the profiled text); the `encrypt` strategy's own cost has not been analysed | Compare with the same text under `replace` |
+| `store_save` or `app_config` large | The Redis round trip | Check the network path to Redis and its load |
+| `auth` large | Bearer-token validation | Check the identity provider's key endpoint and `OIDC_JWKS_CACHE_SECONDS` |
+| `other` large | Work nobody timed | Look at the gaps between the spans in the trace |
+| Round trip much longer than `total` | Network, writing the response, or the client | Not the server's detection |
+
+- **Adding capacity (`queue_wait` is large):** the replicas are saturated. A replica answers as many requests at
+  once as it has workers x `NLP_THREAD_POOL_SIZE` (2 by default) and a request beyond that waits, which is faster
+  than sharing the CPU (measured: with 8 clients on 2 vCPUs the median 3 KB document took about 12 s with six
+  inferences per worker and about 5 s with one). Add capacity: `API_CPU=4` (2 GiB of memory per vCPU follows), more
+  replicas (`API_MAX_REPLICAS`), and a warm one (`API_MIN_REPLICAS=1`, so the first request after an idle spell does
+  not wait for a cold start). `API_HTTP_CONCURRENCY` should stay at the number of detections a replica runs at once
   (its default), so the scaler adds a replica before requests queue.
-- **`detect_ms` is large and `queue_ms` is small:** the request itself is expensive. `recovery_pass=True` means
-  the text has ALL-CAPS words or uncased names, so it ran through the model twice; a long text costs time in
-  proportion to its length. `python scripts/profile_detection.py --file slow.txt` (inside a replica with
-  `az containerapp exec`, or locally) prints the first pass, the recovery pass, the model windows and the cost
-  of every recognizer, which finds a slow custom regular expression.
 - **One large document:** a request uses `ORT_INTRA_OP_THREADS` threads, so on a replica with more vCPUs give it
   more: `API_CPU=4 WEB_CONCURRENCY=1` runs one four-thread detection (about 1.6x faster for a lone request), while
   `API_CPU=4` with two workers answers twice as many requests at once.

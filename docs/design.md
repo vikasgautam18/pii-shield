@@ -39,7 +39,7 @@ The LLM never sees real PII — only opaque placeholders like {{PERSON_1}}, SHA3
 | Custom operators | SHA3-256 hash, post-quantum encryption (ML-KEM-768 + AES-256-GCM), Fernet encryption, and synthetic fake-data generation operators. |
 | Batch processing | Thread- and process-parallel processing of text lists, CSV files, and pandas DataFrames via BatchProcessor. |
 | Infrastructure | Docker Compose for local development (Redis, Grafana LGTM, Streamlit UIs). Terraform IaC + shell scripts for Azure Container Apps, Azure Managed Redis, ACR, Application Insights, and Managed Grafana. |
-| Observability | OpenTelemetry traces, metrics, and logs with dual-backend support — OTLP gRPC (local) and Azure Monitor (production). Pre-built Grafana dashboards for both environments. |
+| Observability | OpenTelemetry traces, metrics, and logs with dual-backend support — OTLP gRPC (local) and Azure Monitor (production). Pre-built Grafana dashboards for both environments. Every request is also timed step by step (the `Server-Timing` header, one span per step, a step histogram, a Playground panel, §6.7). |
 | Authentication & authorization (optional) | A single `AUTH_ENABLED` switch (default off) adds OpenID Connect sign-in to both Streamlit UIs and bearer-token validation with role-based access (user / admin) to the API, using any OIDC identity provider (Microsoft Entra ID, Keycloak, …). The audit log records the acting principal. See §8.4 and [authentication.md](authentication.md). |
 
 **Out of scope:**
@@ -49,6 +49,7 @@ The LLM never sees real PII — only opaque placeholders like {{PERSON_1}}, SHA3
 | Per-application access control and API keys | Authorization is role-based (two tiers). Binding callers to specific `X-App-Id` applications, issuing API keys, and mutual TLS are future work (§12.1). |
 | HTTPS termination | TLS is terminated at the infrastructure layer (nginx, Azure Container Apps built-in HTTPS, load balancer). The application listens on plain HTTP. |
 | Rate limiting | Not built-in. Recommended approach: add slowapi middleware or enforce at the reverse proxy / API gateway level. |
+| Always-on deep profiling | Per-recognizer timings on every request, a profiler endpoint and continuous profiling (Pyroscope) are not built. The step timings answer most "why was this slow" questions at about 0.1 ms per request (D15); `scripts/profile_detection.py` gives the per-recognizer cost offline. The cost of the encrypt (PQC) strategy is not broken down beyond the `handling` step. |
 | PII detection model training | PII Shield uses pre-trained NLP models (spaCy, Stanza, Transformers, ONNX). Custom model training is outside the scope of this system. |
 
 ### 1.4 Intended Audience
@@ -72,6 +73,7 @@ This document is intended for:
 | Architecture Diagrams | docs/architecture.drawio | draw.io component diagram — local Docker Compose topology. |
 | Azure Architecture Diagram | docs/architecture-azure.drawio | draw.io deployment diagram — Azure Container Apps, Redis, ACR, App Insights, Managed Grafana. |
 | Project README | README.md | Quick-start guide, API usage examples, library usage, and Docker setup instructions. |
+| Profiling research note | docs/research/profiling-the-end-to-end-call.md | How to profile one call end to end: what was already captured, the options compared, and the measurements behind D15-D17 (experiments E1-E10). |
 
 ## 2. Assumptions & Constraints
 
@@ -114,6 +116,9 @@ This document is intended for:
 | D12 | **Windows run at their real length** — the last, shorter window of a long text is not padded to 512 tokens (`ONNX_TRIM_PADDING=true`). | The Hugging Face pipeline pads every window of a text to the longest one, so a 3 KB text spent a quarter of its model time on padding. The padding is masked, but an INT8 model's activation ranges include it, so the last window of a long text can come out marginally different (6 of 22 large documents in the check above, each at its tail; single-window texts are untouched). |
 | D13 | **Linear-time duplicate removal and context enhancer** (`pii_shield/fast_analysis.py`, `KeyValueContextEnhancer`; `FAST_ANALYSIS=false` switches them off). | Presidio compares every candidate with every result kept so far, and its enhancer deep-copies every result and scans the token list and a keyword list per result, so both grow with the square of the matches. On a 12 KB dense statement they cost 0.55 s of 5.4 s, and more with more recognizers. The replacements return exactly what Presidio's code returns (checked against it on random inputs in `tests/test_fast_analysis.py` and on the 1,642-text corpus), for the Presidio version pinned in `requirements.txt`. |
 | D14 | **Noise runs are blanked for the NER model** (`shorten_noise_for_ner`) — eight or more of one punctuation mark, 32 or more hex digits, and 64 or more base64 characters keep their first and last character and become spaces in between, in the copy of the text the NER model reads. | Every character of such a run is a token of its own to the model (a 64-character hash costs 63 tokens, a 2,000-dot leader line 2,000), and none holds a name. A 100 KB base64 attachment cost about 50 s of model time, a table of 150 hashes 2.9 s, a dotted leader 0.7 s; blanked they cost 0.33 s, 0.45 s and 0.02 s. The copy has the same length, so every offset still applies to the original text, which the pattern recognizers (PAN, e-mail, URL, ...) still read in full; the first and last character keep a token at each end, because Presidio's context step looks up the token of a match. Text without such a run is untouched, so the 1,642-text corpus produced identical results. |
+| D15 | **Step timings: the library records plain data, the app turns it into spans, a histogram and a header** — `AnonymizeStats.steps`, `details`, `timeline`, `ner_windows` and `Event.steps` (`pii_shield/models.py`, `pii_shield/observability.py`); `pii_shield` never imports `opentelemetry`. | A UAT request that took about 10 s could not be explained from what left the library: `anonymize_ms` was dropped at the API, and the recognizers, duplicate removal, post-processing and the Redis write had no timing at all (the wait for a detection thread was a single number, `queue_ms`). Five exclusive steps (`nlp_pass1`, `analyze`, `recovery_pass2`, `post_processing`, `handling`) are now timed with one recorder per `anonymize()` call (two detection threads per worker share the engine, so no timing state lives on it), with inclusive details (`ner_model`, `context_enhance`, `dedup`), the number of NER windows and a `timeline` of (step, offset, duration), all as plain floats, integers and strings. The API adds the steps only it can see (`auth`, `app_config`, `queue_wait`, `store_save`), derives `other` as `total` minus the steps (a function nobody timed shows up as `other` instead of disappearing), and builds the spans, the `pii.step.duration` histogram, the log fields and the `Server-Timing` header from the same numbers (`app/timing.py`), after the pool call returns, on the event-loop thread, with explicit start and end times; spans created that way nested correctly in Tempo (E1), and the library stays usable without any telemetry package. Measured cost on a development VM: 0.24 µs per timer, 7 µs per retroactive span, 1.3 µs per histogram record, which adds up to about 0.1 ms per request (an estimate from those parts), against 48 ms for the shortest live request seen and 785 ms for a 2.7 KB text with two NER passes (E3, E5). What the one text profiled showed (95 entities, two vCPUs, aarch64 Docker VM, so trust the ratios rather than the milliseconds): the NER model's forward pass was 713 of 785 ms (91%), the recognizers 13.1 ms, the context enhancer 1.6 ms, duplicate removal 0.7 ms, post-processing 1.0 ms and handling 0.06 ms (E5). Left out on purpose: per-recognizer spans (34 to 50 more rows per request in Azure `dependencies`), always-on profilers (+5% for pyinstrument, +11% for yappi, E7), a JSON `timings` field in the response (it would change the API contract), and the cost of the encrypt (PQC) strategy, which is inside `handling` and not analysed. Evidence: `docs/research/profiling-the-end-to-end-call.md` (experiments E1-E10). |
+| D16 | **`Server-Timing` on `/anonymize_unique` and `/deanonymize`, switched by `SERVER_TIMING` (default on), and `traceresponse` on every response.** | The header gives the Playground, `curl` and any client the step breakdown of *that* request without touching a response model: `AnonymizeUniqueResponse` stays as it is, the header is a few hundred bytes, and a client that does not know it ignores it. A JSON `timings` field would be richer and typed but would change the API contract. The format is the W3C one (`name;dur=<ms>`; the specification has no start times, so a step is a duration, not an interval): steps in execution order, each followed by its details (dotted names, inclusive, not to be summed), then `other` and `total`, with no `desc`, so a client can parse it by splitting on `,` and `;`. It is set on successful responses only; an error response carries `traceresponse` but no timing. `traceresponse` (the W3C Trace Context response header, `00-<trace id>-<span id>-<flags>`; an experimental draft in the OpenTelemetry package), added with `set_global_response_propagator(TraceResponsePropagator())`, lets the Playground link the exact trace; the same propagator adds `Access-Control-Expose-Headers: traceresponse`. In the experiment the trace id from the header existed in Tempo (E4). Exposure: the specification (section 4) notes that timings reveal server internals and allows a server to restrict them to authenticated users, and timings also correlate with the length and content of the input (low risk). Both endpoints are behind `require_user`, so with `AUTH_ENABLED=true` only authenticated callers see the header, and `SERVER_TIMING=false` removes it for everyone. Browsers show `Server-Timing` to scripts only for same-origin responses unless the server also sends `Timing-Allow-Origin`; PII Shield does not send it, and the Playground, a server-side Python client, reads the header directly (E4). How browser developer tools draw the header was not checked. |
+| D17 | **Histogram bounds raised to 120 s, a metrics instance id per process, and no `send` / `receive` spans** — `BOUNDS_MS = (1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 20000, 30000, 60000, 120000)` for `pii.step.duration`, `pii.detect.duration`, `pii.detect.queue_wait` and, through `View`s, the FastAPI instrumentation's `http.server.duration` (and `http.server.request.duration`, in seconds, if the stable HTTP conventions are switched on); the metrics resource's `service.instance.id` is the instance name (`OTEL_SERVICE_INSTANCE_ID`, else `CONTAINER_APP_REPLICA_NAME`, else the hostname) plus the process id; `FastAPIInstrumentor.instrument_app(app, exclude_spans=["receive", "send"])`. | *Bounds.* The SDK's default boundaries stop at 10,000 ms, so a slower request lands in the overflow bucket and Prometheus reports a quantile that falls there as the upper bound of the second-highest bucket: 30 values between 12 s and 25 s gave p50 = p95 = 10,000 ms (true values about 18,000 and 24,000), while bounds up to 120,000 ms gave p50 17,500 and p95 28,500 (E2). The UAT symptom, about 10 s, sat exactly on that ceiling, and the existing `pii.detect.*` histograms were already affected. They get new `le` series, so a dashboard window that spans the deployment mixes the two sets of buckets (expected, not observed). *Instance id.* gunicorn `--preload` builds one `Resource` before the fork, so every worker exported `service.instance.id=pii-shield-1` and their cumulative series became one series in Prometheus that each worker overwrote: four processes adding 50 each showed 50, not 200 (E8), and on the local stack Prometheus showed 133 of 779 requests. With a per-process id the same experiment gave four series and the right sum (200). Traces and logs keep the shared resource. Azure is not affected by the collision (its exporter sends deltas), but it takes `cloud_RoleInstance` from `service.instance.id`, so metric rows now carry one instance per process (checked by converting a data point with the installed exporter, offline: the role instance was `<replica name>-<pid>`). *Spans.* The ASGI `receive` and `send` spans (three of the five spans a request made, each about 0 ms) are excluded, which offsets part of the volume the step spans add in Tempo and Application Insights. That volume, and what it costs on Azure, has not been measured; `OTEL_TRACES_SAMPLER` and `PII_STEP_SPANS=false` are the levers. |
 
 ## 3. High-Level Design
 
@@ -155,8 +160,10 @@ The service package provides the full HTTP API and associated runtime infrastruc
 | auth.py | API-side OIDC bearer-token validation (JWKS cache, JWT verification), the `Principal`, and the FastAPI dependencies (`authenticate`, `require_user`, `require_admin`, `@public`). |
 | ui_auth.py | Streamlit-side sign-in gate (`require_login`), `GET /me` session handling and the bearer-token `ApiClient` used by both UIs. |
 | ui_launcher.py | Starts a Streamlit UI (`python -m app.ui_launcher playground|admin`): renders `.streamlit/secrets.toml` from the OIDC environment when authentication is enabled, then execs Streamlit. |
-| telemetry.py | OpenTelemetry SDK setup with dual-backend auto-detection (Azure Monitor vs. OTLP gRPC). Importing it registers the inert `TracerProvider` / `LoggerProvider` and the logging bridge; `init_telemetry()` attaches the exporters and creates the `MeterProvider`, once per worker process after the fork. |
-| streamlit_app.py | Streamlit web UI for end-user anonymize/de-anonymize operations. Connects to the FastAPI service via API_BASE. |
+| telemetry.py | OpenTelemetry SDK setup with dual-backend auto-detection (Azure Monitor vs. OTLP gRPC). Importing it registers the inert `TracerProvider` / `LoggerProvider` and the logging bridge; `init_telemetry()` attaches the exporters and creates the `MeterProvider`, once per worker process after the fork, with a per-process `service.instance.id` and the shared histogram bounds `BOUNDS_MS` (D17). It also registers the `traceresponse` response propagator (D16) at import. |
+| timing.py | Per-step timing on the API side (§6.7): `RequestClock` times the steps only the API can see (`auth`, `app_config`, `store_get`, `store_save`, `restore`), merges them with the library's `AnonymizeStats.steps` and derives `other` and `total`; then builds the `Server-Timing` header, the retroactive step spans, the `pii.step.duration` histogram and the `steps=` field of the log line. The library only returns plain numbers; this module turns them into telemetry (D15). |
+| streamlit_app.py | Streamlit web UI for end-user anonymize/de-anonymize operations. Connects to the FastAPI service via API_BASE. Shows the timing panel (§4.5.1). |
+| timing_view.py | Pure helpers behind the Playground's timing panel: parsing `Server-Timing` and `traceresponse` (tolerant of what a proxy may do to them), step order, shares, labels and the trace link. No Streamlit import. |
 | streamlit_admin.py | Streamlit web UI for admin operations — app registration, config management, registered app listing. |
 | recognizers/ | Backward-compatibility re-exports of custom recognizers (canonical code lives in pii_shield/recognizers/). |
 | operators/ | Backward-compatibility re-exports of custom operators (canonical code lives in pii_shield/operators/). |
@@ -212,7 +219,11 @@ The library package provides the core PII detection and anonymization engine wit
 </tr>
 <tr>
 <td>models.py</td>
-<td>Data classes: <em><strong>AnonymizeResult</strong></em> (anonymized text + entity mapping + hash/encrypt mappings), <em><strong>DetectedEntity</strong></em> (entity type, text, score, position), <em><strong>EntityConfig</strong></em> (per-entity strategy configuration).</td>
+<td>Data classes: <em><strong>AnonymizeResult</strong></em> (anonymized text + entity mapping + hash/encrypt mappings), <em><strong>DetectedEntity</strong></em> (entity type, text, score, position), <em><strong>EntityConfig</strong></em> (per-entity strategy configuration), <em><strong>AnonymizeStats</strong></em> (timings and counts of one call, including the per-step breakdown, D15).</td>
+</tr>
+<tr>
+<td>observability.py</td>
+<td>Telemetry-free observability primitives: the <em><strong>Event</strong></em> pushed to an optional <code>on_event</code> hook, the names of the timed steps (<code>LIBRARY_STEPS</code>, <code>DETAIL_NAMES</code>) and the <em><strong>StepRecorder</strong></em> that times one <code>anonymize()</code> call. Plain data only; it never imports OpenTelemetry (D15).</td>
 </tr>
 <tr>
 <td>pipeline.py</td>
@@ -458,7 +469,9 @@ The FastAPI app uses the ASGI lifespan protocol so that all warm-up work complet
 
 \- `pii.registered.apps` (observable gauge — callback reads `count_apps()` from Redis on each scrape)
 
-5.  `FastAPIInstrumentor.instrument_app(app)` enables automatic HTTP trace spans.
+\- `pii.detect.duration`, `pii.detect.queue_wait` and `pii.step.duration` (histograms in milliseconds, with the shared bounds up to 120 s; see [6.3](#63-metrics) and D17)
+
+5.  `FastAPIInstrumentor.instrument_app(app, exclude_spans=["receive", "send"])` enables automatic HTTP trace spans (one server span per request; the ASGI `receive` and `send` spans are left out).
 
 **Lifespan startup** (runs once per worker, before the first request is accepted):
 
@@ -473,6 +486,8 @@ The NLP pool (`app/nlp_pool.py`) is created at import and starts its threads on 
 #### 4.1.3 Anonymization Pipeline (POST /anonymize_unique)
 
 <img src="design-images/image5.png" style="width:6.7in;height:4.65556in" />
+
+**Timing:** each stage of this pipeline is timed as one of the steps of [6.7](#67-per-step-timing) (`auth`, `app_config`, `queue_wait`, the library's `nlp_pass1`, `analyze`, `recovery_pass2`, `post_processing` and `handling`, then `store_save`). They are reported in the `Server-Timing` response header, as spans under the request's trace, in the `pii.step.duration` histogram and on the request's log line (D15, D16).
 
 **Error handling:**
 
@@ -848,7 +863,17 @@ The pii_shield package is the canonical, reusable library — packaged as a Pyth
 > entity_mapping: dict\[str, str\] = field(default_factory=dict)\
 > hash_mapping: dict\[str, str\] = field(default_factory=dict)\
 > encrypt_mapping: dict\[str, str\] = field(default_factory=dict)\
-> entities: list\[DetectedEntity\] = field(default_factory=list)
+> entities: list\[DetectedEntity\] = field(default_factory=list)\
+> stats: AnonymizeStats | None = None\
+> \
+> @dataclass\
+> class AnonymizeStats:   # timings and counts of one call; plain data, no telemetry import\
+> detect_ms, anonymize_ms, total_ms: float\
+> nlp_ms, recovery_ms: float; recovery_pass: bool\
+> steps: dict\[str, float\]   # ms per step that ran, in execution order (D15)\
+> details: dict\[str, float\]   # inclusive "\<step\>.\<detail\>" ms, not part of the sum\
+> timeline: list\[tuple\[str, float, float\]\]   # (step, offset ms, duration ms)\
+> ner_windows: int
 
 #### 4.4.3 BatchProcessor
 
@@ -959,6 +984,8 @@ The Playground is a single-page Streamlit app organised around two top-level tab
 On the Anonymize tab the user picks an optional application context, pastes input text, and clicks Anonymize. The handler issues POST {API_BASE}/anonymize_unique with an X-App-Id header when an app is selected, then displays the detected entities (placeholder → original, with (hashed) and (encrypted) annotations where applicable) alongside the anonymised text. The session id, the merged entity mapping, and the anonymised text are stashed in st.session_state, and the De-anonymize tab's input fields are pre-populated from the same dictionary so the user can immediately round-trip the result without copy-pasting.
 
 On the De-anonymize tab the user can either rely on the auto-populated state from a prior anonymisation or supply a session id and ciphertext manually. The handler calls POST {API_BASE}/deanonymize with the include_hashed and include_encrypted flags toggled by the UI, and renders the restored text together with the mapping that was used. Because state lives in st.session_state, switching tabs preserves context across reruns.
+
+**Timing panel.** After an anonymization or a de-anonymization the Playground shows where the request spent its time. It reads the `Server-Timing` and `traceresponse` headers of the `requests` response, so it needs nothing from the API but the header (`SERVER_TIMING`, on by default): the server total, the round trip as the Playground measured it, the slowest step, a bar chart and a table of the top-level steps with milliseconds and share of the total (details indented under their step, never added to it), and the trace id, as an *Open trace* link when `TRACE_URL_TEMPLATE` (a URL containing `{trace_id}`) is set; for a trace the sampler dropped the panel says so instead of linking. Without the header there is no panel, only the round trip. The parsing lives in `app/timing_view.py`, which has no Streamlit dependency and tolerates what a proxy may do to a header (merged lines, added metrics, malformed values). Step labels: `nlp_pass1` "NLP pass 1 (spaCy + NER model)", `analyze` "Recognizers (regex, validators, scoring, dedup)", `recovery_pass2` "Second NER pass (case recovery)", `post_processing` "Post-processing", `handling` "Handling (replace / hash / fake)", `queue_wait` "Waiting for a detection thread".
 
 #### 4.5.2 Admin UI (Port 7861)
 
@@ -1106,7 +1133,8 @@ These are plain dataclass objects (no Pydantic dependency) so the library layer 
 |----|----|----|
 | EntityConfig | Per-entity-type strategy configuration | strategies: dict\[str, Strategy\] (default {}) — Strategy is Literal\["replace", "hash", "encrypt", "fake"\] |
 | DetectedEntity | Single PII entity found in text | entity_type: str, start: int, end: int, score: float, text: str |
-| AnonymizeResult | Result of anonymizing a single text string | anonymized_text: str, entity_mapping: dict\[str, str\], hash_mapping: dict\[str, str\], encrypt_mapping: dict\[str, str\], entities: list\[DetectedEntity\] |
+| AnonymizeResult | Result of anonymizing a single text string | anonymized_text: str, entity_mapping: dict\[str, str\], hash_mapping: dict\[str, str\], encrypt_mapping: dict\[str, str\], entities: list\[DetectedEntity\], stats: AnonymizeStats \| None |
+| AnonymizeStats | Timings and counts of one anonymize call, as plain data | detect_ms, anonymize_ms, total_ms, nlp_ms, recovery_ms, recovery_pass, entity_count, entity_counts, steps: dict\[str, float\] (ms per step, in execution order), details: dict\[str, float\] (inclusive `<step>.<detail>` ms), timeline: list\[tuple\[str, float, float\]\] (step, offset ms, duration ms), ner_windows: int (§6.7, D15) |
 
 ### 5.5 Redis Connection Management
 
@@ -1144,9 +1172,9 @@ Both backends use the same OTel SDK providers (TracerProvider, MeterProvider, Lo
 |---------------------|-------------------------------------------------|
 | service.name        | OTEL_SERVICE_NAME (default pii-shield)          |
 | service.version     | 0.1.0                                           |
-| service.instance.id | OTEL_SERVICE_INSTANCE_ID (default pii-shield-1) |
+| service.instance.id | OTEL_SERVICE_INSTANCE_ID (default pii-shield-1) for traces and logs. For metrics, that name (else CONTAINER_APP_REPLICA_NAME, else the hostname) plus the process id, so each gunicorn worker has its own metric series (D17) |
 
-**Initialization:** `app/telemetry.py` is imported at module load time (before the FastAPI app is created). That registers the `TracerProvider` and `LoggerProvider` and the logging bridge, but they have no exporter yet, so no thread and no lock exists in the gunicorn master. `init_telemetry()` is then called from the FastAPI lifespan in every worker, after the fork: it creates the exporters, attaches the span and log processors, and creates the `MeterProvider`. Instruments created at import (the counters, the gauge, the FastAPI instrumentation) are API proxies that bind to the `MeterProvider` once it is registered.
+**Initialization:** `app/telemetry.py` is imported at module load time (before the FastAPI app is created). That registers the `TracerProvider` and `LoggerProvider` and the logging bridge, but they have no exporter yet, so no thread and no lock exists in the gunicorn master. `init_telemetry()` is then called from the FastAPI lifespan in every worker, after the fork: it creates the exporters, attaches the span and log processors, and creates the `MeterProvider`, which carries this worker's own `service.instance.id` and the shared histogram bounds (D17). Instruments created at import (the counters, the gauge, the FastAPI instrumentation) are API proxies that bind to the `MeterProvider` once it is registered.
 
 > **Why per worker.** The Dockerfile starts gunicorn with `--preload`, so the app is imported in the master and the workers are forked from it. A metric reader started in the master runs a thread and holds a collection lock while the `pii.registered.apps` gauge callback reads Redis; if a fork lands while the lock is held, the worker inherits it locked, its reader never exports again, and every counter and histogram it records is silently lost. Traces and logs keep flowing, because the SDK re-initialises its batch processors after a fork but not the metric reader. On Azure this looked like requests in Application Insights and nothing in `customMetrics`, so the by-application Grafana dashboard was empty. `tests/test_telemetry.py` guards the rule.
 
@@ -1156,12 +1184,15 @@ Both backends use the same OTel SDK providers (TracerProvider, MeterProvider, Lo
 
 | Span Name | Location | Key Attributes |
 |----|----|----|
-| pii_shield.anonymize | POST /anonymize_unique | pii.language, pii.entities_found, pii.placeholders_created |
+| pii_shield.anonymize | POST /anonymize_unique | pii.language, pii.chars, pii.entities_found, pii.placeholders_created, pii.queue_ms, pii.detect_ms, pii.nlp_ms, pii.recovery_ms, pii.recovery_pass, pii.ner_windows |
 | pii_shield.deanonymize | POST /deanonymize | pii.record_id, pii.placeholders_count |
+| auth, app_config, queue_wait, nlp_pass1, analyze, recovery_pass2, post_processing, handling, store_save | POST /anonymize_unique: one INTERNAL child span per step that ran (§6.7); switch: PII_STEP_SPANS | pii.step (the step name); pii.detail.ner_model_ms, pii.detail.context_enhance_ms, pii.detail.dedup_ms on a step that has that detail |
+
+The step spans are built after the work is done, with explicit start and end times (D15), and only when the request's trace is recorded (a trace the sampler dropped gets none). `auth`, `app_config` and `store_save` are children of the HTTP server span; `queue_wait` and the five library steps are children of `pii_shield.anonymize`, and every child lies inside its parent's interval. `/deanonymize` has no step spans: its lighter breakdown is only in the `Server-Timing` header.
 
 #### 6.2.2 Auto-Instrumented Spans
 
-FastAPIInstrumentor.instrument_app(app) automatically creates spans for all HTTP requests, including:
+FastAPIInstrumentor.instrument_app(app, exclude_spans=["receive", "send"]) automatically creates one server span for every HTTP request (the ASGI receive and send spans, about 0 ms each, are left out; D17), including:
 
 - HTTP method, route, status code
 
@@ -1180,6 +1211,13 @@ FastAPIInstrumentor.instrument_app(app) automatically creates spans for all HTTP
 | pii.deanonymize.requests | Counter | app_name, app_id | Total de-anonymization requests processed |
 | pii.errors | Counter | endpoint, status_code, error_type, app_id | Total errors by endpoint, HTTP status, and error category |
 | pii.registered.apps | Observable Gauge | — | Number of currently registered applications (polled from Redis via count_apps()) |
+| pii.detect.duration | Histogram (ms) | endpoint, app_id, app_name, size, recovery_pass | Time to identify the PII in one request: the NLP and NER passes, the recognizers and the post-processing (`detect_ms`; not the handling or the Redis write) |
+| pii.detect.queue_wait | Histogram (ms) | endpoint, app_id, app_name, size, recovery_pass | Time a request waited for a free detection thread |
+| pii.step.duration | Histogram (ms) | step, size | Time per step of a request (§6.7). `step` is a top-level step, `other`, or a detail `<step>.<detail>` (inclusive: never add it to the top-level steps). Deliberately no app_id or app_name label |
+
+**`size`** is the length class of the text (`_size_class` in `app/main.py`): `small` up to 500 characters, `medium` up to 2,000, `large` up to 8,000, `xlarge` above that.
+
+**Histogram buckets:** pii.step.duration, pii.detect.duration, pii.detect.queue_wait and (through a View) the FastAPI instrumentation's http.server.duration use the explicit bounds 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 20000, 30000, 60000 and 120000 ms (D17). The SDK default stops at 10,000 ms, so any quantile that falls above 10 s reads as exactly 10 s. Prometheus names them pii_step_duration_milliseconds_{bucket,sum,count} and so on. Azure Monitor receives histograms as sum, count, min and max only, without buckets.
 
 **Export Interval:** PeriodicExportingMetricReader with export_interval_millis=5000 (5 seconds); `OTEL_METRIC_EXPORT_INTERVAL` (milliseconds) overrides it.
 
@@ -1198,6 +1236,8 @@ Python's standard logging module is bridged to OpenTelemetry via LoggingInstrume
 **Privacy:** Log messages intentionally record only entity counts and record IDs — **never raw PII values**. Example:
 
 > Unique anonymization complete: 3 entities, id=a1b2c3d4-...
+
+Every /anonymize_unique request logs one such line. It carries the timing fields `chars`, `queue_ms`, `detect_ms`, `nlp_ms`, `recovery_pass` and `recovery_ms`, followed by `ner_windows=<n>` and `steps=<step>:<ms>,...`, every step that ran in execution order and then `other`, with one decimal (§6.7). Numbers only, so no PII.
 
 ### 6.5 Dashboards
 
@@ -1218,6 +1258,7 @@ Python's standard logging module is bridged to OpenTelemetry via LoggingInstrume
 | pii-shield.json        | Request rates, entity categories, HTTP latency |
 | pii-shield-by-app.json | Per-app breakdown with dynamic app selector    |
 | pii-shield-errors.json | Error rates, error logs, traces                |
+| pii-shield-latency.json | Where requests spend their time: waiting vs computing, time per step (histogram, Tempo span metrics, slow-request traces and log lines) (§6.7) |
 
 #### 6.5.2 Azure 
 
@@ -1237,6 +1278,7 @@ Python's standard logging module is bridged to OpenTelemetry via LoggingInstrume
 | pii-shield.json | Analytics — request rates, entity categories, HTTP latency (KQL) |
 | pii-shield-by-app.json | By Application — per-app breakdown with dynamic app selector (KQL) |
 | pii-shield-errors.json | Errors — error rates, error logs, traces (KQL) |
+| pii-shield-latency.json | Latency — waiting vs computing, time per step from the step spans (`dependencies`, `type == "InProc"`) and from `customMetrics` (averages only), slow requests (KQL; not run against a real workspace) |
 
 **RBAC for Grafana:**
 
@@ -1257,6 +1299,51 @@ SQLite-based audit logging for application lifecycle events (distinct from obser
 | Query Endpoint | GET /audit-log?app_id=...&action=...&limit=100 |
 | Order | Newest first (ORDER BY timestamp DESC) |
 | Retention | Unbounded (no auto-purge; manual DB management required) |
+
+### 6.7 Per-Step Timing
+
+Every `/anonymize_unique` request is split into steps that never overlap, so the steps plus `other` add up to the server time (`total`), and the same numbers reach five places: the `Server-Timing` response header, the Playground, one span per step in the trace, the `pii.step.duration` histogram and the request's log line. Why it is built this way: D15 (who measures what), D16 (the header) and D17 (histogram bounds, instance id, span noise). How an operator reads it: [DEPLOYMENT.md](../DEPLOYMENT.md#requests-take-several-seconds).
+
+| Step | Measured by | What it covers | Present |
+|----|----|----|----|
+| auth | API (`app/auth.py`) | Bearer-token validation | Only with `AUTH_ENABLED=true` |
+| app_config | API (`_fetch_app_data`) | Per-application settings from Redis (5 s in-process cache) | Only with an `X-App-Id` header |
+| queue_wait | API | Waiting for a free detection thread | Always (close to 0 when idle) |
+| nlp_pass1 | Library | First NLP pass: spaCy tokenizer, tagger and lemmatizer, the NER model, decoding | Always |
+| analyze | Library | Presidio `analyze()` of that pass: regex and validator recognizers, NER read-out, context scoring, duplicate removal, threshold, allow-list | Always |
+| recovery_pass2 | Library | The second NER pass over the re-cased text (its `process_text`, `analyze` and merge) | Only when the case-recovery pass ran |
+| post_processing | Library | The pipeline functions after recognition (titles, line breaks, address merge, overlap removal, ...) | Always |
+| handling | Library | Applying the strategies (replace / hash / fake / encrypt) and rebuilding the text (what `anonymize_ms` always measured) | Always |
+| store_save | API | Redis write of the session mapping | Always (anonymize) |
+| other | Derived | `total` minus the steps above, never below 0: the small work between the steps (the second-pass gate, merging allow-lists, counting entities, hand-offs between threads) | Always |
+| total | Derived | Server time from the start of authentication (of the handler, with authentication off) to the moment the headers are built; reading the request and writing the response are outside it | `Server-Timing` only |
+
+`/deanonymize` reports `auth`, `app_config`, `store_get` (`store.get`), `restore` (`engine.deanonymize`), `other` and `total`.
+
+*Details* are inclusive sub-measures of the step that is running when they happen, named `<step>.<detail>`, never added to the steps: `ner_model` (time inside the ONNX model's forward pass), `context_enhance` (the context-scoring enhancer) and `dedup` (duplicate removal), so the keys are `nlp_pass1.ner_model`, `analyze.context_enhance`, `analyze.dedup` and the same three under `recovery_pass2`. A key exists only if it was measured. `ner_windows` counts the windows of 512 tokens the NER model ran over all passes. Reading them: "recognising the PII" is `nlp_pass1` + `analyze` + `recovery_pass2`; what remains of `nlp_pass1` after `ner_model` is spaCy and decoding; what remains of `analyze` after `context_enhance` and `dedup` is the regex and validator recognizers.
+
+**Library side** (`pii_shield/observability.py`, `pii_shield/models.py`): `StepRecorder` times the five library steps with `time.perf_counter()` and fills `AnonymizeStats.steps` (milliseconds per step, in execution order), `details`, `timeline` (step, offset from the start of the call, duration) and `ner_windows`; `Event.steps` copies `steps`. `nlp_ms`, `recovery_ms` and `anonymize_ms` keep their meaning (`nlp_pass1`, `recovery_pass2`, `handling`). Plain data only: the module imports no telemetry package.
+
+**API side:** `app/timing.py` times what only the API can see (`auth`, left by `app/auth.py`; `app_config`; `store_save`; and for `/deanonymize` `store_get` and `restore`), takes `queue_wait` and the start of the library's timeline from the detection-pool wrapper in `app/main.py`, merges them with `AnonymizeStats.steps`, derives `other` and `total`, and emits:
+
+| Output | Content | Switch | On Azure Monitor |
+|----|----|----|----|
+| `Server-Timing` header | On successful `/anonymize_unique` and `/deanonymize` responses: comma-separated `name;dur=<ms>` with two decimals, in execution order, every step directly followed by its details, then `other` and `total`; no `desc` | `SERVER_TIMING` | The same header (not tested through the Container Apps ingress) |
+| `traceresponse` header | `00-<trace id>-<span id>-<flags>` on every response of a traced request | — | The same header |
+| Spans | `/anonymize_unique` only: one INTERNAL span per step that ran, named after the step, attribute `pii.step`, and `pii.detail.<detail>_ms` for a step with details (§6.2.1); none for a trace the sampler dropped | `PII_STEP_SPANS`, `OTEL_TRACES_SAMPLER` | `dependencies` rows with `type == "InProc"` and the step in `customDimensions["pii.step"]` (checked by converting the app's spans with the installed exporter, offline); durations are rounded to whole milliseconds |
+| Histogram | `/anonymize_unique` only: `pii.step.duration`, labels `step` and `size`, one record per step, per detail and for `other` (not `total`) (§6.3) | — | `customMetrics` as sum, count, min and max, no buckets |
+| Log line | `/anonymize_unique` only: `ner_windows=<n> steps=<step>:<ms>,...` appended to the existing line, every step that ran in execution order and then `other`, one decimal (§6.4) | — | `traces` rows (the table the existing errors dashboard reads logs from; not tested) |
+
+The Playground (`app/streamlit_app.py`, with the parsing in `app/timing_view.py`) reads the two headers; see §4.5.1.
+
+**Step names are an API.** The dashboards, the Playground's labels and order, the header, the spans and the histogram labels all read them. Adding or renaming a step means changing every one of them together (`LIBRARY_STEPS` in `pii_shield/observability.py`, `app/timing.py`, `app/timing_view.py`, both latency dashboards and these documents); `tests/test_dashboard_json.py` checks the dashboards' step names against `LIBRARY_STEPS`, and `tests/test_step_timing.py` and `tests/test_step_telemetry.py` pin what the library and the API report.
+
+**Limits to keep in mind.**
+
+- Local Prometheus and Tempo give percentiles per step (histogram buckets; span metrics and TraceQL, both coarse because their buckets are powers of two). On Azure only averages and maxima come from the histogram, percentiles have to come from the step spans (whose durations the exporter rounds to whole milliseconds), and none of the Azure queries has been run: there was no Azure access while this was built.
+- Sampling (`OTEL_TRACES_SAMPLER`) thins the spans and everything derived from them (Tempo span metrics, a query on `dependencies`), not the histograms, the log line or the header.
+- Per-recognizer and per-function timings are not recorded on every request; `scripts/profile_detection.py` produces them offline.
+- The measurements behind the design come from one 2.7 KB text on an aarch64 Docker VM with two vCPUs; Azure x86 replicas were not measured.
 
 ## 7. Infrastructure & Deployment
 
@@ -1287,7 +1374,7 @@ The local development stack is defined in docker-compose.yml with 5 services:
 | redis-data | /data (redis container) | Redis AOF persistence across restarts |
 | lgtm-data | /data (otel-lgtm container) | Grafana/LGTM data persistence |
 
-**Dashboard Volume Mounts:** Three dashboard JSON files and a provisioning YAML are bind-mounted into the otel-lgtm container at /otel-lgtm/grafana/conf/provisioning/dashboards/custom/.
+**Dashboard Volume Mounts:** Four dashboard JSON files and a provisioning YAML are bind-mounted into the otel-lgtm container at /otel-lgtm/grafana/conf/provisioning/dashboards/custom/.
 
 Inter-Service Communication: The Streamlit services set API_BASE=http://app:8000 to reach the FastAPI service via Docker DNS. Outside Docker, API_BASE defaults to http://localhost:8000.
 
@@ -1466,9 +1553,13 @@ Complete reference of all environment variables, organized by category.
 | Variable | Default | Required | Description |
 |----|----|----|----|
 | OTEL_SERVICE_NAME | pii-shield | No | Service name in OTel resource attributes |
-| OTEL_SERVICE_INSTANCE_ID | pii-shield-1 | No | Instance identifier in OTel resource attributes |
+| OTEL_SERVICE_INSTANCE_ID | pii-shield-1 | No | Instance identifier in the OTel resource of traces and logs. The metrics resource starts from it (else from CONTAINER_APP_REPLICA_NAME, which Azure Container Apps sets, else the hostname) and appends the process id, so each gunicorn worker exports its own series (D17) |
 | OTEL_EXPORTER_OTLP_ENDPOINT | http://otel-lgtm:4317 | No | OTLP gRPC endpoint (used when Azure Monitor not configured) |
 | OTEL_METRIC_EXPORT_INTERVAL | 5000 | No | How often metrics are exported, in milliseconds |
+| OTEL_TRACES_SAMPLER | parentbased_always_on | No | Standard OTel sampler (always_on, always_off, parentbased_always_on, parentbased_always_off, traceidratio, parentbased_traceidratio). Decides which traces, and so which step spans, are exported; metrics, logs and the Server-Timing header are not sampled |
+| OTEL_TRACES_SAMPLER_ARG | — | No | Sampling ratio, 0.0-1.0, for traceidratio and parentbased_traceidratio |
+| SERVER_TIMING | true | No | Server-Timing response header (the time of each step) on /anonymize_unique and /deanonymize. false, 0, no or off removes it (D16) |
+| PII_STEP_SPANS | true | No | One child span per step under each request's trace (§6.2.1). false keeps only the spans that existed before; metrics, the header and the log line are not affected |
 | APPLICATIONINSIGHTS_CONNECTION_STRING | — | No | Azure Application Insights connection string. If set, Azure Monitor exporters are used instead of OTLP. |
 
 #### 7.4.7 UI / Deployment
@@ -1476,6 +1567,7 @@ Complete reference of all environment variables, organized by category.
 | Variable | Default | Required | Description |
 |----|----|----|----|
 | API_BASE | http://localhost:8000 | No | FastAPI URL for the Streamlit UIs (playground, admin). Set to http://app:8000 in Docker Compose, http://pii-shield in Azure Container Apps. |
+| TRACE_URL_TEMPLATE | — | No | Playground only: a URL pattern that contains {trace_id}. The timing panel (§4.5.1) shows it, filled in with the request's trace id, as a link to the trace. Empty: the trace id is shown without a link |
 | IMAGE_TAG | latest | No | Docker image tag for build/deploy scripts |
 
 ## 8. Security Considerations
@@ -1487,7 +1579,8 @@ Complete reference of all environment variables, organized by category.
 | PII never logged | Log messages record only entity types and counts — never raw PII values. Example: "3 entities, id=..." |
 | Session auto-expiry | Redis TTL (SESSION_TTL_SECONDS, default 24h) ensures sessions are garbage-collected automatically |
 | Encrypted tokens | The encrypt strategy produces ciphertext that is opaque to the LLM and cannot be reversed without the decapsulation/decryption key |
-| No PII in telemetry | OTel span attributes contain only entity_type, entities_found counts, and record_id |
+| No PII in telemetry | OTel span attributes contain only entity_type, entities_found counts, and record_id; the step spans, the `pii.step.duration` histogram and the log line add only durations, counts and step names |
+| Timing exposure | The `Server-Timing` header reveals how long each step took (internals, correlated with input length) and `traceresponse` a trace id, never content. Both endpoints that send it are behind `require_user`; `SERVER_TIMING=false` removes the header (D16) |
 
 ### 8.2 Encryption
 
@@ -1554,9 +1647,10 @@ Operational constraints: Streamlit keeps sign-in state in process memory, so the
 | test_app_registration.py | App registration, config CRUD, allow-lists, delete, multi-tenant cache invalidation | 29 |
 | test_audit.py | SQLite audit log recording, querying and filtering | 15 |
 | test_batch.py | Batch/bulk processing (auto-skipped if pandas not installed) | 22 |
+| test_compare_branches.py | scripts/compare_branches.py without Docker: arguments, ref export, documents, statistics, report, round order, clean-up | 52 |
 | test_context_config.py | Recognizer-context overrides loaded from recognizer_contexts.yml | 18 |
 | test_customer_id.py | CustomerIdRecognizer — context-elevated detection of customer/account ids | 27 |
-| test_dashboard_json.py | Grafana dashboard JSON structural validity | 21 |
+| test_dashboard_json.py | Grafana dashboard JSON: structure, datasource uids, and the latency dashboards' queries checked against the step names, metrics and log line | 61 |
 | test_datetime_filter.py | DATE_TIME entity filtering and natural-date heuristics | 34 |
 | test_encrypt_strategy.py | Fernet encrypt/decrypt round-trip and token detection | 13 |
 | test_endpoints.py | FastAPI endpoint integration (anonymize, deanonymize, apps, audit, allow-lists) | 35 |
@@ -1574,10 +1668,14 @@ Operational constraints: Streamlit keeps sign-in state in process memory, so the
 | test_location_reclassify.py | PERSON → LOCATION reclassification for Indian places | 29 |
 | test_mapping_store.py | Redis session store (save, get, delete, TTL) | 17 |
 | test_nlp_engine.py | NLP engine selection and initialisation (spacy / stanza / transformers / onnx) | 20 |
+| test_playground_timing.py | Playground timing panel (Streamlit AppTest): the panel, the trace link, missing or unreadable headers, failed calls | 16 |
 | test_pqc_encrypt_strategy.py | PQC (ML-KEM-768 + AES-256-GCM) encrypt/decrypt round-trip and token detection | 20 |
+| test_step_telemetry.py | API step timing: `Server-Timing` header, step spans and their parents, `pii.step.duration`, bucket bounds, `traceresponse`, log line, switches, authentication | 77 |
+| test_step_timing.py | Library step recorder and `AnonymizeStats` steps, details, timeline and NER windows; thread ownership; the library never imports OpenTelemetry | 31 |
 | test_themes.py | Streamlit theme loader and palette presets | 5 |
+| test_timing_view.py | Parsing `Server-Timing` and `traceresponse`, the breakdown the panel shows, labels, the trace link | 169 |
 
-Total: 26 test files, 543 tests collected (run pytest --collect-only -q for the live count).
+Total: 31 test files, 928 tests collected (run pytest --collect-only -q for the live count).
 
 ### 9.3 Key Fixtures (tests/conftest.py)
 
@@ -1750,11 +1848,16 @@ All entity types support all four strategies. The strategy is determined by (in 
 | FAST_ANALYSIS | true | No | Runtime | Linear-time duplicate removal and context enhancer |
 | WEB_CONCURRENCY | 6 | No | Runtime | Gunicorn worker count |
 | OTEL_SERVICE_NAME | pii-shield | No | Telemetry | OTel service name |
-| OTEL_SERVICE_INSTANCE_ID | pii-shield-1 | No | Telemetry | OTel instance ID |
+| OTEL_SERVICE_INSTANCE_ID | pii-shield-1 | No | Telemetry | OTel instance ID of traces and logs; metrics append the process id to it (else to CONTAINER_APP_REPLICA_NAME, else to the hostname) |
 | OTEL_EXPORTER_OTLP_ENDPOINT | http://otel-lgtm:4317 | No | Telemetry | OTLP gRPC endpoint (local dev) |
 | OTEL_METRIC_EXPORT_INTERVAL | 5000 | No | Telemetry | Metric export interval (milliseconds) |
+| OTEL_TRACES_SAMPLER | parentbased_always_on | No | Telemetry | Standard OTel trace sampler; controls how many traces and step spans are exported |
+| OTEL_TRACES_SAMPLER_ARG | — | No | Telemetry | Sampling ratio (0.0-1.0) for the traceidratio samplers |
+| SERVER_TIMING | true | No | Telemetry | Server-Timing response header on /anonymize_unique and /deanonymize (false, 0, no, off = none) |
+| PII_STEP_SPANS | true | No | Telemetry | One child span per step in each trace (false = none) |
 | APPLICATIONINSIGHTS_CONNECTION_STRING | — | No | Telemetry | Azure Monitor connection string (overrides OTLP) |
 | API_BASE | http://localhost:8000 | No | UI | FastAPI URL for Streamlit UIs (playground, admin) |
+| TRACE_URL_TEMPLATE | — | No | UI | Playground only: link pattern containing {trace_id} for the timing panel |
 | IMAGE_TAG | latest | No | Deployment | Docker image tag for build/deploy scripts |
 | REDIS_AUTH_MODE | key | No | Redis | key (access key in URL) or entra (Azure managed identity) |
 | REDIS_HOST | — | If entra | Redis | Azure Redis hostname |
@@ -1805,6 +1908,8 @@ Further optional authentication settings (OIDC_ISSUER, OIDC_JWKS_URL, OIDC_ALGOR
 | GET | /me | Identity and role tier of the calling token | Authorization: Bearer (when AUTH_ENABLED) | — | MeResponse (200) |
 
 When `AUTH_ENABLED=true`, every endpoint above except `/health`, `/docs`, `/redoc` and `/openapi.json` additionally requires an `Authorization: Bearer <access token>` header: the user tier for the anonymize/de-anonymize/read endpoints, the admin tier for `/apps` writes, the allow-list endpoints and `/audit-log` (§8.4). The `X-App-Id` header is unchanged and is not an authentication mechanism.
+
+**Response headers.** `POST /anonymize_unique` and `POST /deanonymize` also return `Server-Timing` (`name;dur=<ms>` per step, then `other` and `total`; absent when `SERVER_TIMING=false`), and every response carries `traceresponse` (`00-<trace id>-<span id>-<flags>`). See §6.7 and D16.
 
 ## 12. Future Work
 
