@@ -1,4 +1,6 @@
 import asyncio
+import contextvars
+import functools
 import json
 import logging
 import os
@@ -6,14 +8,23 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from contextlib import asynccontextmanager
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from opentelemetry import metrics, trace
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.trace import StatusCode
 
+from app.request_timing import RequestTimingMiddleware
 from app.telemetry import init_telemetry
+from app.timing import (
+    PoolTiming,
+    RequestClock,
+    anonymize_log_fields,
+    deanonymize_log_fields,
+    finish_anonymize,
+    finish_deanonymize,
+)
 from pii_shield.engine import PiiShieldEngine
-from pii_shield.models import EntityConfig
+from pii_shield.models import AnonymizeStats, EntityConfig
 from pii_shield.nlp_engine import get_nlp_engine_name
 from pii_shield.pipeline import (
     is_valid_datetime as _is_valid_datetime,
@@ -134,6 +145,39 @@ get_auth_state()
 _NLP_THREAD_POOL_SIZE = int(os.getenv("NLP_THREAD_POOL_SIZE", "6"))
 
 
+async def _run_in_thread_timed(func, /, *args, **kwargs):
+    """Run *func* on a thread of the loop's default executor, like ``asyncio.to_thread``.
+
+    Returns ``(result, PoolTiming)``: how long the job waited for a free thread (the executor has
+    ``NLP_THREAD_POOL_SIZE`` per worker), and the wall-clock moment its callable started, from which the steps the
+    library timed are laid out as spans.  The caller's context (the trace span) is kept, as ``to_thread`` does.
+    """
+    loop = asyncio.get_running_loop()
+    context = contextvars.copy_context()
+    call = functools.partial(context.run, func, *args, **kwargs)
+    submitted = time.perf_counter()
+    started: list[tuple[float, int]] = []
+
+    def timed_call():
+        started.append((time.perf_counter(), time.time_ns()))
+        return call()
+
+    result = await loop.run_in_executor(None, timed_call)
+    started_at, started_ns = started[0]
+    return result, PoolTiming((started_at - submitted) * 1000.0, started_ns)
+
+
+def _size_class(chars: int) -> str:
+    """A low-cardinality label for the length of a text, for metrics."""
+    if chars <= 500:
+        return "small"
+    if chars <= 2000:
+        return "medium"
+    if chars <= 8000:
+        return "large"
+    return "xlarge"
+
+
 @asynccontextmanager
 async def _lifespan(app):
     # Per worker, after gunicorn --preload has forked it. Never at import: see app/telemetry.py.
@@ -162,7 +206,11 @@ app = FastAPI(
     # unless its endpoint is explicitly marked @public. A no-op when auth is off.
     dependencies=[Depends(authenticate)],
 )
-FastAPIInstrumentor.instrument_app(app)
+# Added before the instrumentation, so that this middleware runs inside the server span and its log line carries the
+# trace id. Without exclude_spans every request carries three more spans (one receive, two send) that last about
+# 0 ms and tell nothing.
+app.add_middleware(RequestTimingMiddleware)
+FastAPIInstrumentor.instrument_app(app, exclude_spans=["receive", "send"])
 
 
 # ---------------------------------------------------------------------------
@@ -318,14 +366,21 @@ def _validate_app_id(app_id: str | None) -> dict | None:
 )
 async def anonymize_unique_text(
     request: AnonymizeRequest,
+    http_request: Request,
+    response: Response,
     x_app_id: str | None = Header(default=None),
 ) -> AnonymizeUniqueResponse:
     """Detect and anonymize PII, assigning a unique identifier to each distinct entity."""
+    clock = RequestClock.begin(http_request)  # where the time of this request goes: app/timing.py
+    server_span = trace.get_current_span()
     try:
         # Single pipelined + cached fetch replaces 5 separate Redis GETs
-        app_data = (await _fetch_app_data(x_app_id)) if x_app_id else None
-        if x_app_id and app_data is None:
-            raise HTTPException(status_code=404, detail=f"Application '{x_app_id}' not found.")
+        app_data = None
+        if x_app_id:
+            with clock.step("app_config"):
+                app_data = await _fetch_app_data(x_app_id)
+            if app_data is None:
+                raise HTTPException(status_code=404, detail=f"Application '{x_app_id}' not found.")
         app_name = app_data["app_name"] if app_data else ""
 
         # Merge per-request allow-list with per-app allow-list
@@ -350,7 +405,7 @@ async def anonymize_unique_text(
         with tracer.start_as_current_span("pii_shield.anonymize") as span:
             span.set_attribute("pii.language", request.language)
             # Offload CPU-bound NLP inference to a thread so the event loop stays free
-            anon_result = await asyncio.to_thread(
+            anon_result, pool = await _run_in_thread_timed(
                 engine.anonymize,
                 text=request.text,
                 language=request.language,
@@ -361,6 +416,8 @@ async def anonymize_unique_text(
             )
             span.set_attribute("pii.entities_found", len(anon_result.entities))
             span.set_attribute("pii.placeholders_created", len(anon_result.entity_mapping))
+            stats = anon_result.stats or AnonymizeStats()
+            span.set_attribute("pii.ner_windows", stats.ner_windows)
 
         record = AnonymizationRecord(
             original_text=request.text,
@@ -370,18 +427,14 @@ async def anonymize_unique_text(
             hash_mapping=anon_result.hash_mapping,
             encrypt_mapping=anon_result.encrypt_mapping,
         )
-        record_id = await store.save(record)
+        with clock.step("store_save"):
+            record_id = await store.save(record)
 
         for entity in anon_result.entities:
             pii_entities_detected.add(1, {"endpoint": "/anonymize_unique", "entity_type": entity.entity_type, "app_id": x_app_id or "", "app_name": app_name})
         anonymize_request_counter.add(1, {"endpoint": "/anonymize_unique", "app_id": x_app_id or "", "app_name": app_name})
-        logger.info(
-            "Unique anonymization complete: %d entities, id=%s",
-            len(anon_result.entities),
-            record_id,
-        )
-
-        return AnonymizeUniqueResponse(
+        # Built before the report is, so that the work of the response model is part of ``other`` and of ``total``.
+        result = AnonymizeUniqueResponse(
             id=record_id,
             text=request.text,
             anonymized_text=anon_result.anonymized_text,
@@ -389,6 +442,24 @@ async def anonymize_unique_text(
             hash_mapping=anon_result.hash_mapping,
             encrypt_mapping=anon_result.encrypt_mapping,
         )
+        report = finish_anonymize(
+            clock,
+            stats,
+            pool,
+            size=_size_class(len(request.text)),
+            response=response,
+            server_span=server_span,
+            pipeline_span=span,
+        )
+        logger.info(
+            "Unique anonymization complete: %d entities, id=%s chars=%d%s",
+            len(anon_result.entities),
+            record_id,
+            len(request.text),
+            anonymize_log_fields(report),
+        )
+
+        return result
     except HTTPException as exc:
         error_type = "not_found" if exc.status_code == 404 else "validation"
         _record_error("/anonymize_unique", exc.status_code, error_type, exc.detail, x_app_id or "")
@@ -408,6 +479,8 @@ async def anonymize_unique_text(
 )
 async def deanonymize_text(
     request: DeanonymizeRequest,
+    http_request: Request,
+    response: Response,
     x_app_id: str | None = Header(default=None),
 ) -> DeanonymizeResponse:
     """Restore original PII values in text that was anonymized via /anonymize_unique.
@@ -415,13 +488,18 @@ async def deanonymize_text(
     The provided text may differ from the original anonymized output (e.g. it was
     processed by an LLM) — only the placeholders are replaced.
     """
+    clock = RequestClock.begin(http_request)
     try:
-        app_data = (await _fetch_app_data(x_app_id)) if x_app_id else None
-        if x_app_id and app_data is None:
-            raise HTTPException(status_code=404, detail=f"Application '{x_app_id}' not found.")
+        app_data = None
+        if x_app_id:
+            with clock.step("app_config"):
+                app_data = await _fetch_app_data(x_app_id)
+            if app_data is None:
+                raise HTTPException(status_code=404, detail=f"Application '{x_app_id}' not found.")
         app_name = app_data["app_name"] if app_data else ""
 
-        record = await store.get(request.id)
+        with clock.step("store_get"):
+            record = await store.get(request.id)
         if record is None:
             raise HTTPException(
                 status_code=404,
@@ -432,17 +510,20 @@ async def deanonymize_text(
         with tracer.start_as_current_span("pii_shield.deanonymize") as span:
             span.set_attribute("pii.record_id", request.id)
             span.set_attribute("pii.placeholders_count", len(record.entity_mapping))
-            restored_text = engine.deanonymize(
-                text=restored_text,
-                entity_mapping=record.entity_mapping,
-                hash_mapping=record.hash_mapping if request.include_hashed else None,
-                encrypt_mapping=record.encrypt_mapping if request.include_encrypted else None,
-            )
+            with clock.step("restore"):
+                restored_text = engine.deanonymize(
+                    text=restored_text,
+                    entity_mapping=record.entity_mapping,
+                    hash_mapping=record.hash_mapping if request.include_hashed else None,
+                    encrypt_mapping=record.encrypt_mapping if request.include_encrypted else None,
+                )
 
         deanonymize_request_counter.add(1, {"app_id": x_app_id or "", "app_name": app_name})
-        logger.info("De-anonymization complete: id=%s", request.id)
+        result = DeanonymizeResponse(text=restored_text, id=request.id)
+        report = finish_deanonymize(clock, response)
+        logger.info("De-anonymization complete: id=%s%s", request.id, deanonymize_log_fields(report))
 
-        return DeanonymizeResponse(text=restored_text, id=request.id)
+        return result
     except HTTPException as exc:
         error_type = "not_found" if exc.status_code == 404 else "validation"
         _record_error("/deanonymize", exc.status_code, error_type, exc.detail, x_app_id or "")

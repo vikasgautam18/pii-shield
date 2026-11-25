@@ -432,7 +432,11 @@ def _reject(
 
 
 async def authenticate(request: Request) -> Principal:
-    """Global dependency: authenticate every request unless the route is public."""
+    """Global dependency: authenticate every request unless the route is public.
+
+    When authentication runs, ``request.state.auth_timing`` is left as ``(perf_counter at the start, time_ns at
+    the start, duration in ms)``: app/timing.py reads it to report ``auth`` as the first step of the request.
+    """
     state = get_auth_state()
     if not state.settings.enabled or state.validator is None:
         return OPEN_PRINCIPAL
@@ -441,6 +445,7 @@ async def authenticate(request: Request) -> Principal:
     if getattr(getattr(route, "endpoint", None), "__auth_public__", False):
         return ANONYMOUS
 
+    started, started_ns = time.perf_counter(), time.time_ns()
     scheme, _, token = request.headers.get("authorization", "").partition(" ")
     token = token.strip()
     if scheme.lower() != "bearer" or not token:
@@ -453,6 +458,7 @@ async def authenticate(request: Request) -> Principal:
     except AuthUnavailable as exc:
         _reject(request, 503, exc.reason, "Authentication is temporarily unavailable.")
     request.state.principal = principal
+    request.state.auth_timing = (started, started_ns, (time.perf_counter() - started) * 1000.0)
     return principal
 
 
