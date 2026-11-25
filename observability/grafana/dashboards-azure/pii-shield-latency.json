@@ -783,7 +783,7 @@
           "refId": "A",
           "queryType": "Azure Log Analytics",
           "azureLogAnalytics": {
-            "query": "customMetrics\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and name == \"pii.step.duration\"\n| extend step = tostring(customDimensions[\"step\"])\n| where step !contains \".\"\n| summarize avg_ms = sum(valueSum) / sum(valueCount) by bin(timestamp, $__interval), step",
+            "query": "customMetrics\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and name == \"pii.step.duration\"\n| extend step = tostring(customDimensions[\"step\"])\n| where step !contains \".\"\n| summarize avg_ms = sum(value) / sum(valueCount) by bin(timestamp, $__interval), step",
             "resources": [
               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
             ],

@@ -60,6 +60,11 @@ services:
       - OIDC_CLOCK_SKEW_SECONDS=${OIDC_CLOCK_SKEW_SECONDS:-}
       - OIDC_JWKS_CACHE_SECONDS=${OIDC_JWKS_CACHE_SECONDS:-}
       - OIDC_ALLOW_INSECURE_HTTP=${OIDC_ALLOW_INSECURE_HTTP:-}
+      # Per-step timing and trace sampling (see .env.example). Unset or empty means the default in code.
+      - SERVER_TIMING=${SERVER_TIMING:-}
+      - PII_STEP_SPANS=${PII_STEP_SPANS:-}
+      - OTEL_TRACES_SAMPLER
+      - OTEL_TRACES_SAMPLER_ARG
     depends_on:
       redis:
         condition: service_healthy
