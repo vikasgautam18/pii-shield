@@ -7,12 +7,13 @@
 The library times its five (``AnonymizeStats.steps``). The API times the rest, because only it can: ``auth``
 (left on ``request.state`` by ``app.auth``), ``app_config`` (Redis behind a 5 s cache), ``queue_wait`` (the wait
 for a free detection thread, see ``_run_in_thread_timed`` in ``app.main``) and ``store_save``. What remains of the
-request is ``other`` (the library's gate helpers and entity list, the handler's own work between the steps such as
-the counters and the response model, the hand-offs between threads), derived and never below 0. ``total`` runs from
-the start of the request, authentication included, to the moment the header is built, so serialising the response
-is not in it. A *detail* such as ``nlp_pass1.ner_model`` is a measure inside a step: it is reported next to its step
-and never added to the sum. ``/deanonymize`` has a lighter report: ``auth``, ``app_config``, ``store_get``,
-``restore``, ``other``, ``total``.
+request is ``other``: what the library runs untimed between its steps (``ordinary_word_starts``,
+``common_word_starts``, ``needs_name_recovery`` and ``normalize_case``, then the entity list: about 0.5 ms for a text
+of 3 KB), the handler's own work between the steps such as the counters and the response model, and the hand-offs
+between threads; it is derived and never below 0. ``total`` runs from the start of the request, authentication
+included, to the moment the header is built, so serialising the response is not in it. A *detail* such as
+``nlp_pass1.ner_model`` is a measure inside a step: it is reported next to its step and never added to the sum.
+``/deanonymize`` has a lighter report: ``auth``, ``app_config``, ``store_get``, ``restore``, ``other``, ``total``.
 
 Everything runs on the event-loop thread after the work is done, from numbers the library returns as plain data,
 so the library needs no OpenTelemetry. The step spans are created after the fact with explicit start and end

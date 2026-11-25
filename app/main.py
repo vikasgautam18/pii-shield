@@ -206,9 +206,12 @@ app = FastAPI(
     # unless its endpoint is explicitly marked @public. A no-op when auth is off.
     dependencies=[Depends(authenticate)],
 )
-# Added before the instrumentation, so that this middleware runs inside the server span and its log line carries the
-# trace id. Without exclude_spans every request carries three more spans (one receive, two send) that last about
-# 0 ms and tell nothing.
+# With the pinned instrumentation (0.61b0) the order of the next two statements does not matter: instrument_app wraps
+# the whole middleware stack, so the request-timing middleware always runs inside the server span and its log line
+# carries the trace id (tests/test_request_timing.py::TestInsideTheServerSpan guards that). It is added first all the
+# same, which is also the order that holds where an instrumentation registers its middleware with add_middleware.
+# Without exclude_spans every request carries three more spans (one receive, two send) that last about 0 ms and tell
+# nothing.
 app.add_middleware(RequestTimingMiddleware)
 FastAPIInstrumentor.instrument_app(app, exclude_spans=["receive", "send"])
 

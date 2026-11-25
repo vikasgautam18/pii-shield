@@ -146,8 +146,11 @@ class TestStepRecorder:
                 raise RuntimeError("boom")
         assert current_recorder() is NO_RECORDER
 
-    def test_a_timer_costs_well_under_a_few_microseconds(self):
-        # Priced as the best of several runs, so a busy machine does not fail it; typically ~0.4 us.
+    def test_a_timer_costs_microseconds_not_milliseconds(self):
+        # Priced as the best of several runs, so one busy moment does not fail it. A timer costs ~0.3 us (~1.3 us under
+        # a Python-level line tracer, as coverage runs it) and a slow shared CI runner can be several times slower
+        # still, so the bound is a generous 20 us: the test only has to notice a timer that turned expensive (logging,
+        # copying or formatting on every use), not to measure it.
         runs, best = 20_000, float("inf")
         for _ in range(5):
             recorder = StepRecorder()
@@ -156,7 +159,7 @@ class TestStepRecorder:
                 with recorder.step("analyze"):
                     pass
             best = min(best, (time.perf_counter() - started) / runs)
-        assert best < 3e-6
+        assert best < 20e-6
 
 
 @pytest.fixture(scope="module")

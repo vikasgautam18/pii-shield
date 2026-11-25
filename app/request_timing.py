@@ -17,8 +17,9 @@ class RequestTimingMiddleware:
     and the response body is built. Errors are logged too (a request that raises before it answers counts as the
     500 the client gets). It only logs: ``app.timing`` owns the ``Server-Timing`` header.
 
-    Register it before ``FastAPIInstrumentor.instrument_app``: the instrumentation then wraps it, the line is
-    logged inside the request's server span and carries its trace id.
+    The line is logged inside the request's server span and carries its trace id: ``FastAPIInstrumentor.instrument_app``
+    wraps the whole middleware stack (the pinned 0.61b0 does, whatever the order of registration; the test
+    ``TestInsideTheServerSpan`` guards it). ``app.main`` adds this middleware first all the same.
     """
 
     def __init__(self, app):
