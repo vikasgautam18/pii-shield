@@ -5,9 +5,11 @@ import os
 # A developer's shell or `.env` (Compose passes it into the container) may enable authentication, and
 # app.main reads the auth settings when it is imported, before any fixture runs. Scrub that environment
 # first so test results never depend on it; tests that need authentication configure it themselves.
-_AUTH_ENV_PREFIXES = ("AUTH_", "OIDC_")
-_AUTH_ENV_NAMES = ("UI_REDIRECT_URI", "API_ACCESS_TOKEN")
-for _name in [n for n in os.environ if n.startswith(_AUTH_ENV_PREFIXES) or n in _AUTH_ENV_NAMES]:
+# The same goes for the per-step timing switches and the trace sampler (app.telemetry reads the sampler when it
+# is imported): the step tests assume their defaults and set what they need themselves.
+_SCRUBBED_ENV_PREFIXES = ("AUTH_", "OIDC_", "OTEL_TRACES_SAMPLER")
+_SCRUBBED_ENV_NAMES = ("UI_REDIRECT_URI", "API_ACCESS_TOKEN", "SERVER_TIMING", "PII_STEP_SPANS", "TRACE_URL_TEMPLATE")
+for _name in [n for n in os.environ if n.startswith(_SCRUBBED_ENV_PREFIXES) or n in _SCRUBBED_ENV_NAMES]:
     del os.environ[_name]
 
 import fakeredis

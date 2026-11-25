@@ -102,6 +102,7 @@ class TestRemoveDuplicates:
         assert recorder.details["analyze.dedup"] > 0
 
     def test_the_switch_and_an_unchecked_presidio_turn_it_off(self, monkeypatch):
+        monkeypatch.setattr(EntityRecognizer, "remove_duplicates", EntityRecognizer.__dict__["remove_duplicates"])
         monkeypatch.setenv("FAST_ANALYSIS", "false")
         assert fast_analysis.enabled() is False
         assert fast_analysis.install() is False
