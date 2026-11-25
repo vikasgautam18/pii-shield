@@ -489,6 +489,13 @@ Everything below about spans, histograms and the log line is about `/anonymize_u
    120 s, so a 10 to 20 s request is no longer drawn as exactly 10 s. The step panels stay empty until the API that
    records `pii.step.duration` runs.
 
+   **After an upgrade, pick a time range that starts after the deploy.** The previous build exported every gunicorn
+   worker under one `service.instance.id`, so their cumulative counters overwrote each other and every drop counts as
+   a reset. Those old series stay inside the window for a while and make the `increase()` and `rate()` panels read far
+   too high: right after the upgrade on the local stack, "Requests Analysed" showed 214,913 for about 1,000 real
+   requests, and 195 once the range started after the deploy. Each worker now has its own series
+   (`<instance>-<pid>`), and the counts agree across the HTTP, detection and step metrics.
+
 **On Azure** you get less, and none of it has been tried there (there was no Azure access while this was built):
 
 - The log line and the `Server-Timing` and `traceresponse` headers come from the app, whatever the telemetry backend.
