@@ -140,7 +140,7 @@ def test_anonymize_shows_the_timing_panel(api, monkeypatch):
         "Slowest step": ("NLP pass 1", "388 ms · 49% of total"),
     }
     assert [expander.label for expander in at.expander] == ["⏱ Timing breakdown"]
-    assert at.expander[0].proto.expanded is True
+    assert at.expander[0].proto.expanded is False
 
     table = _table(at)
     assert [row[0] for row in table] == [

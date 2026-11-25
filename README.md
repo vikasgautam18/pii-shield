@@ -565,7 +565,7 @@ Every `POST /anonymize_unique` is timed in steps that do not overlap (waiting fo
 
 ### Playground timing panel
 
-After *Anonymize* and *De-anonymize* the Playground shows a "⏱ Timing breakdown" panel under the result: the server total, the round trip as the Playground measured it, the slowest step, a bar chart and a table of the steps with their share (details indented under their step), and the request's trace id. Set `TRACE_URL_TEMPLATE` (an http(s) URL that contains `{trace_id}`) for the Playground to add an *Open trace* link to your trace viewer:
+After *Anonymize* and *De-anonymize* the Playground shows the timing of the request under the result: the server total, the round trip as the Playground measured it and the slowest step, then a "⏱ Timing breakdown" section, collapsed until you open it, with a bar chart and a table of the steps with their share (details indented under their step) and the request's trace id. Set `TRACE_URL_TEMPLATE` (an http(s) URL that contains `{trace_id}`) for the Playground to add an *Open trace* link to your trace viewer:
 
 ```bash
 TRACE_URL_TEMPLATE='https://traces.example.com/trace/{trace_id}' python -m app.ui_launcher playground --port 7860

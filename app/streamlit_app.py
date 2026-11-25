@@ -99,7 +99,7 @@ def render_timing(resp: requests.Response) -> None:
             help=breakdown.slowest.label,
         )
 
-    with st.expander("⏱ Timing breakdown", expanded=True):
+    with st.expander("⏱ Timing breakdown", expanded=False):
         if breakdown.rows:
             steps = breakdown.steps
             st.bar_chart(  # top-level steps only: details are inclusive, so charting them would double count

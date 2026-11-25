@@ -427,8 +427,9 @@ Everything below about spans, histograms and the log line is about `/anonymize_u
    `SERVER_TIMING=false` removes the `Server-Timing` header.
 
 3. **The Playground.** After *Anonymize* and *De-anonymize* it shows the timing of that request: the
-   server total, the round trip as the Playground measured it, the slowest step, a chart and a table of the steps
-   with their share (details indented under their step), and the trace id, with an *Open trace* link when
+   server total, the round trip as the Playground measured it and the slowest step, then a "⏱ Timing breakdown"
+   section, collapsed until you open it, with a chart and a table of the steps with their share (details indented
+   under their step), and the trace id, with an *Open trace* link when
    `TRACE_URL_TEMPLATE` is set (an http(s) URL that contains `{trace_id}`; for a trace the sampler dropped it says so
    instead of linking). To make a template for your Grafana, open any trace in Explore, copy the address from the
    browser and replace the trace id in it with `{trace_id}` (no template format was tried here). The panel reads the
