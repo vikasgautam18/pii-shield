@@ -10,6 +10,7 @@ services:
       - ./observability/grafana/dashboards/pii-shield.json:/otel-lgtm/grafana/conf/provisioning/dashboards/custom/pii-shield.json:ro
       - ./observability/grafana/dashboards/pii-shield-by-app.json:/otel-lgtm/grafana/conf/provisioning/dashboards/custom/pii-shield-by-app.json:ro
       - ./observability/grafana/dashboards/pii-shield-errors.json:/otel-lgtm/grafana/conf/provisioning/dashboards/custom/pii-shield-errors.json:ro
+      - ./observability/grafana/dashboards/pii-shield-latency.json:/otel-lgtm/grafana/conf/provisioning/dashboards/custom/pii-shield-latency.json:ro
       - ./observability/grafana/dashboards-provisioning.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/custom.yaml:ro
     restart: unless-stopped
 

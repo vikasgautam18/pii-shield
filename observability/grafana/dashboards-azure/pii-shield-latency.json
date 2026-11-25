@@ -1,0 +1,1015 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "title": "PII Shield \u2014 Latency (Azure)",
+  "uid": "pii-shield-latency",
+  "version": 1,
+  "editable": true,
+  "description": "Where the time goes in POST /anonymize_unique: waiting for a detection thread or computing, the time per step (NER model, recognizers, post-processing, handling, storing), and the slowest requests with their traces and log lines.",
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Waiting or computing?",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Request Time p95",
+      "description": "How long does the slowest 1 in 20 calls to /anonymize_unique take on the server? From the requests table.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "requests\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and name endswith \"/anonymize_unique\"\n| summarize p95 = percentile(duration, 95)",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 2000
+              },
+              {
+                "color": "red",
+                "value": 10000
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "graphMode": "none",
+        "colorMode": "value",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Time Spent Waiting",
+      "description": "Are requests waiting for a detection thread? Share of (wait + detection) time that requests spent in the queue, from the attributes of the pii_shield.anonymize span. Near 0 % means the time goes into computing.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| extend queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), second_pass = tolower(tostring(customDimensions[\"pii.recovery_pass\"])) == \"true\"\n| summarize waiting = round(100.0 * sum(queue_ms) / (sum(queue_ms) + sum(detect_ms)), 1)",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 25
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "graphMode": "none",
+        "colorMode": "value",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Requests With a Second NER Pass",
+      "description": "How often does a request pay for the second NER pass (case recovery)? That pass can double the detection time of the request.",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| extend queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), second_pass = tolower(tostring(customDimensions[\"pii.recovery_pass\"])) == \"true\"\n| summarize second_pass_pct = round(100.0 * countif(second_pass) / count(), 1)",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "graphMode": "none",
+        "colorMode": "value",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Requests Analysed",
+      "description": "How many pii_shield.anonymize spans the numbers in this row are based on (after trace sampling).",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| extend queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), second_pass = tolower(tostring(customDimensions[\"pii.recovery_pass\"])) == \"true\"\n| summarize requests = count()",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "graphMode": "none",
+        "colorMode": "value",
+        "textMode": "value",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "HTTP Request Duration (p50 / p95 / p99)",
+      "description": "How long do calls to /anonymize_unique take on the server, from the first byte to the response?",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "requests\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and name endswith \"/anonymize_unique\"\n| summarize p50=percentile(duration, 50), p95=percentile(duration, 95), p99=percentile(duration, 99) by bin(timestamp, $__interval)",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "time_series"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "pointSize": 5,
+            "showPoints": "auto"
+          }
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Queue Wait vs Detect Time (p95)",
+      "description": "Waiting or computing? If the queue-wait line rises, requests are waiting for a free detection thread; if the detect line rises, the detection itself got slower.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| extend queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), second_pass = tolower(tostring(customDimensions[\"pii.recovery_pass\"])) == \"true\"\n| summarize queue_wait_p95 = percentile(queue_ms, 95), detect_p95 = percentile(detect_ms, 95) by bin(timestamp, $__interval)",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "time_series"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "pointSize": 5,
+            "showPoints": "auto"
+          }
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Second NER Pass: Share of Requests",
+      "description": "Is the share of requests that run the second NER pass changing over time?",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 13
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| extend queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), second_pass = tolower(tostring(customDimensions[\"pii.recovery_pass\"])) == \"true\"\n| summarize second_pass_pct = 100.0 * countif(second_pass) / count() by bin(timestamp, $__interval)",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "time_series"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "pointSize": 5,
+            "showPoints": "auto"
+          }
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Detect Time With and Without the Second Pass (p95)",
+      "description": "How much does the second NER pass add? p95 detection time for requests that ran it and for those that did not.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 13
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| extend queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), second_pass = tolower(tostring(customDimensions[\"pii.recovery_pass\"])) == \"true\"\n| summarize detect_p95 = percentile(detect_ms, 95) by bin(timestamp, $__interval), pass_type = iff(second_pass, \"second pass\", \"single pass\")",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "time_series"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "pointSize": 5,
+            "showPoints": "auto"
+          }
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "Where the time goes",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
+      "panels": []
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Average Time per Step",
+      "description": "Which step takes the time? Average duration of each top-level step when it ran, stacked, from the step spans (dependencies, type InProc). Steps that run only sometimes are averaged over the requests that ran them, so the stack can exceed the average request.",
+      "gridPos": {
+        "h": 9,
+        "w": 16,
+        "x": 0,
+        "y": 22
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\"\n| extend step = tostring(customDimensions[\"pii.step\"])\n| where step != \"\"\n| summarize avg_ms = avg(duration) by bin(timestamp, $__interval), step",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "time_series"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 30,
+            "pointSize": 5,
+            "showPoints": "auto",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "piechart",
+      "title": "Share of Time by Step",
+      "description": "Where does the time go over the selected range? Share of the summed step duration per top-level step.",
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 22
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\"\n| extend step = tostring(customDimensions[\"pii.step\"])\n| where step != \"\"\n| summarize total_ms = sum(duration) by step\n| order by total_ms desc",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "/^total_ms$/",
+          "values": true
+        },
+        "pieType": "donut",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
+          ],
+          "showLegend": true
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "p95 per Step",
+      "description": "Which step is slow for the slowest requests? 95th percentile of each step span; percentiles do not add up.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 31
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\"\n| extend step = tostring(customDimensions[\"pii.step\"])\n| where step != \"\"\n| summarize p95_ms = percentile(duration, 95) by bin(timestamp, $__interval), step",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "time_series"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "pointSize": 5,
+            "showPoints": "auto"
+          }
+        }
+      }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Details Over Time (Average, Inclusive)",
+      "description": "How much of nlp_pass1 is the NER model, and how much of analyze is context scoring or dedup? Read from the pii.detail.* attributes of the step spans; included in their step, never add them to the stack above.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 31
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\"\n| extend ms = todouble(customDimensions[\"pii.detail.ner_model_ms\"])\n| where isnotnull(ms)\n| summarize avg_ms = avg(ms) by bin(timestamp, $__interval), detail = strcat(tostring(customDimensions[\"pii.step\"]), \".ner_model\")",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "time_series"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        },
+        {
+          "refId": "B",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\"\n| extend ms = todouble(customDimensions[\"pii.detail.context_enhance_ms\"])\n| where isnotnull(ms)\n| summarize avg_ms = avg(ms) by bin(timestamp, $__interval), detail = strcat(tostring(customDimensions[\"pii.step\"]), \".context_enhance\")",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "time_series"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        },
+        {
+          "refId": "C",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\"\n| extend ms = todouble(customDimensions[\"pii.detail.dedup_ms\"])\n| where isnotnull(ms)\n| summarize avg_ms = avg(ms) by bin(timestamp, $__interval), detail = strcat(tostring(customDimensions[\"pii.step\"]), \".dedup\")",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "time_series"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "pointSize": 5,
+            "showPoints": "auto"
+          }
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "table",
+      "title": "Steps",
+      "description": "The numbers behind the charts: calls, average, percentiles and maximum per step span.",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 39
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\"\n| extend step = tostring(customDimensions[\"pii.step\"])\n| where step != \"\"\n| summarize Calls=count(), Average=round(avg(duration), 1), p50=round(percentile(duration, 50), 1), p95=round(percentile(duration, 95), 1), Max=round(max(duration), 1) by Step=step\n| order by Average desc",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "id": 16,
+      "type": "table",
+      "title": "Step Details (Inclusive)",
+      "description": "How long do the NER model, context scoring and dedup take? Average of the pii.detail.* attributes per step span (milliseconds); each is measured inside its step, do not add them to the steps.",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 39
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\"\n| extend step = tostring(customDimensions[\"pii.step\"])\n| where step != \"\"\n| where step in (\"nlp_pass1\", \"analyze\", \"recovery_pass2\")\n| summarize ['NER model']=round(avg(todouble(customDimensions[\"pii.detail.ner_model_ms\"])), 1), ['Context scoring']=round(avg(todouble(customDimensions[\"pii.detail.context_enhance_ms\"])), 1), Dedup=round(avg(todouble(customDimensions[\"pii.detail.dedup_ms\"])), 1) by Step=step",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Average Time per Step, From Metrics",
+      "description": "The same question answered from the pii.step.duration metric, which is not affected by trace sampling. Azure keeps only sum and count of a histogram, so this is an average, not a percentile.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 49
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "customMetrics\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and name == \"pii.step.duration\"\n| extend step = tostring(customDimensions[\"step\"])\n| where step !contains \".\"\n| summarize avg_ms = sum(valueSum) / sum(valueCount) by bin(timestamp, $__interval), step",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "time_series"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "pointSize": 5,
+            "showPoints": "auto"
+          }
+        }
+      }
+    },
+    {
+      "id": 18,
+      "type": "row",
+      "title": "Slow requests",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 57
+      },
+      "panels": []
+    },
+    {
+      "id": 19,
+      "type": "table",
+      "title": "Slow Requests (Traces)",
+      "description": "Which requests were slow? pii_shield.anonymize spans longer than the threshold chosen above (waiting for a thread plus detection plus handling). Copy a trace_id into the variable above to see its steps.",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 58
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| where duration > ${slow_ms}\n| project timestamp, trace_id = operation_Id, duration_ms = round(duration, 0), chars = toint(customDimensions[\"pii.chars\"]), queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), recovery_pass = tostring(customDimensions[\"pii.recovery_pass\"]), ner_windows = toint(customDimensions[\"pii.ner_windows\"])\n| order by duration_ms desc\n| take 50",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "id": 20,
+      "type": "table",
+      "title": "One Request Step by Step",
+      "description": "Where did one request spend its time? Paste a trace id (operation_Id) into the variable above; shows the request and its step spans in time order. Set the time range around the request.",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 67
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "union requests, dependencies\n| where $__timeFilter(timestamp)\n| where operation_Id == \"${trace_id}\"\n| project timestamp, itemType, name, duration_ms = round(duration, 1), id, operation_ParentId\n| order by timestamp asc",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "table"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        }
+      }
+    },
+    {
+      "id": 21,
+      "type": "logs",
+      "title": "Per-Request Log Lines (Slow Requests)",
+      "description": "What did the slow requests report? The 'Unique anonymization complete' line of every request that waited or detected for longer than the threshold chosen above; its steps= field lists the time per step.",
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 76
+      },
+      "datasource": {
+        "type": "grafana-azure-monitor-datasource",
+        "uid": "azure-monitor-oob"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "Azure Log Analytics",
+          "azureLogAnalytics": {
+            "query": "traces\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and message startswith \"Unique anonymization complete\"\n| extend detect_ms = toint(extract(@\"detect_ms=(\\d+)\", 1, message)), queue_ms = toint(extract(@\"queue_ms=(\\d+)\", 1, message))\n| where detect_ms > ${slow_ms} or queue_ms > ${slow_ms}\n| project timestamp, message, operation_Id\n| order by timestamp desc\n| take 100",
+            "resources": [
+              "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
+            ],
+            "resultFormat": "logs"
+          },
+          "datasource": {
+            "type": "grafana-azure-monitor-datasource",
+            "uid": "azure-monitor-oob"
+          }
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none"
+      }
+    }
+  ],
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "templating": {
+    "list": [
+      {
+        "name": "slow_ms",
+        "type": "custom",
+        "label": "Slow request threshold (ms)",
+        "hide": 0,
+        "query": "500,1000,2000,5000,10000",
+        "multi": false,
+        "includeAll": false,
+        "current": {
+          "selected": true,
+          "text": "2000",
+          "value": "2000"
+        },
+        "options": [
+          {
+            "selected": false,
+            "text": "500",
+            "value": "500"
+          },
+          {
+            "selected": false,
+            "text": "1000",
+            "value": "1000"
+          },
+          {
+            "selected": true,
+            "text": "2000",
+            "value": "2000"
+          },
+          {
+            "selected": false,
+            "text": "5000",
+            "value": "5000"
+          },
+          {
+            "selected": false,
+            "text": "10000",
+            "value": "10000"
+          }
+        ]
+      },
+      {
+        "name": "trace_id",
+        "type": "textbox",
+        "label": "Trace id (operation_Id)",
+        "hide": 0,
+        "query": "",
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "",
+            "value": ""
+          }
+        ]
+      }
+    ]
+  },
+  "id": null
+}
