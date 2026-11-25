@@ -352,7 +352,7 @@ What the defaults in this repo cost (dev/test sizing, apps scale to zero):
 | Terraform state storage account | cents |
 | **Total** | **~$60–70/mo** |
 
-Larger settings cost more: high-availability Redis, a bigger SKU (`Balanced_B1` is about $24/mo), and an always-warm API (an idle 2 vCPU / 4 GiB replica is roughly $45/mo). The API scales out to `API_MAX_REPLICAS` (default 96); lower it on a small subscription so a load test cannot run up a bill.
+Larger settings cost more: high-availability Redis, a bigger SKU (`Balanced_B1` is about $24/mo), and an always-warm API (an idle 2 vCPU / 4 GiB replica is roughly $45/mo; deploy with `API_MIN_REPLICAS=1` to keep one warm and avoid cold-start waits). The API scales out to `API_MAX_REPLICAS` (default 96); lower it on a small subscription so a load test cannot run up a bill. A replica asks for company at `API_HTTP_CONCURRENCY` concurrent requests (default 2): detection is CPU-bound, so a replica holding more requests than it has vCPUs answers all of them slowly.
 
 > **Visual Studio and other spending-limit subscriptions** have a fixed monthly credit (typically $150 for Visual Studio Enterprise). With the spending limit on, exceeding it disables the subscription until the next cycle, so stay close to the numbers above.
 

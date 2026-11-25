@@ -60,6 +60,14 @@ ADMIN_MAX_REPLICAS="${ADMIN_MAX_REPLICAS:-2}"
 # The API scales out to this many replicas under load. Lower it on a small subscription so a
 # load test cannot run up a bill.
 API_MAX_REPLICAS="${API_MAX_REPLICAS:-96}"
+# Replicas kept running when the API is idle. 0 scales to zero (cheapest), but the first request after
+# an idle spell waits for a cold start (image pull, model load, warm-up: up to a minute). Use 1 for
+# UAT and production; an idle 2 vCPU / 4 GiB replica costs roughly $45/month.
+API_MIN_REPLICAS="${API_MIN_REPLICAS:-0}"
+# Concurrent requests one API replica holds before the HTTP scaler adds another. Detection is CPU-bound
+# (2 vCPU per replica), so a replica holding many requests answers all of them slowly: keep this close
+# to the number of vCPUs. Raise it to run fewer, busier replicas.
+API_HTTP_CONCURRENCY="${API_HTTP_CONCURRENCY:-2}"
 
 API_AUTH_ENV=("AUTH_ENABLED=$AUTH_ENABLED")
 yaml_str() { python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
@@ -201,7 +209,7 @@ az containerapp create \
   --registry-password "$ACR_PASS" \
   --target-port 8000 \
   --ingress external \
-  --min-replicas 0 \
+  --min-replicas "$API_MIN_REPLICAS" \
   --max-replicas "$API_MAX_REPLICAS" \
   --cpu 2 \
   --memory 4Gi \
@@ -216,7 +224,7 @@ az containerapp create \
     TRANSFORMERS_SPACY_MODEL="$TRANSFORMERS_SPACY_MODEL" \
     SESSION_TTL_SECONDS="$SESSION_TTL_SECONDS" \
     WEB_CONCURRENCY="${WEB_CONCURRENCY:-2}" \
-    NLP_THREAD_POOL_SIZE="${NLP_THREAD_POOL_SIZE:-6}" \
+    NLP_THREAD_POOL_SIZE="${NLP_THREAD_POOL_SIZE:-1}" \
     ORT_INTRA_OP_THREADS="${ORT_INTRA_OP_THREADS:-2}" \
     ORT_INTER_OP_THREADS="${ORT_INTER_OP_THREADS:-1}" \
     DISABLED_RECOGNIZERS="${DISABLED_RECOGNIZERS:-InAadhaarRecognizer,NhsRecognizer,UsBankRecognizer,SgFinRecognizer,AuAbnRecognizer,AuAcnRecognizer,AuTfnRecognizer,AuMedicareRecognizer,MedicalLicenseRecognizer}" \
@@ -313,13 +321,13 @@ if [ "$REDIS_AUTH_MODE" = "entra" ]; then
 fi
 
 # ── Configure HTTP concurrency scaling rule ──────────────────────────────────
-echo " Configuring auto-scale rule (HTTP concurrency = 4 per replica)..."
+echo " Configuring auto-scale rule (HTTP concurrency = $API_HTTP_CONCURRENCY per replica)..."
 az containerapp update \
   --name "$API_APP_NAME" \
   --resource-group "$RG_NAME" \
   --scale-rule-name http-concurrency \
   --scale-rule-type http \
-  --scale-rule-http-concurrency 4 \
+  --scale-rule-http-concurrency "$API_HTTP_CONCURRENCY" \
   2>/dev/null || echo "   (scale rule already configured or command not available — skipping)"
 
 # ── Deploy playground (User UI — Streamlit) ──────────────────────────────────

@@ -109,7 +109,7 @@ This document is intended for:
 | D7 | **Post-quantum encryption default** — ML-KEM-768 (NIST FIPS 203) + AES-256-GCM for the ***encrypt*** strategy. | Provides future-proof security against quantum computing attacks (NIST Level 3). Each PII value gets its own KEM encapsulation, providing per-value forward secrecy. Legacy Fernet (AES-128-CBC + HMAC-SHA256) is retained as an alternative backend for environments that cannot install the keeper-mlkem dependency. Backend auto-detection on de-anonymization enables seamless migration. |
 | D8 | **Recognizer filtering** — removes US, UK, SG, and AU country-specific recognizers at startup. | Prevents false positives on Indian data. For example, the NhsRecognizer (UK NHS numbers) matches 10-digit Indian mobile numbers; UsBankRecognizer matches Indian bank account numbers. Removing these recognizers at engine initialization eliminates an entire class of false positives without impacting Indian entity detection. |
 | D9 | In-memory app-data cache with 5-second TTL on the hot path, cross-worker invalidation via Redis pub/sub. | Avoids repeated Redis round-trips for app configuration on every /anonymize_unique request. The cache stores the result of the pipelined Redis fetch and invalidates on config updates. When any Gunicorn worker updates app config, it publishes the app_id to a Redis pub/sub channel (pii-shield:cache-invalidate); all workers subscribe and evict the stale entry immediately. Max cache size of 1,000 entries with stale-entry eviction prevents unbounded memory growth. |
-| D10 | **Thread pool for NLP inference** — configurable ***ThreadPoolExecutor*** (default: 6 workers) for asyncio.to_thread(). | ONNX Runtime allows multiple tasks to run at the same time without getting stuck, thanks to how it handles processing. Using a thread pool keeps NLP jobs from piling up and slowing things down, which helps avoid noticeable delays when the system is busy. |
+| D10 | **Bounded pool for NLP inference** — a small `DetectionPool` (default: 1 thread per worker, `NLP_THREAD_POOL_SIZE`) that serves short texts ahead of long documents. | Detection is CPU-bound and a replica has only a few vCPUs: every inference in flight beyond them stretches all the others, so latency grows with the number in flight while throughput does not (measured on 2 vCPUs with 8 concurrent clients: the median 3 KB document took about 12 s with six inferences per worker and about 5 s with one, and the 99th percentile fell from about 26 s to about 15 s). Concurrency comes from the gunicorn workers (`WEB_CONCURRENCY`), because the Python parts of detection hold the GIL. A request that finds the pool busy waits its turn and the HTTP scaler still counts it as in flight. Jobs are taken by deadline (arrival plus one second per thousand characters by default) so a short text is not stuck behind a long document, and long ones are not starved; a short text can still wait for the document already running, because a running inference is never interrupted. |
 
 ## 3. High-Level Design
 
@@ -267,6 +267,7 @@ The following modules are defined in pii_shield/ and used by both the library an
 | geo_coordinate.py | GEO_COORDINATE | Geographic coordinate recognizer for decimal degrees, labeled lat/lon, cardinal direction, and DMS formats. Range-validated (lat ±90, lon ±180). |
 | customer_id.py | CUSTOMER_ID | Generic customer-identifier recognizer (configurable via context). |
 | us_bank_account.py | US_BANK_NUMBER | US bank account number recognizer (kept enabled alongside Indian ones). |
+| safe_url.py | URL | Presidio's `UrlRecognizer` run on a same-length copy of the text whose long dot runs are underscores (not spaces: an underscore is not a host-name character, yet a URL's path or query still matches straight through it, so a URL with a long dotted token is still masked whole). Presidio 2.2.362's URL patterns backtrack quadratically on dotted leader lines and OCR noise (about 2 s for 1,000 dots, 9 s for 2,000). It replaces the built-in recognizer under the same name. |
 
 In addition to the custom recognizers above, PII Shield re-uses five **Presidio predefined recognizers** for India: `InPanRecognizer` (IN_PAN), `InPassportRecognizer` (IN_PASSPORT), `InVehicleRegistrationRecognizer` (IN_VEHICLE_REGISTRATION), `InVoterRecognizer` (IN_VOTER), and `InGstinRecognizer` (IN_GSTIN). They are imported from `presidio_analyzer.predefined_recognizers` and registered alongside the custom set in `PiiShieldEngine.__init__`. Non-India predefined recognizers (US, UK, SG, AU, etc.) are removed at startup — see `_DEFAULT_DISABLED_RECOGNIZERS` in `pii_shield/engine.py` and the `DISABLED_RECOGNIZERS` env var override.
 
@@ -459,11 +460,11 @@ The FastAPI app uses the ASGI lifespan protocol so that all warm-up work complet
 
 1.  Call `init_telemetry()`: create the exporters and the `MeterProvider` and attach the span and log processors. This is deliberately per worker, after gunicorn's fork (see [6.1](#61-telemetry-architecture)).
 
-2.  Replace the asyncio loop's default executor with a `ThreadPoolExecutor(max_workers=NLP_THREAD_POOL_SIZE)` (default 6). ONNX Runtime releases the GIL during native inference, so the larger pool keeps concurrent NLP requests from queuing.
+2.  Start the **cache-invalidation listener** — a daemon thread that subscribes to the `pii-shield:cache-invalidate` Redis Pub/Sub channel and evicts entries from the per-worker `_app_cache` whenever any other worker mutates an app's config.
 
-3.  Start the **cache-invalidation listener** — a daemon thread that subscribes to the `pii-shield:cache-invalidate` Redis Pub/Sub channel and evicts entries from the per-worker `_app_cache` whenever any other worker mutates an app's config.
+3.  Warm up the NLP pipeline by running `engine._run_pipeline("John Smith at john@example.com", language="en", …)` once. This pays the model-load and JIT/allocation cost up front so the first user-facing request gets a normal-latency response. With the ONNX engine it is also where a forked worker builds its own ONNX Runtime session (see the ONNX engine notes in 5.1).
 
-4.  Warm up the NLP pipeline by running `engine._run_pipeline("John Smith at john@example.com", language="en", …)` once. This pays the model-load and JIT/allocation cost up front so the first user-facing request gets a normal-latency response.
+The NLP pool (`app/nlp_pool.py`) is created at import and starts its threads on the first request in each worker, so no thread crosses the fork.
 
 #### 4.1.3 Anonymization Pipeline (POST /anonymize_unique)
 
@@ -610,6 +611,8 @@ PII Shield supports four NLP backends, selected via the NLP_ENGINE environment v
 > Model loading is two-tiered. If QUANTIZE_MODEL is true (the default) and the directory at QUANTIZED_MODEL_DIR (default /app/models/onnx-int8) exists, the engine loads the pre-built INT8-quantized model file model_quantized.onnx through ORTModelForTokenClassification.from_pretrained, along with its matching tokenizer; this is the fast path baked into the Docker image and delivers roughly a further 2.5× speed-up and 4× smaller model size compared to FP32. If the quantized directory is absent, the engine falls back to the model name in TRANSFORMERS_MODEL: when the name already points at an ONNX-format model (detected by the -onnx suffix or the presence of .onnx files in a local directory) it is loaded as-is, otherwise Optimum exports a fresh ONNX graph from the original PyTorch checkpoint at startup.
 >
 > The loaded ORT model and tokenizer are wrapped in a HuggingFace token-classification pipeline that inherits the parent engine's aggregation_strategy and stride — so token-level predictions are merged into entity spans using the same rules as the stock Transformers backend. That HF pipeline is then encapsulated in an HFTokenPipe (from spacy-huggingface-pipelines) named onnx_ner, configured with annotate="spans" and the alignment mode from the parent's ner_model_configuration so that recognised entities are written back onto the spaCy Doc as proper character-aligned spans.
+>
+> **Fork safety.** ONNX Runtime starts its intra-op threads when the session is created. A process forked afterwards (gunicorn --preload, a ProcessPoolExecutor) inherits the session but none of its threads, so every inference there runs on the calling thread alone — about twice as slow with the default two intra-op threads. process_text() and process_batch() therefore call _ensure_own_session() first: in a process other than the one that loaded the model it builds a new session over the same .onnx file, once, under a lock. The inherited session is deliberately kept referenced, because destroying it in the child hangs.
 >
 > Finally, the HFTokenPipe is registered with spaCy through a module-level @Language.factory("onnx_ner") and added to the spaCy pipeline as the last component. Because the factory function returns a process-wide singleton (\_onnx_pipe_instance), every spaCy Doc processed in the worker shares the same ONNX session — the model and its allocated memory are loaded exactly once per process, and Presidio's downstream recognizers consume the resulting spans through the standard NlpArtifacts interface, transparently to the rest of the engine.
 
@@ -1311,8 +1314,8 @@ The Dockerfile uses a **single-stage build** based on python:3.12-slim.
 |----|----|
 | WSGI Server | Gunicorn with Uvicorn workers (--worker-class uvicorn.workers.UvicornWorker) |
 | Worker Count | WEB_CONCURRENCY env var (default: 6) |
-| Preloading | --preload — loads the application once in the master process, then forks workers (shared NLP model memory) |
-| Thread Pool | NLP_THREAD_POOL_SIZE env var (default: 6) — configured via asyncio.get_running_loop().set_default_executor() at startup. ONNX Runtime releases the GIL during native C++ inference, enabling true parallelism. |
+| Preloading | --preload — loads the application once in the master process, then forks workers (shared imports and spaCy model). The ONNX Runtime session is the exception: its threads do not survive a fork, so each worker builds its own on its first inference (the warm-up). |
+| NLP Pool | NLP_THREAD_POOL_SIZE env var (default: 1) — threads of the bounded `DetectionPool` (app/nlp_pool.py) that runs detection in each worker; short texts are served ahead of long documents (NLP_PRIORITY_SECONDS_PER_KCHAR, default 1; 0 = first come, first served). Scale concurrency with WEB_CONCURRENCY, not with threads. |
 | Exposed Port | 8000 |
 
 ### 7.3 Azure Deployment
@@ -1409,7 +1412,8 @@ Complete reference of all environment variables, organized by category.
 |----|----|----|----|
 | SESSION_TTL_SECONDS | 86400 | No | Redis session expiry in seconds (24 hours). Set to 0 to disable. |
 | AUDIT_DB_PATH | data/audit.db | No | Path to SQLite audit log file |
-| NLP_THREAD_POOL_SIZE | 6 | No | Thread pool size for asyncio.to_thread() NLP inference |
+| NLP_THREAD_POOL_SIZE | 1 | No | Inference threads per worker in the bounded NLP pool (app/nlp_pool.py) |
+| NLP_PRIORITY_SECONDS_PER_KCHAR | 1 | No | Seconds of queue priority per 1,000 characters: short texts overtake long documents that arrived just before them. 0 = first come, first served |
 | WEB_CONCURRENCY | 6 | No | Gunicorn worker count |
 
 #### 7.4.2 NLP Engine
@@ -1727,7 +1731,8 @@ All entity types support all four strategies. The strategy is determined by (in 
 | REDIS_URL | redis://localhost:6379/0 | No | Redis | Connection URL (redis:// or rediss:// for TLS) |
 | SESSION_TTL_SECONDS | 86400 | No | Runtime | Session expiry (seconds); 0 = no expiry |
 | AUDIT_DB_PATH | data/audit.db | No | Runtime | SQLite audit log file path |
-| NLP_THREAD_POOL_SIZE | 6 | No | Runtime | Thread pool for async NLP inference |
+| NLP_THREAD_POOL_SIZE | 1 | No | Runtime | Inference threads per worker in the bounded NLP pool |
+| NLP_PRIORITY_SECONDS_PER_KCHAR | 1 | No | Runtime | Queue priority allowance per 1,000 characters (0 = first come, first served) |
 | WEB_CONCURRENCY | 6 | No | Runtime | Gunicorn worker count |
 | OTEL_SERVICE_NAME | pii-shield | No | Telemetry | OTel service name |
 | OTEL_SERVICE_INSTANCE_ID | pii-shield-1 | No | Telemetry | OTel instance ID |

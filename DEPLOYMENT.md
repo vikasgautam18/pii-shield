@@ -251,8 +251,9 @@ authoritative list. Highlights:
 | `ENCRYPTION_BACKEND` | `pqc` | `pqc` (ML-KEM-768) or `fernet` |
 | `REDIS_AUTH_MODE` | `entra` | `entra` (managed identity) or `key` |
 | `SESSION_TTL_SECONDS` | `300` | How long anonymization sessions live in Redis |
-| `WEB_CONCURRENCY` | `2` | Gunicorn workers per replica |
-| `NLP_THREAD_POOL_SIZE` | `6` | Concurrent NLP inferences per worker |
+| `WEB_CONCURRENCY` | `2` | Gunicorn workers per replica (about one per vCPU) |
+| `NLP_THREAD_POOL_SIZE` | `1` | Concurrent NLP inferences per worker. Detection is CPU-bound, so concurrency comes from workers, not threads |
+| `NLP_PRIORITY_SECONDS_PER_KCHAR` | `1` | Short texts are served ahead of long documents queued just before them; `0` = first come, first served |
 | `DISABLED_RECOGNIZERS` | (see `.env.example`) | Comma-separated Presidio recognizer class names |
 | `AUTH_ENABLED` | `false` | One switch for sign-in on the API and both UIs (see below) |
 | `OIDC_ISSUER_URL` / `OIDC_AUDIENCE` | — | Required when `AUTH_ENABLED=true`: the identity provider's issuer, and the audience the API accepts |
@@ -337,8 +338,19 @@ your Redis instance must have `redis_access_keys_enabled = true` in
 
 ### Cold-start latency on first request
 
-The transformers/onnx engine loads its model on first request. Set
-`min-replicas=1` (instead of 0) in `02-deploy-apps.sh` to keep one replica warm.
+The transformers/onnx engine loads its model on first request. With the default
+`API_MIN_REPLICAS=0` the API scales to zero when idle, and the first request after an idle spell
+waits for the cold start (image pull, model load, warm-up: up to a minute). Deploy with
+`API_MIN_REPLICAS=1 ./02-deploy-apps.sh` to keep one replica warm.
+
+### Requests take several seconds when many arrive together
+
+Detection is CPU-bound: a replica has 2 vCPU, so every request it holds beyond the second one slows
+all the others. `02-deploy-apps.sh` therefore asks the HTTP scaler for a new replica at
+`API_HTTP_CONCURRENCY=2` concurrent requests per replica (default 2; the earlier default was 4), and
+each worker runs one inference at a time (`NLP_THREAD_POOL_SIZE=1`). Keep `API_HTTP_CONCURRENCY` close
+to the number of vCPUs, and add capacity with more replicas (or `WEB_CONCURRENCY` on bigger ones), not
+with more threads.
 
 ### `04-deploy-dashboards.sh` fails with `Insufficient privileges`
 

@@ -11,6 +11,7 @@ from pii_shield.recognizers.in_pin_code import InPinCodeRecognizer
 from pii_shield.recognizers.in_pran import InPranRecognizer
 from pii_shield.recognizers.in_upi import InUpiIdRecognizer
 from pii_shield.recognizers.natural_date import NaturalDateRecognizer
+from pii_shield.recognizers.safe_url import SafeUrlRecognizer
 from pii_shield.recognizers.us_bank_account import UsBankAccountRecognizer
 
 __all__ = [
@@ -27,5 +28,6 @@ __all__ = [
     "InPranRecognizer",
     "InUpiIdRecognizer",
     "NaturalDateRecognizer",
+    "SafeUrlRecognizer",
     "UsBankAccountRecognizer",
 ]

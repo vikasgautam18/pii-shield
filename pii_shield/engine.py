@@ -61,6 +61,7 @@ from pii_shield.recognizers import (
     InPranRecognizer,
     InUpiIdRecognizer,
     NaturalDateRecognizer,
+    SafeUrlRecognizer,
     UsBankAccountRecognizer,
 )
 from presidio_analyzer.predefined_recognizers import (
@@ -68,6 +69,7 @@ from presidio_analyzer.predefined_recognizers import (
     InPassportRecognizer,
     InVehicleRegistrationRecognizer,
     InVoterRecognizer,
+    UrlRecognizer,
 )
 
 logger = logging.getLogger("pii-shield")
@@ -188,6 +190,13 @@ class PiiShieldEngine:
                 self._analyzer.registry.remove_recognizer(name)
             except ValueError:
                 pass  # already removed or not present
+
+        # Presidio's own URL patterns stall for seconds on long runs of dots (leader lines, OCR noise);
+        # use the same recognizer on a dot-neutralised copy of the text instead.
+        for recognizer in list(self._analyzer.registry.recognizers):
+            if type(recognizer) is UrlRecognizer:
+                self._analyzer.registry.remove_recognizer(recognizer.name)
+                self._analyzer.registry.add_recognizer(SafeUrlRecognizer())
 
         # Register custom recognizers
         self._analyzer.registry.add_recognizer(CustomerIdRecognizer())

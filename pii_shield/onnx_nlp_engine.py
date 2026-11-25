@@ -16,6 +16,8 @@ Usage::
 
 import logging
 import os
+import threading
+from pathlib import Path
 
 import onnxruntime as ort
 import spacy
@@ -30,6 +32,10 @@ logger = logging.getLogger("pii-shield")
 
 # Holds the pre-built HFTokenPipe so the spaCy factory can return it.
 _onnx_pipe_instance: HFTokenPipe | None = None
+
+# ONNX Runtime sessions this process inherited across fork() and replaced (see
+# ``OnnxTransformersNlpEngine._ensure_own_session``).  They are kept referenced on purpose.
+_INHERITED_MODELS: list = []
 
 if not Language.has_factory("onnx_ner"):
     @Language.factory("onnx_ner")
@@ -49,6 +55,15 @@ def _is_onnx_model(model_name_or_path: str) -> bool:
     return "-onnx" in model_name_or_path.lower()
 
 
+def _onnx_file(ort_model) -> Path:
+    """The .onnx file an Optimum model was loaded from (the attribute name differs between versions)."""
+    for attr in ("path", "model_path"):
+        path = getattr(ort_model, attr, None)
+        if path:
+            return Path(path)
+    raise RuntimeError("Cannot tell which .onnx file the ONNX Runtime model was loaded from")
+
+
 def _build_session_options() -> ort.SessionOptions:
     """Build tuned ONNX Runtime session options for concurrent inference.
 
@@ -63,10 +78,21 @@ def _build_session_options() -> ort.SessionOptions:
 
 
 class OnnxTransformersNlpEngine(TransformersNlpEngine):
-    """TransformersNlpEngine backed by ONNX Runtime instead of PyTorch."""
+    """TransformersNlpEngine backed by ONNX Runtime instead of PyTorch.
+
+    **Fork safety.**  ONNX Runtime starts its intra-op threads when the session is created.  A process
+    forked afterwards (``gunicorn --preload``, a ``ProcessPoolExecutor``) inherits the session's
+    bookkeeping but none of its threads, so every inference there runs on the calling thread alone:
+    about twice as slow with the default two intra-op threads.  The first inference in such a process
+    therefore builds a session of its own, see ``_ensure_own_session``.
+    """
 
     engine_name = "onnx"
     is_available = True
+
+    _owner_pid: int | None = None
+    _pipelines: tuple = ()
+    _rebuild_lock = None  # a threading.Lock once loaded
 
     def load(self) -> None:
         """Load spaCy tokenizer + ONNX Runtime NER model."""
@@ -74,6 +100,9 @@ class OnnxTransformersNlpEngine(TransformersNlpEngine):
 
         logger.info("Loading ONNX-accelerated NER engine")
         self.nlp = {}
+        self._pipelines = []
+        self._rebuild_lock = threading.Lock()
+        self._owner_pid = os.getpid()
 
         for model_conf in self.models:
             self._validate_model_params(model_conf)
@@ -116,6 +145,7 @@ class OnnxTransformersNlpEngine(TransformersNlpEngine):
                 aggregation_strategy=self.ner_model_configuration.aggregation_strategy,
                 stride=self.ner_model_configuration.stride,
             )
+            self._pipelines.append(hf_pipe)
 
             # Build HFTokenPipe and register via factory so spaCy accepts it.
             _onnx_pipe_instance = HFTokenPipe(
@@ -129,3 +159,42 @@ class OnnxTransformersNlpEngine(TransformersNlpEngine):
             self.nlp[model_conf["lang_code"]] = nlp
 
         logger.info("ONNX NER engine loaded successfully")
+
+    def _ensure_own_session(self) -> None:
+        """Give a process forked after ``load()`` its own ONNX Runtime session.
+
+        A no-op in the process that loaded the model.  In a forked one the inherited session is
+        replaced by a new session over the same .onnx file, whose threads do exist.  The inherited
+        session is kept alive rather than released: destroying it in the child waits for threads that
+        were never copied into it, and hangs.
+        """
+        if self._owner_pid is None or os.getpid() == self._owner_pid:
+            return
+        with self._rebuild_lock:
+            if os.getpid() == self._owner_pid:
+                return
+            logger.info(
+                "Process %d inherited the ONNX Runtime session across fork(); building its own",
+                os.getpid(),
+            )
+            for hf_pipe in self._pipelines:
+                inherited = hf_pipe.model
+                _INHERITED_MODELS.append(inherited)
+                model_file = _onnx_file(inherited)
+                hf_pipe.model = ORTModelForTokenClassification.from_pretrained(
+                    model_file.parent,
+                    file_name=model_file.name,
+                    session_options=_build_session_options(),
+                    provider="CPUExecutionProvider",
+                )
+            self._owner_pid = os.getpid()
+
+    def process_text(self, text: str, language: str):
+        self._ensure_own_session()
+        return super().process_text(text, language)
+
+    def process_batch(self, texts, language, batch_size=1, n_process=1, as_tuples=False):
+        self._ensure_own_session()
+        return super().process_batch(
+            texts, language, batch_size=batch_size, n_process=n_process, as_tuples=as_tuples
+        )

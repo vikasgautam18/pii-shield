@@ -1,9 +1,10 @@
 import asyncio
+import contextvars
+import functools
 import json
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -11,6 +12,7 @@ from opentelemetry import metrics, trace
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.trace import StatusCode
 
+from app.nlp_pool import DetectionPool
 from app.telemetry import init_telemetry
 from pii_shield.engine import PiiShieldEngine
 from pii_shield.models import EntityConfig
@@ -127,19 +129,36 @@ from app.auth import (
 # start-up (including under gunicorn --preload) rather than run unprotected.
 get_auth_state()
 
-# Thread pool for asyncio.to_thread().  ONNX Runtime releases the GIL during
-# native C++ inference, so multiple threads CAN run truly in parallel — unlike
-# pure-Python code.  A pool larger than WEB_CONCURRENCY lets the process handle
-# concurrent NLP requests without queuing, which is the #1 driver of p95 blowup.
-_NLP_THREAD_POOL_SIZE = int(os.getenv("NLP_THREAD_POOL_SIZE", "6"))
+# Detection is CPU-bound, so it runs on its own small pool (not the loop's default executor, which the
+# authentication code also uses).  The pool size caps how many inferences each worker runs at once: a
+# replica has only a few vCPUs, and every inference in flight beyond them stretches all the others
+# (latency grows with the number in flight, throughput does not; measured: with 8 clients on 2 vCPUs the
+# median 3 KB document took about 12 s with six inferences per worker and about 5 s with one).  Scale
+# concurrency with
+# WEB_CONCURRENCY (processes), not threads: the Python parts of detection hold the GIL.  A request that
+# finds the pool busy waits its turn, and the platform's HTTP scaler still sees it as in flight.  Short
+# texts are served ahead of the long documents that arrived just before them (app/nlp_pool.py).
+_NLP_THREAD_POOL_SIZE = max(1, int(os.getenv("NLP_THREAD_POOL_SIZE", "1")))
+_nlp_pool = DetectionPool(
+    _NLP_THREAD_POOL_SIZE,
+    seconds_per_kchar=float(os.getenv("NLP_PRIORITY_SECONDS_PER_KCHAR", "1")),  # 0 = first come, first served
+)
+
+
+async def _run_in_nlp_pool(text_length: int, func, /, *args, **kwargs):
+    """Run *func* on the NLP pool for a text of *text_length* characters, like ``asyncio.to_thread``.
+
+    The caller's context (the trace span) is kept.
+    """
+    context = contextvars.copy_context()
+    call = functools.partial(context.run, func, *args, **kwargs)
+    return await asyncio.wrap_future(_nlp_pool.submit(text_length, call))
 
 
 @asynccontextmanager
 async def _lifespan(app):
     # Per worker, after gunicorn --preload has forked it. Never at import: see app/telemetry.py.
     init_telemetry()
-    loop = asyncio.get_running_loop()
-    loop.set_default_executor(ThreadPoolExecutor(max_workers=_NLP_THREAD_POOL_SIZE))
     _start_cache_invalidation_listener()
     await warm_up_auth()  # no-op unless AUTH_ENABLED=true; never raises
     # Warm up the NLP model so the first real request doesn't pay JIT/allocation cost.
@@ -149,7 +168,7 @@ async def _lifespan(app):
         allow_list=None,
         entity_type_allow_list=None,
     )
-    logger.info("NLP model warm-up complete")
+    logger.info("NLP model warm-up complete (%d concurrent inference(s) per worker)", _NLP_THREAD_POOL_SIZE)
     yield
 
 
@@ -349,8 +368,9 @@ async def anonymize_unique_text(
 
         with tracer.start_as_current_span("pii_shield.anonymize") as span:
             span.set_attribute("pii.language", request.language)
-            # Offload CPU-bound NLP inference to a thread so the event loop stays free
-            anon_result = await asyncio.to_thread(
+            # Offload CPU-bound NLP inference to the bounded pool so the event loop stays free
+            anon_result = await _run_in_nlp_pool(
+                len(request.text),
                 engine.anonymize,
                 text=request.text,
                 language=request.language,
