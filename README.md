@@ -12,7 +12,7 @@ An intelligent anonymization layer that sits between your AI application and LLM
 - **REST API** — `POST /anonymize_unique`, `POST /deanonymize`, and app registration endpoints built with FastAPI.
 - **Application Registration** — Register consuming applications via `POST /apps`. Each app gets its own per-entity PII strategy config stored in Redis. Pass `X-App-Id` header to use app-specific settings.
 - **Reversible Anonymization** — Anonymize text with unique placeholders, pass it through an LLM, then restore the original PII via a session-based in-memory store.
-- **Observability** — OpenTelemetry traces, metrics, and logs with dual-backend support: Azure Monitor (production) or OTLP gRPC (local dev). Pre-built Grafana dashboards for both environments.
+- **Observability** — OpenTelemetry traces, metrics, and logs with dual-backend support: Azure Monitor (production) or OTLP gRPC (local dev). Pre-built Grafana dashboards for both environments. Every `/anonymize_unique` request is also timed step by step (a `Server-Timing` header, a timing panel in the Playground, one span per step, a step histogram, a log line); see [Where a request spends its time](#where-a-request-spends-its-time).
 - **Standalone Library** — Use `pii_shield` as an importable Python package for batch processing without FastAPI, Redis, or Docker. See [Using as a Library](#using-as-a-library) below.
 - **Docker Support** — `docker-compose.yml` orchestrates Redis, Grafana LGTM, and the PII Shield app.
 - **Optional Authentication** — One `AUTH_ENABLED` switch adds OpenID Connect sign-in (Microsoft Entra ID, Keycloak, or any OIDC provider) to the playground and admin UI, and bearer-token validation with role-based access to the API. Off by default. See [docs/authentication.md](docs/authentication.md).
@@ -246,6 +246,34 @@ for e in entities:
 
 See [`examples/library_usage.py`](examples/library_usage.py) for a full test suite using the Indian banking dataset (22 scenarios) with HTML report generation.
 
+### Timing: where did the time go?
+
+`anonymize()` records where its time went, as plain numbers (milliseconds) on `result.stats`. The library imports no telemetry package, detection results are unchanged, and the timing costs about 0.02 ms per call (measured for a text of 3.4 KB whose call takes about a second).
+
+```python
+from pii_shield import PiiShieldEngine
+
+engine = PiiShieldEngine()  # the NER-model numbers below need NLP_ENGINE=onnx
+stats = engine.anonymize("Rahul Sharma's Aadhaar is 2345 6789 0123 and he lives in Pune 411001").stats
+print(stats.steps)        # {'nlp_pass1': 15.7, 'analyze': 1.0, 'post_processing': 0.04, 'handling': 0.01}
+print(stats.details)      # {'nlp_pass1.ner_model': 10.4, 'analyze.context_enhance': 0.12, 'analyze.dedup': 0.03}
+print(stats.ner_windows)  # 1  (windows of up to 512 tokens the NER model ran)
+```
+
+(The values are from one run on a development machine with `NLP_ENGINE=onnx`; yours will differ.) `steps` holds the steps that ran, in execution order. They do not overlap:
+
+| Step | What it covers |
+|---|---|
+| `nlp_pass1` | The first NLP pass: spaCy tokenizer, tagger and lemmatizer, the NER model, decoding |
+| `analyze` | Presidio's `analyze()` of that pass: regex and validator recognizers, reading the NER result, context scoring, duplicate removal, threshold, allow-lists |
+| `recovery_pass2` | The second NER pass, over the re-cased text, that recovers ALL-CAPS and uncased names. Present only when it ran: the text has an ALL-CAPS word or a run of lowercase words that could be a name (most e-mail addresses and URLs contain one) |
+| `post_processing` | The pipeline functions after recognition: titles, line breaks, address merge, overlap removal, ... |
+| `handling` | Applying the strategies (replace / hash / fake / encrypt) and rebuilding the text; the same number as `stats.anonymize_ms` |
+
+`details` are sub-measures that are *part of* a step, keyed `<step>.<detail>`: `ner_model` (time inside the NER model), `context_enhance` and `dedup`, under `nlp_pass1`, `analyze` or `recovery_pass2`. Never add them to the steps. A key exists only if it was measured: `ner_model` and `ner_windows` need `NLP_ENGINE=onnx` (other engines report `ner_windows` 0 and no `ner_model`).
+
+`stats.timeline` lists `(step, offset_ms, duration_ms)` for laying the steps out as spans in your own tracing, and the `Event` that an `on_event` callback receives carries the same `steps`. `PiiShieldEngine.anonymize()` and `ConversationAnonymizer.anonymize()` (so `PiiMiddleware.anonymize()` too) fill all of it; `detect()` records nothing. The API turns the same numbers into a header, spans and a histogram: see [Where a request spends its time](#where-a-request-spends-its-time).
+
 ## Prerequisites
 
 - Python 3.10+
@@ -373,8 +401,8 @@ Set the `API_BASE` environment variable if the API is not at `http://localhost:8
 
 Opens at **http://localhost:7860** with:
 
-- **Anonymize tab** — Enter text (and optionally an Application ID) → see detected PIIs and anonymized output using app-specific or global config.
-- **De-anonymize tab** — Paste anonymized text (and optionally an Application ID) → see the PII ↔ placeholder mapping and restored text.
+- **Anonymize tab** — Enter text (and optionally an Application ID) → see detected PIIs and anonymized output using app-specific or global config, and a timing panel with where the request spent its time (see [Where a request spends its time](#where-a-request-spends-its-time)).
+- **De-anonymize tab** — Paste anonymized text (and optionally an Application ID) → see the PII ↔ placeholder mapping and restored text, with the same kind of timing panel.
 
 The session ID is shared between tabs via `st.session_state`.
 
@@ -449,6 +477,13 @@ Detects PII and assigns a unique numbered identifier to each distinct PII value 
 }
 ```
 
+Timing adds nothing to the body. A successful response carries a `Server-Timing` header with the time of each step, and every response carries a `traceresponse` header with the id of its trace (see [Where a request spends its time](#where-a-request-spends-its-time)). For example, for a text of 92 characters on the ONNX engine in a Docker container:
+
+```
+Server-Timing: queue_wait;dur=0.30, nlp_pass1;dur=36.96, nlp_pass1.ner_model;dur=29.60, analyze;dur=5.46, analyze.context_enhance;dur=0.14, analyze.dedup;dur=0.06, post_processing;dur=0.05, handling;dur=0.02, store_save;dur=2.06, other;dur=1.11, total;dur=45.96
+traceresponse: 00-0745484b59f8776c3754f8753c872b89-b8cba77ef9e964c5-01
+```
+
 ### `POST /deanonymize`
 
 Restores original PII values in text that was anonymized via `/anonymize_unique`. The text you pass in can differ from the original anonymized output — for example, it may have been rewritten by an LLM — as long as it still contains the `{{ENTITY_TYPE_N}}` placeholders.
@@ -470,6 +505,8 @@ Restores original PII values in text that was anonymized via `/anonymize_unique`
   "id": "a1b2c3d4-..."
 }
 ```
+
+A successful response carries a lighter `Server-Timing` header (`auth`, `app_config`, `store_get`, `restore`, `other`, `total`) and a `traceresponse` header.
 
 ### `POST /apps`
 
@@ -545,6 +582,66 @@ python examples/anonymize_request.py
 ```
 
 See [`examples/anonymize_request.py`](examples/anonymize_request.py) for the full source.
+
+## Where a request spends its time
+
+Every `POST /anonymize_unique` is timed in steps that do not overlap, so the steps plus `other` add up to `total`, the time the server spent on the request:
+
+| Step | What it covers | Present |
+|---|---|---|
+| `auth` | Bearer-token validation | only with `AUTH_ENABLED=true` |
+| `app_config` | The application's settings from Redis (behind a 5 s in-process cache) | only with an `X-App-Id` header |
+| `queue_wait` | Waiting for a free thread of the detection thread pool (`NLP_THREAD_POOL_SIZE` threads per worker, default 6) | always (close to 0 when idle) |
+| `nlp_pass1`, `analyze`, `recovery_pass2`, `post_processing`, `handling` | The library's steps, described under [Timing: where did the time go?](#timing-where-did-the-time-go) | `recovery_pass2` only when the second NER pass ran |
+| `store_save` | Writing the session mapping to Redis | always |
+| `other` | `total` minus the steps above, never below 0: whatever nobody timed (the small work between the steps, building the response, hand-offs between threads) | always |
+| `total` | Time from the start of the request handling (authentication included) until the response headers are built; reading the request and sending the response are not in it | `Server-Timing` header only |
+
+A step can have **details**, written `<step>.<detail>`: `nlp_pass1.ner_model`, `analyze.context_enhance`, `analyze.dedup`, and the same three under `recovery_pass2`. A detail is *part of* its step, not extra time, so never add it to the steps. What is left of `nlp_pass1` after `ner_model` is spaCy and decoding; what is left of `analyze` after `context_enhance` and `dedup` is the regex and validator recognizers. `/deanonymize` has a lighter breakdown: `auth`, `app_config`, `store_get`, `restore`, `other`, `total`.
+
+The same numbers reach five places:
+
+- **The `Server-Timing` response header** of a successful `/anonymize_unique` or `/deanonymize`: W3C format `name;dur=<ms>`, two decimals, comma separated, no `desc`; the steps in execution order, each directly followed by its details, then `other` and `total`. Error responses carry none. Every response, errors and unknown routes included, also carries a `traceresponse` header (`00-<trace-id>-<span-id>-<flags>`) that names the request's trace. To see both:
+  ```bash
+  curl -si http://localhost:8000/anonymize_unique -H 'Content-Type: application/json' \
+    -d '{"text": "Please send the signed form to Rahul Sharma, PAN ABCDE1234F, phone +91 98765 43210, tomorrow"}' \
+    | grep -iE '^(server-timing|traceresponse):'
+  ```
+- **The Playground**, which draws the header (below).
+- **Traces:** one INTERNAL span per step that ran, named after the step, with the attribute `pii.step` and, for a step with details, `pii.detail.<detail>_ms`. `auth`, `app_config` and `store_save` are children of the request's server span; `queue_wait` and the five library steps are children of `pii_shield.anonymize`, which also carries `pii.ner_windows`. There are no spans for `other` and `total`, and `/deanonymize` gets none of these step spans.
+- **Metrics:** the histogram `pii.step.duration` (milliseconds; Prometheus `pii_step_duration_milliseconds_{bucket,sum,count}`) with the labels `step` and `size`, never an application. `step` is a top-level step, `other`, or a detail such as `analyze.dedup` (a name with a dot is inclusive: never stack it with the steps); `size` is the length class of the text (`small` up to 500 characters, `medium` up to 2,000, `large` up to 8,000, `xlarge` above). Its buckets reach 120 s, and so do those of FastAPI's `http.server.duration`. Each worker process exports its own series (`service.instance.id` is `<replica or host name>-<pid>`).
+- **Log lines** (logger `pii-shield`):
+  ```
+  Unique anonymization complete: 3 entities, id=3a57670f-ff15-4f05-b24b-5cc7845df4e3 chars=92 total_ms=46.0 ner_windows=1 steps=queue_wait:0.3,nlp_pass1:37.0,analyze:5.5,post_processing:0.0,handling:0.0,store_save:2.1,other:1.1
+  De-anonymization complete: id=5170e566-d7f2-46a5-b2e4-984f12ee5465 total_ms=0.4
+  POST /anonymize_unique -> 200 in 49.4 ms
+  ```
+  The `steps` of the first line are the top-level steps in execution order, then `other`, in milliseconds with one decimal, and `total_ms` is the header's `total`. The last form is logged for every HTTP request, errors included and `/health` excluded; it runs until the last response byte was handed to the server, so it is a little more than `total`.
+
+### Playground timing panel
+
+After *Anonymize* the Playground shows three numbers under the result: the **server total**, the **round trip** (measured by the Playground from sending the request until the response headers arrived, with how much of it was outside the server) and the **slowest step**. Under them a "⏱ Timing breakdown" section, collapsed until you open it, has a bar chart of the top-level steps, a table with milliseconds and share of the total (details indented under their step, marked as part of it) and the request's trace id. After *De-anonymize* a lighter panel appears. Set `TRACE_URL_TEMPLATE` (an http(s) URL that contains `{trace_id}`, for example a Grafana Explore link) and the trace id becomes an *Open trace* link:
+
+```bash
+TRACE_URL_TEMPLATE='https://traces.example.com/trace/{trace_id}' python -m app.ui_launcher playground --port 7860
+```
+
+The panel is built from the API's `Server-Timing` header; against an older API, or with `SERVER_TIMING=false`, it only shows `⏱ Round trip: <ms>`.
+
+### Timing switches
+
+All are optional.
+
+| Variable | Where | Default | Effect |
+|---|---|---|---|
+| `SERVER_TIMING` | API | `true` | `false`, `0`, `no` or `off` removes the `Server-Timing` header (and with it the Playground's breakdown). The spans, histogram and log lines stay |
+| `PII_STEP_SPANS` | API | `true` | `false` creates no step spans (the HTTP server span and `pii_shield.anonymize` stay). The header, histogram and log lines are not affected |
+| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | API | unset (every trace) | The standard OpenTelemetry sampling settings: which traces, and so which step spans, are exported. For example `parentbased_traceidratio` with `0.25` keeps about a quarter of the traces. Metrics, logs and the header are not sampled |
+| `TRACE_URL_TEMPLATE` | Playground | empty | The link pattern for *Open trace* |
+
+With Docker Compose, put them in `.env` (or export them): the `app` service passes `SERVER_TIMING`, `PII_STEP_SPANS`, `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG` through, the `playground` service passes `TRACE_URL_TEMPLATE`, and an unset or empty value means the default.
+
+How to read the numbers and what to do about a slow step: [DEPLOYMENT.md](DEPLOYMENT.md#requests-take-several-seconds). The design: [docs/design.md](docs/design.md), section 6.7 and decisions D11-D14.
 
 ## Azure Deployment
 

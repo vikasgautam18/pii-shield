@@ -254,12 +254,21 @@ authoritative list. Highlights:
 | `WEB_CONCURRENCY` | `2` | Gunicorn workers per replica |
 | `NLP_THREAD_POOL_SIZE` | `6` | Concurrent NLP inferences per worker |
 | `DISABLED_RECOGNIZERS` | (see `.env.example`) | Comma-separated Presidio recognizer class names |
+| `SERVER_TIMING` | `true` | `Server-Timing` response header with the time of each step, on `/anonymize_unique` and `/deanonymize`; `false`, `0`, `no` or `off` removes it, and with it the Playground's timing breakdown (see [Requests take several seconds](#requests-take-several-seconds)) |
+| `PII_STEP_SPANS` | `true` | One child span per step in every trace (Tempo, Application Insights); `false` keeps only the HTTP server span and `pii_shield.anonymize`. Metrics, the header and the log lines are not affected |
+| `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` | `parentbased_always_on` (every trace) | Standard OpenTelemetry settings that decide which traces, and so which step spans, are exported; use them to limit span volume and Application Insights ingestion. `parentbased_traceidratio` with `0.25` keeps about a quarter of the traces. Metrics, logs and the header are not sampled |
+| `OTEL_SERVICE_INSTANCE_ID` | `pii-shield-1` | Instance name in the OpenTelemetry resource of traces and logs. Metrics start from it too (else from `CONTAINER_APP_REPLICA_NAME`, which Azure Container Apps sets, else the host name) and append the process id, so each gunicorn worker exports its own series |
+| `TRACE_URL_TEMPLATE` | empty | Playground only: a link pattern that contains `{trace_id}`; the timing panel then links each request to its trace |
 | `AUTH_ENABLED` | `false` | One switch for sign-in on the API and both UIs (see below) |
 | `OIDC_ISSUER_URL` / `OIDC_AUDIENCE` | — | Required when `AUTH_ENABLED=true`: the identity provider's issuer, and the audience the API accepts |
 | `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | — | Required when `AUTH_ENABLED=true`: the client the UIs sign in with |
 | `OIDC_API_SCOPE` | — | Scope that makes the IdP issue a token for this API (Entra: `api://<client-id>/access_as_user`) |
 | `AUTH_COOKIE_SECRET` | — | Required when `AUTH_ENABLED=true`: 32+ random characters that sign the UI session cookie |
 | `AUTH_USER_ROLES` / `AUTH_ADMIN_ROLES` | `PIIShield.User` / `PIIShield.Admin` | Role names that grant user / admin access |
+
+`02-deploy-apps.sh` does not pass the timing settings, so a deployment runs with their defaults (header, step spans and the playground's panel on, every trace sampled). To change one, set it on the running app, for example
+`az containerapp update --name pii-shield --resource-group <rg> --set-env-vars SERVER_TIMING=false`
+(the `playground` app for `TRACE_URL_TEMPLATE`); each change creates a new revision.
 
 The complete list of authentication settings, identity-provider setup and
 troubleshooting are in [docs/authentication.md](docs/authentication.md).
@@ -339,6 +348,62 @@ your Redis instance must have `redis_access_keys_enabled = true` in
 
 The transformers/onnx engine loads its model on first request. Set
 `min-replicas=1` (instead of 0) in `02-deploy-apps.sh` to keep one replica warm.
+
+### Requests take several seconds
+
+Detection is CPU-bound: with the ONNX engine (what the Azure deployment runs) most of a request is the NER model, and a text that runs the second, case-recovery NER pass pays for it twice. Every `/anonymize_unique` request is timed in steps that do not overlap, so with `other` they add up to `total`, the server's time from the start of the request handling (authentication included) until the response headers are built; the steps are listed in the README under [Where a request spends its time](README.md#where-a-request-spends-its-time). To see where *one* slow request spent its time, read its breakdown in one of five places:
+
+1. **The `Server-Timing` header** of a successful `/anonymize_unique` or `/deanonymize` (on a deployment use its URL, and add `-H "Authorization: Bearer $TOKEN"` when authentication is on), with the `traceresponse` header that names the request's trace (a last field of `00` means the sampler dropped it, so it has no step spans). A real response from a Docker container, for a text of 92 characters:
+
+   ```
+   $ curl -si http://localhost:8000/anonymize_unique -H 'Content-Type: application/json' \
+       -d '{"text": "Please send the signed form to Rahul Sharma, PAN ABCDE1234F, phone +91 98765 43210, tomorrow"}' | grep -iE '^(server-timing|traceresponse):'
+   server-timing: queue_wait;dur=0.30, nlp_pass1;dur=36.96, nlp_pass1.ner_model;dur=29.60, analyze;dur=5.46, analyze.context_enhance;dur=0.14, analyze.dedup;dur=0.06, post_processing;dur=0.05, handling;dur=0.02, store_save;dur=2.06, other;dur=1.11, total;dur=45.96
+   traceresponse: 00-0745484b59f8776c3754f8753c872b89-b8cba77ef9e964c5-01
+   ```
+
+   A text that runs the second NER pass adds `recovery_pass2` and its details: `Dear RAHUL SHARMA, ...` gave `recovery_pass2;dur=22.03` next to `nlp_pass1;dur=28.40`.
+
+2. **The Playground** shows the server total, the round trip and the slowest step under the result, and a collapsed "⏱ Timing breakdown" with a chart, a table and the trace id; `TRACE_URL_TEMPLATE` (an http(s) URL containing `{trace_id}`) turns the trace id into an *Open trace* link. Without `Server-Timing` (an older API, or `SERVER_TIMING=false`) it only shows the round trip.
+
+3. **The log lines** (each carries its request's trace id; locally `docker compose logs app`, in Grafana the Loki query `{service_name="pii-shield"} |= "Unique anonymization complete"`). The first line below repeats the steps; the second is logged for every HTTP request, errors included (they carry no `Server-Timing`) and `/health` excluded, and runs until the last response byte was handed to the server, a little more than `total`:
+
+   ```
+   Unique anonymization complete: 3 entities, id=3a57670f-ff15-4f05-b24b-5cc7845df4e3 chars=92 total_ms=46.0 ner_windows=1 steps=queue_wait:0.3,nlp_pass1:37.0,analyze:5.5,post_processing:0.0,handling:0.0,store_save:2.1,other:1.1
+   POST /anonymize_unique -> 200 in 49.4 ms
+   ```
+
+4. **The trace** of a request is the server span with, below it, `auth` (when it is on), `app_config` (with an `X-App-Id`), `store_save` and `pii_shield.anonymize`, whose children are `queue_wait`, `nlp_pass1`, `analyze`, `recovery_pass2` (when it ran), `post_processing` and `handling`. A step span carries `pii.step` and its details as `pii.detail.<detail>_ms`; open the trace by the id from the header or the Playground, or search Tempo with the TraceQL query `{ resource.service.name="pii-shield" && name="nlp_pass1" && duration > 500ms }` (the first NLP pass took more than 0.5 s).
+
+5. **The histogram `pii.step.duration`** gives trends and percentiles per step: in Prometheus `pii_step_duration_milliseconds_{bucket,sum,count}` with the labels `step` (a name with a dot is a detail, part of its step) and `size` (the text length class), for example the p95 of each top-level step:
+
+   ```promql
+   histogram_quantile(0.95, sum by (le, step) (rate(pii_step_duration_milliseconds_bucket{service_name="pii-shield", step!~".*[.].*"}[5m])))
+   ```
+
+**After upgrading, read the metrics over a time range that starts after the deploy.** Each gunicorn worker now exports its own series (`service.instance.id` is `<OTEL_SERVICE_INSTANCE_ID, else CONTAINER_APP_REPLICA_NAME, else the host name>-<pid>`); before, the workers of a replica shared one id and overwrote each other's counters in Prometheus, and the old series stay in the window for a while, so `increase()` and `rate()` panels read too high. The histogram buckets now reach 120 s (those of `http.server.duration` too), so a request that took 10 to 20 s no longer reads as exactly 10 s.
+
+**On Azure** (no Azure deployment was available to try this on; the Application Insights facts follow the exporter's source):
+
+- The log lines and both headers come from the app, whatever the telemetry backend.
+- INTERNAL step spans become Application Insights `dependencies` rows with type `InProc`, `name` = the step name and the step in `customDimensions["pii.step"]` (details in `customDimensions["pii.detail.<detail>_ms"]`); span durations are rounded to whole milliseconds.
+- Histograms reach `customMetrics` as sum, count, min and max, without buckets: averages and maxima per step, no percentiles (those come from the span rows). `cloud_RoleInstance` comes from `service.instance.id`, so metric rows now carry one instance per worker process.
+- Span volume is the cost to watch: 8 to 11 spans per request instead of 5. `OTEL_TRACES_SAMPLER=parentbased_traceidratio` with `OTEL_TRACES_SAMPLER_ARG=0.25`, or `PII_STEP_SPANS=false`, reduces it.
+
+**What the numbers tell you**
+
+| You see | It means | What to do |
+|---------|----------|------------|
+| `queue_wait` large | All `NLP_THREAD_POOL_SIZE` threads of that worker were busy | Add capacity: more replicas (`API_MAX_REPLICAS` caps them) or vCPUs |
+| Every step slower than on an idle replica, `queue_wait` small | Concurrent detections share the CPU: the replica is saturated | The same |
+| `nlp_pass1` large, mostly `nlp_pass1.ner_model` | The model is the cost: many `ner_windows` mean a long text, one or two a slow or shared CPU | Shorter texts, or more vCPUs |
+| `recovery_pass2` present | ALL-CAPS words or lowercase runs that could be an uncased name (most e-mail addresses and URLs have one): the model ran twice | Expected for such texts |
+| `analyze` large, `nlp_pass1.ner_model` small | The regex and validator recognizers; very many matches in one text also inflate `analyze.dedup` and `analyze.context_enhance` | Profile that text locally (custom regexes first); send shorter texts |
+| `post_processing` or `handling` large | The pipeline functions after recognition; applying the strategies (the PQC `encrypt` does a key encapsulation per value) | Profile that text; compare it under `replace` |
+| `store_save` or `app_config` large | The Redis round trip | Check the network path to Redis and its load |
+| `auth` large | Bearer-token validation | Check the identity provider's key endpoint and `OIDC_JWKS_CACHE_SECONDS` |
+| `other` large | Work nobody timed | Look at the gaps between the spans in the trace |
+| Round trip much longer than `total` | Outside the server: network, ingress, a replica starting from zero (see *Cold-start latency* above) or the client | Not the server's detection |
 
 ### `04-deploy-dashboards.sh` fails with `Insufficient privileges`
 
