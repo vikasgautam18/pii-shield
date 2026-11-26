@@ -291,7 +291,7 @@ Schema facts are from the exporter source [P3] and Microsoft docs [S10]: step sp
 
 ```kusto
 dependencies
-| where timestamp > ago(1h) and cloud_RoleName == "pii-shield" and type == "InProc"
+| where timestamp > ago(1h) and cloud_RoleName endswith "pii-shield" and type == "InProc"
 | where isnotempty(tostring(customDimensions["pii.step"]))
 | summarize calls = count(), avg_ms = avg(duration), p50 = percentile(duration, 50), p95 = percentile(duration, 95), max_ms = max(duration)
     by step = tostring(customDimensions["pii.step"])

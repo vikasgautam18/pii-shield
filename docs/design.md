@@ -1280,7 +1280,7 @@ Every /anonymize_unique request logs one such line. It carries the timing fields
 | pii-shield.json | Analytics — request rates, entity categories, HTTP latency (KQL) |
 | pii-shield-by-app.json | By Application — per-app breakdown with dynamic app selector (KQL) |
 | pii-shield-errors.json | Errors — error rates, error logs, traces (KQL) |
-| pii-shield-latency.json | Latency — waiting vs computing, time per step from the step spans (`dependencies`, `type == "InProc"`) and from `customMetrics` (averages only), slow requests (KQL; not run against a real workspace) |
+| pii-shield-latency.json | Latency — waiting vs computing, time per step from the step spans (`dependencies`, `type == "InProc"`) and from `customMetrics` (averages only), slow requests (KQL built from queries that were run against a real workspace; the dashboard itself is not deployed yet) |
 
 **RBAC for Grafana:**
 
@@ -1330,11 +1330,11 @@ Every `/anonymize_unique` request is split into steps that never overlap, so the
 
 | Output | Content | Switch | On Azure Monitor |
 |----|----|----|----|
-| `Server-Timing` header | On successful `/anonymize_unique` and `/deanonymize` responses: comma-separated `name;dur=<ms>` with two decimals, in execution order, every step directly followed by its details, then `other` and `total`; no `desc` | `SERVER_TIMING` | The same header (not tested through the Container Apps ingress) |
+| `Server-Timing` header | On successful `/anonymize_unique` and `/deanonymize` responses: comma-separated `name;dur=<ms>` with two decimals, in execution order, every step directly followed by its details, then `other` and `total`; no `desc` | `SERVER_TIMING` | The same header (passed through the Container Apps ingress unchanged: checked) |
 | `traceresponse` header | `00-<trace id>-<span id>-<flags>` on every response of a traced request | — | The same header |
-| Spans | `/anonymize_unique` only: one INTERNAL span per step that ran, named after the step, attribute `pii.step`, and `pii.detail.<detail>_ms` for a step with details (§6.2.1); none for a trace the sampler dropped | `PII_STEP_SPANS`, `OTEL_TRACES_SAMPLER` | `dependencies` rows with `type == "InProc"` and the step in `customDimensions["pii.step"]` (checked by converting the app's spans with the installed exporter, offline); durations are rounded to whole milliseconds |
+| Spans | `/anonymize_unique` only: one INTERNAL span per step that ran, named after the step, attribute `pii.step`, and `pii.detail.<detail>_ms` for a step with details (§6.2.1); none for a trace the sampler dropped | `PII_STEP_SPANS`, `OTEL_TRACES_SAMPLER` | `dependencies` rows with `type == "InProc"` and the step in `customDimensions["pii.step"]` (checked in a real workspace); durations are rounded to whole milliseconds |
 | Histogram | `/anonymize_unique` only: `pii.step.duration`, labels `step` and `size`, one record per step, per detail and for `other` (not `total`) (§6.3) | — | `customMetrics` as sum, count, min and max, no buckets |
-| Log line | `/anonymize_unique` only: `ner_windows=<n> steps=<step>:<ms>,...` appended to the existing line, every step that ran in execution order and then `other`, one decimal (§6.4) | — | `traces` rows (the table the existing errors dashboard reads logs from; not tested) |
+| Log line | `/anonymize_unique` only: `ner_windows=<n> steps=<step>:<ms>,...` appended to the existing line, every step that ran in execution order and then `other`, one decimal (§6.4) | — | `traces` rows (the table the existing errors dashboard reads logs from; the lines were seen there) |
 
 The Playground (`app/streamlit_app.py`, with the parsing in `app/timing_view.py`) reads the two headers; see §4.5.1.
 
@@ -1342,7 +1342,7 @@ The Playground (`app/streamlit_app.py`, with the parsing in `app/timing_view.py`
 
 **Limits to keep in mind.**
 
-- Local Prometheus and Tempo give percentiles per step (histogram buckets; span metrics and TraceQL, both coarse because their buckets are powers of two). On Azure only averages and maxima come from the histogram, percentiles have to come from the step spans (whose durations the exporter rounds to whole milliseconds), and none of the Azure queries has been run: there was no Azure access while this was built.
+- Local Prometheus and Tempo give percentiles per step (histogram buckets; span metrics and TraceQL, both coarse because their buckets are powers of two). On Azure only averages and maxima come from the histogram, percentiles have to come from the step spans (whose durations the exporter rounds to whole milliseconds), and the per-step and waterfall queries were run on a real deployment (Container Apps, Application Insights; `cloud_RoleName` there is `<environment>.<app>`, so the queries use `endswith "pii-shield"`).
 - Sampling (`OTEL_TRACES_SAMPLER`) thins the spans and everything derived from them (Tempo span metrics, a query on `dependencies`), not the histograms, the log line or the header.
 - Per-recognizer and per-function timings are not recorded on every request; `scripts/profile_detection.py` produces them offline.
 - The measurements behind the design come from one 2.7 KB text on an aarch64 Docker VM with two vCPUs; Azure x86 replicas were not measured.

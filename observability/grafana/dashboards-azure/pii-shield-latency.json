@@ -41,7 +41,7 @@
           "refId": "A",
           "queryType": "Azure Log Analytics",
           "azureLogAnalytics": {
-            "query": "requests\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and name endswith \"/anonymize_unique\"\n| summarize p95 = percentile(duration, 95)",
+            "query": "requests\n| where $__timeFilter(timestamp)\n| where cloud_RoleName endswith \"pii-shield\" and name endswith \"/anonymize_unique\"\n| summarize p95 = percentile(duration, 95)",
             "resources": [
               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
             ],
@@ -106,7 +106,7 @@
           "refId": "A",
           "queryType": "Azure Log Analytics",
           "azureLogAnalytics": {
-            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| extend queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), second_pass = tolower(tostring(customDimensions[\"pii.recovery_pass\"])) == \"true\"\n| summarize waiting = round(100.0 * sum(queue_ms) / (sum(queue_ms) + sum(detect_ms)), 1)",
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName endswith \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| extend queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), second_pass = tolower(tostring(customDimensions[\"pii.recovery_pass\"])) == \"true\"\n| summarize waiting = round(100.0 * sum(queue_ms) / (sum(queue_ms) + sum(detect_ms)), 1)",
             "resources": [
               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
             ],
@@ -173,7 +173,7 @@
           "refId": "A",
           "queryType": "Azure Log Analytics",
           "azureLogAnalytics": {
-            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| extend queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), second_pass = tolower(tostring(customDimensions[\"pii.recovery_pass\"])) == \"true\"\n| summarize second_pass_pct = round(100.0 * countif(second_pass) / count(), 1)",
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName endswith \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| extend queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), second_pass = tolower(tostring(customDimensions[\"pii.recovery_pass\"])) == \"true\"\n| summarize second_pass_pct = round(100.0 * countif(second_pass) / count(), 1)",
             "resources": [
               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
             ],
@@ -232,7 +232,7 @@
           "refId": "A",
           "queryType": "Azure Log Analytics",
           "azureLogAnalytics": {
-            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| extend queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), second_pass = tolower(tostring(customDimensions[\"pii.recovery_pass\"])) == \"true\"\n| summarize requests = count()",
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName endswith \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| extend queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), second_pass = tolower(tostring(customDimensions[\"pii.recovery_pass\"])) == \"true\"\n| summarize requests = count()",
             "resources": [
               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
             ],
@@ -290,7 +290,7 @@
           "refId": "A",
           "queryType": "Azure Log Analytics",
           "azureLogAnalytics": {
-            "query": "requests\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and name endswith \"/anonymize_unique\"\n| summarize p50=percentile(duration, 50), p95=percentile(duration, 95), p99=percentile(duration, 99) by bin(timestamp, $__interval)",
+            "query": "requests\n| where $__timeFilter(timestamp)\n| where cloud_RoleName endswith \"pii-shield\" and name endswith \"/anonymize_unique\"\n| summarize p50=percentile(duration, 50), p95=percentile(duration, 95), p99=percentile(duration, 99) by bin(timestamp, $__interval)",
             "resources": [
               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
             ],
@@ -335,7 +335,7 @@
           "refId": "A",
           "queryType": "Azure Log Analytics",
           "azureLogAnalytics": {
-            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| extend queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), second_pass = tolower(tostring(customDimensions[\"pii.recovery_pass\"])) == \"true\"\n| summarize queue_wait_p95 = percentile(queue_ms, 95), detect_p95 = percentile(detect_ms, 95) by bin(timestamp, $__interval)",
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName endswith \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| extend queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), second_pass = tolower(tostring(customDimensions[\"pii.recovery_pass\"])) == \"true\"\n| summarize queue_wait_p95 = percentile(queue_ms, 95), detect_p95 = percentile(detect_ms, 95) by bin(timestamp, $__interval)",
             "resources": [
               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
             ],
@@ -380,7 +380,7 @@
           "refId": "A",
           "queryType": "Azure Log Analytics",
           "azureLogAnalytics": {
-            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| extend queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), second_pass = tolower(tostring(customDimensions[\"pii.recovery_pass\"])) == \"true\"\n| summarize second_pass_pct = 100.0 * countif(second_pass) / count() by bin(timestamp, $__interval)",
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName endswith \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| extend queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), second_pass = tolower(tostring(customDimensions[\"pii.recovery_pass\"])) == \"true\"\n| summarize second_pass_pct = 100.0 * countif(second_pass) / count() by bin(timestamp, $__interval)",
             "resources": [
               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
             ],
@@ -426,7 +426,7 @@
           "refId": "A",
           "queryType": "Azure Log Analytics",
           "azureLogAnalytics": {
-            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| extend queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), second_pass = tolower(tostring(customDimensions[\"pii.recovery_pass\"])) == \"true\"\n| summarize detect_p95 = percentile(detect_ms, 95) by bin(timestamp, $__interval), pass_type = iff(second_pass, \"second pass\", \"single pass\")",
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName endswith \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| extend queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), second_pass = tolower(tostring(customDimensions[\"pii.recovery_pass\"])) == \"true\"\n| summarize detect_p95 = percentile(detect_ms, 95) by bin(timestamp, $__interval), pass_type = iff(second_pass, \"second pass\", \"single pass\")",
             "resources": [
               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
             ],
@@ -484,7 +484,7 @@
           "refId": "A",
           "queryType": "Azure Log Analytics",
           "azureLogAnalytics": {
-            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\"\n| extend step = tostring(customDimensions[\"pii.step\"])\n| where step != \"\"\n| summarize avg_ms = avg(duration) by bin(timestamp, $__interval), step",
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName endswith \"pii-shield\" and type == \"InProc\"\n| extend step = tostring(customDimensions[\"pii.step\"])\n| where step != \"\"\n| summarize avg_ms = avg(duration) by bin(timestamp, $__interval), step",
             "resources": [
               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
             ],
@@ -532,7 +532,7 @@
           "refId": "A",
           "queryType": "Azure Log Analytics",
           "azureLogAnalytics": {
-            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\"\n| extend step = tostring(customDimensions[\"pii.step\"])\n| where step != \"\"\n| summarize total_ms = sum(duration) by step\n| order by total_ms desc",
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName endswith \"pii-shield\" and type == \"InProc\"\n| extend step = tostring(customDimensions[\"pii.step\"])\n| where step != \"\"\n| summarize total_ms = sum(duration) by step\n| order by total_ms desc",
             "resources": [
               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
             ],
@@ -587,7 +587,7 @@
           "refId": "A",
           "queryType": "Azure Log Analytics",
           "azureLogAnalytics": {
-            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\"\n| extend step = tostring(customDimensions[\"pii.step\"])\n| where step != \"\"\n| summarize p95_ms = percentile(duration, 95) by bin(timestamp, $__interval), step",
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName endswith \"pii-shield\" and type == \"InProc\"\n| extend step = tostring(customDimensions[\"pii.step\"])\n| where step != \"\"\n| summarize p95_ms = percentile(duration, 95) by bin(timestamp, $__interval), step",
             "resources": [
               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
             ],
@@ -632,7 +632,7 @@
           "refId": "A",
           "queryType": "Azure Log Analytics",
           "azureLogAnalytics": {
-            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\"\n| extend ms = todouble(customDimensions[\"pii.detail.ner_model_ms\"])\n| where isnotnull(ms)\n| summarize avg_ms = avg(ms) by bin(timestamp, $__interval), detail = strcat(tostring(customDimensions[\"pii.step\"]), \".ner_model\")",
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName endswith \"pii-shield\" and type == \"InProc\"\n| extend ms = todouble(customDimensions[\"pii.detail.ner_model_ms\"])\n| where isnotnull(ms)\n| summarize avg_ms = avg(ms) by bin(timestamp, $__interval), detail = strcat(tostring(customDimensions[\"pii.step\"]), \".ner_model\")",
             "resources": [
               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
             ],
@@ -647,7 +647,7 @@
           "refId": "B",
           "queryType": "Azure Log Analytics",
           "azureLogAnalytics": {
-            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\"\n| extend ms = todouble(customDimensions[\"pii.detail.context_enhance_ms\"])\n| where isnotnull(ms)\n| summarize avg_ms = avg(ms) by bin(timestamp, $__interval), detail = strcat(tostring(customDimensions[\"pii.step\"]), \".context_enhance\")",
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName endswith \"pii-shield\" and type == \"InProc\"\n| extend ms = todouble(customDimensions[\"pii.detail.context_enhance_ms\"])\n| where isnotnull(ms)\n| summarize avg_ms = avg(ms) by bin(timestamp, $__interval), detail = strcat(tostring(customDimensions[\"pii.step\"]), \".context_enhance\")",
             "resources": [
               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
             ],
@@ -662,7 +662,7 @@
           "refId": "C",
           "queryType": "Azure Log Analytics",
           "azureLogAnalytics": {
-            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\"\n| extend ms = todouble(customDimensions[\"pii.detail.dedup_ms\"])\n| where isnotnull(ms)\n| summarize avg_ms = avg(ms) by bin(timestamp, $__interval), detail = strcat(tostring(customDimensions[\"pii.step\"]), \".dedup\")",
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName endswith \"pii-shield\" and type == \"InProc\"\n| extend ms = todouble(customDimensions[\"pii.detail.dedup_ms\"])\n| where isnotnull(ms)\n| summarize avg_ms = avg(ms) by bin(timestamp, $__interval), detail = strcat(tostring(customDimensions[\"pii.step\"]), \".dedup\")",
             "resources": [
               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
             ],
@@ -707,7 +707,7 @@
           "refId": "A",
           "queryType": "Azure Log Analytics",
           "azureLogAnalytics": {
-            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\"\n| extend step = tostring(customDimensions[\"pii.step\"])\n| where step != \"\"\n| summarize Calls=count(), Average=round(avg(duration), 1), p50=round(percentile(duration, 50), 1), p95=round(percentile(duration, 95), 1), Max=round(max(duration), 1) by Step=step\n| order by Average desc",
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName endswith \"pii-shield\" and type == \"InProc\"\n| extend step = tostring(customDimensions[\"pii.step\"])\n| where step != \"\"\n| summarize Calls=count(), Average=round(avg(duration), 1), p50=round(percentile(duration, 50), 1), p95=round(percentile(duration, 95), 1), Max=round(max(duration), 1) by Step=step\n| order by Average desc",
             "resources": [
               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
             ],
@@ -745,7 +745,7 @@
           "refId": "A",
           "queryType": "Azure Log Analytics",
           "azureLogAnalytics": {
-            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\"\n| extend step = tostring(customDimensions[\"pii.step\"])\n| where step != \"\"\n| where step in (\"nlp_pass1\", \"analyze\", \"recovery_pass2\")\n| summarize ['NER model']=round(avg(todouble(customDimensions[\"pii.detail.ner_model_ms\"])), 1), ['Context scoring']=round(avg(todouble(customDimensions[\"pii.detail.context_enhance_ms\"])), 1), Dedup=round(avg(todouble(customDimensions[\"pii.detail.dedup_ms\"])), 1) by Step=step",
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName endswith \"pii-shield\" and type == \"InProc\"\n| extend step = tostring(customDimensions[\"pii.step\"])\n| where step != \"\"\n| where step in (\"nlp_pass1\", \"analyze\", \"recovery_pass2\")\n| summarize ['NER model']=round(avg(todouble(customDimensions[\"pii.detail.ner_model_ms\"])), 1), ['Context scoring']=round(avg(todouble(customDimensions[\"pii.detail.context_enhance_ms\"])), 1), Dedup=round(avg(todouble(customDimensions[\"pii.detail.dedup_ms\"])), 1) by Step=step",
             "resources": [
               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
             ],
@@ -783,7 +783,7 @@
           "refId": "A",
           "queryType": "Azure Log Analytics",
           "azureLogAnalytics": {
-            "query": "customMetrics\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and name == \"pii.step.duration\"\n| extend step = tostring(customDimensions[\"step\"])\n| where step !contains \".\"\n| summarize avg_ms = sum(value) / sum(valueCount) by bin(timestamp, $__interval), step",
+            "query": "customMetrics\n| where $__timeFilter(timestamp)\n| where cloud_RoleName endswith \"pii-shield\" and name == \"pii.step.duration\"\n| extend step = tostring(customDimensions[\"step\"])\n| where step !contains \".\"\n| summarize avg_ms = sum(value) / sum(valueCount) by bin(timestamp, $__interval), step",
             "resources": [
               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
             ],
@@ -841,7 +841,7 @@
           "refId": "A",
           "queryType": "Azure Log Analytics",
           "azureLogAnalytics": {
-            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| where duration > ${slow_ms}\n| project timestamp, trace_id = operation_Id, duration_ms = round(duration, 0), chars = toint(customDimensions[\"pii.chars\"]), queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), recovery_pass = tostring(customDimensions[\"pii.recovery_pass\"]), ner_windows = toint(customDimensions[\"pii.ner_windows\"])\n| order by duration_ms desc\n| take 50",
+            "query": "dependencies\n| where $__timeFilter(timestamp)\n| where cloud_RoleName endswith \"pii-shield\" and type == \"InProc\" and name == \"pii_shield.anonymize\"\n| where duration > ${slow_ms}\n| project timestamp, trace_id = operation_Id, duration_ms = round(duration, 0), chars = toint(customDimensions[\"pii.chars\"]), queue_ms = todouble(customDimensions[\"pii.queue_ms\"]), detect_ms = todouble(customDimensions[\"pii.detect_ms\"]), recovery_pass = tostring(customDimensions[\"pii.recovery_pass\"]), ner_windows = toint(customDimensions[\"pii.ner_windows\"])\n| order by duration_ms desc\n| take 50",
             "resources": [
               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
             ],
@@ -917,7 +917,7 @@
           "refId": "A",
           "queryType": "Azure Log Analytics",
           "azureLogAnalytics": {
-            "query": "traces\n| where $__timeFilter(timestamp)\n| where cloud_RoleName == \"pii-shield\" and message startswith \"Unique anonymization complete\"\n| extend detect_ms = toint(extract(@\"detect_ms=(\\d+)\", 1, message)), queue_ms = toint(extract(@\"queue_ms=(\\d+)\", 1, message))\n| where detect_ms > ${slow_ms} or queue_ms > ${slow_ms}\n| project timestamp, message, operation_Id\n| order by timestamp desc\n| take 100",
+            "query": "traces\n| where $__timeFilter(timestamp)\n| where cloud_RoleName endswith \"pii-shield\" and message startswith \"Unique anonymization complete\"\n| extend detect_ms = toint(extract(@\"detect_ms=(\\d+)\", 1, message)), queue_ms = toint(extract(@\"queue_ms=(\\d+)\", 1, message))\n| where detect_ms > ${slow_ms} or queue_ms > ${slow_ms}\n| project timestamp, message, operation_Id\n| order by timestamp desc\n| take 100",
             "resources": [
               "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/__SOURCE_RG__/providers/microsoft.insights/components/__SOURCE_APPI__"
             ],

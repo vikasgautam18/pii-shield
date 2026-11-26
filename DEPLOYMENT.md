@@ -237,8 +237,8 @@ This uploads the dashboards from `observability/grafana/dashboards-azure/` into
 the Azure Managed Grafana instance. Open the URL printed at the end of the
 script in a browser — Entra ID SSO is configured automatically. One of them,
 *PII Shield — Latency (Azure)*, shows where requests spend their time (see
-[Requests take several seconds](#requests-take-several-seconds)); its queries have
-not been run against a real workspace yet.
+[Requests take several seconds](#requests-take-several-seconds)); its queries are built
+from ones that were run against a real workspace, but the dashboard itself has not been deployed yet.
 
 ---
 
@@ -504,33 +504,37 @@ Everything below about spans, histograms and the log line is about `/anonymize_u
    requests, and 195 once the range started after the deploy. Each worker now has its own series
    (`<instance>-<pid>`), and the counts agree across the HTTP, detection and step metrics.
 
-**On Azure** you get less, and none of it has been tried there (there was no Azure access while this was built):
+**On Azure** you get less. This was checked on a real deployment (Azure Container Apps and Application Insights, the
+version of this change without the performance fixes); what was not checked is said below:
 
-- The log line and the `Server-Timing` and `traceresponse` headers come from the app, whatever the telemetry backend.
-  Whether the Container Apps ingress passes the headers through unchanged has not been tested.
+- The log lines and the `Server-Timing` and `traceresponse` headers come from the app, whatever the telemetry backend.
+  The Container Apps ingress passes both headers through unchanged (seen with `curl -i` against the deployed app).
 - The step spans are exported to Application Insights as `dependencies` rows with `type == "InProc"`, `name` = the
   step name, `operation_Id` = the trace id and the step in `customDimensions["pii.step"]` (details in
-  `customDimensions["pii.detail.<detail>_ms"]`). This was checked by converting this app's spans with the installed
-  exporter, offline (the server span became a `requests` row), not by a query against a workspace. The exporter
-  rounds a duration to whole milliseconds, so a step shorter than half a millisecond reads 0 there.
+  `customDimensions["pii.detail.<detail>_ms"]`); the server span is a `requests` row. Both were seen in the workspace,
+  and the waterfall query below returns a request with its step spans. The exporter rounds a duration to whole
+  milliseconds, so a step shorter than half a millisecond reads 0 there.
+- `cloud_RoleName` on Container Apps is `<environment>.<app>` (for example `pii-shield-env.pii-shield`), not the
+  `OTEL_SERVICE_NAME`, so the queries and the Azure dashboard select it with `endswith "pii-shield"`.
+  `cloud_RoleInstance` is `pii-shield-1` for requests, dependencies and traces, and `<replica>-<pid>` for the metrics
+  (one per worker).
 - The histograms (`pii.step.duration`, `pii.detect.duration`, `pii.detect.queue_wait`) reach `customMetrics` as sum,
-  count, min and max, **without buckets** (the exporter puts the sum in `value`, which Microsoft's data model
-  documents as equal to `Sum` for a pre-aggregated metric, so an average is `sum(value) / sum(valueCount)`), and
-  there are no exemplars and no Tempo span metrics. That gives averages and maxima per step, not percentiles;
-  percentiles per step have to come from the span rows. Fractions of a millisecond survive in the metric (a
-  converted sample point kept its 0.4 ms minimum), not in the span durations.
+  count, min and max, **without buckets**: `value` and `valueSum` both hold the sum and `valueCount` the count, so an
+  average is `sum(value) / sum(valueCount)` (it matched the average of the step spans). There are no exemplars and no
+  Tempo span metrics. That gives averages and maxima per step, not percentiles; percentiles per step have to come from
+  the span rows. Fractions of a millisecond survive in the metric, not in the span durations.
 - `04-deploy-dashboards.sh` uploads a fourth dashboard, "PII Shield — Latency (Azure)": request time from `requests`,
   the step spans and the `pii_shield.anonymize` attributes from `dependencies`, the average per step from
   `customMetrics` (not affected by sampling), the log lines of slow requests from `traces`, and a `trace_id` variable
-  to see one request step by step. It is as unverified as the queries below.
-- Every KQL query below is **unverified**: it was never run against a real workspace and follows the exporter's source
-  and Microsoft's documentation. Whether the step spans nest under the request in the portal's end-to-end
-  transaction view was not seen either.
+  to see one request step by step. Its queries are built from the ones checked here, but the dashboard itself has not
+  been deployed to Managed Grafana yet.
+- The per-step KQL query and the waterfall query below were run against the workspace and return what is described.
+  Whether the step spans nest under the request in the portal's end-to-end transaction view was not looked at.
 
   ```kusto
   // latency per step, from the step spans
   dependencies
-  | where timestamp > ago(1h) and cloud_RoleName == "pii-shield" and type == "InProc"
+  | where timestamp > ago(1h) and cloud_RoleName endswith "pii-shield" and type == "InProc"
   | where isnotempty(tostring(customDimensions["pii.step"]))
   | summarize calls = count(), avg_ms = avg(duration), p50 = percentile(duration, 50), p95 = percentile(duration, 95), max_ms = max(duration)
       by step = tostring(customDimensions["pii.step"])
