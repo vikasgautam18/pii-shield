@@ -71,13 +71,12 @@ Note: the encrypt / PQC strategy's cost is deliberately not covered here yet; `h
 
 ### 4.0 Verified locally (experiments)
 
-Scratch scripts live outside the repo, in the session folder `~/.copilot/session-state/b3c92269-303e-4565-a2bf-f71de0af23b3/files/research-profiling/`
-(not `/tmp/research-profiling/`). Common form (stack left running, service names `pii-shield-research-scratch*`, which stay in the local
-Tempo/Prometheus volume):
+The scratch scripts were kept outside the repo and are not part of it. Common form (stack left running, service names
+`pii-shield-research-scratch*`, which stay in the local Tempo/Prometheus volume):
 
 ```
-S=~/.copilot/session-state/b3c92269-303e-4565-a2bf-f71de0af23b3/files/research-profiling
-docker run --rm --network vikasgautam18-literate-spoon_default -v $S:/s --entrypoint python vikasgautam18-literate-spoon-app /s/<script>.py
+S=<folder with the scratch scripts>
+docker run --rm --network <compose project>_default -v $S:/s --entrypoint python <compose project>-app /s/<script>.py
 ```
 
 Environment: app image Python 3.12.16 on an **aarch64 Docker Desktop VM** (E5/E7 with `--cpus=2`), grafana/otel-lgtm v0.40.0
