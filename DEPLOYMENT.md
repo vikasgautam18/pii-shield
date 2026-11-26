@@ -392,7 +392,7 @@ Detection is CPU-bound: with the ONNX engine (what the Azure deployment runs) mo
 - Span volume is the cost to watch: 8 to 11 spans per request instead of 5, each a row in Application Insights; what that costs was not measured. `OTEL_TRACES_SAMPLER=parentbased_traceidratio` with `OTEL_TRACES_SAMPLER_ARG=0.25`, or `PII_STEP_SPANS=false`, reduces it.
 - Not looked at: whether the step spans nest under the request in the portal's end-to-end transaction view.
 
-Two queries, both run against the workspace and returning what is described (`pii-shield` is the name of the API app; use yours):
+Two queries, both run against the workspace and returning what is described (`pii-shield` is the name of the API app there; yours is the `api_app_name` Terraform output, `piishield` by default):
 
 ```kusto
 // latency per step, from the step spans
