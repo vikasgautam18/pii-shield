@@ -387,17 +387,17 @@ Detection is CPU-bound: with the ONNX engine (what the Azure deployment runs) mo
 
 - The log lines and both headers come from the app, whatever the telemetry backend. The Container Apps ingress passes `Server-Timing` and `traceresponse` through unchanged (seen with `curl -i` against the deployed app: 8 requests, a server total of about 195 ms in steady state for a text of 146 characters).
 - The server span is a `requests` row (`POST /anonymize_unique`, `duration` in milliseconds). The INTERNAL step spans are `dependencies` rows with type `InProc`, `name` = the step name, `operation_Id` = the trace id and the step in `customDimensions["pii.step"]` (details in `customDimensions["pii.detail.<detail>_ms"]`); the waterfall query below returns the request, `pii_shield.anonymize`, its step spans and `store_save` (a child of the server span). The exporter rounds a span's duration to whole milliseconds (from its source), so a step shorter than half a millisecond reads 0. Both log lines, `Unique anonymization complete ... total_ms=... steps=...` and `POST /anonymize_unique -> 200 in X ms`, arrive in `traces`.
-- **`cloud_RoleName` on Container Apps is `<environment>.<app>`** (for example `pii-shield-env.pii-shield`), not `OTEL_SERVICE_NAME`, so a query that filters `cloud_RoleName == "pii-shield"` returns nothing. Select it with `endswith` and the name of your API app, as the queries below do. `cloud_RoleInstance` is `pii-shield-1` for requests, dependencies and traces, and `<replica>-<pid>` for the metrics (one per worker).
+- **`cloud_RoleName` on Container Apps is `<environment>.<app>`** (for example `pii-shield-env.pii-shield`), not `OTEL_SERVICE_NAME`, and the app is named after your `api_app_name`, so a query that filters `cloud_RoleName == "pii-shield"` returns nothing: select the app with `endswith`, as the queries below do. `cloud_RoleInstance` is `pii-shield-1` for requests, dependencies and traces, and `<replica>-<pid>` for the metrics (one per worker).
 - The histograms reach `customMetrics` as a sum and a count, **without buckets**: `value` and `valueSum` hold the sum and `valueCount` the count, so the average of a step is `sum(value) / sum(valueCount)` (it matched the average of the step spans). That gives averages, not percentiles; percentiles per step have to come from the span rows. The exporter's source also sends a minimum and a maximum (`valueMin`, `valueMax`); they were not looked at.
 - Span volume is the cost to watch: 8 to 11 spans per request instead of 5, each a row in Application Insights; what that costs was not measured. `OTEL_TRACES_SAMPLER=parentbased_traceidratio` with `OTEL_TRACES_SAMPLER_ARG=0.25`, or `PII_STEP_SPANS=false`, reduces it.
 - Not looked at: whether the step spans nest under the request in the portal's end-to-end transaction view.
 
-Two queries, both run against the workspace and returning what is described (`pii-shield` is the name of the API app there; yours is the `api_app_name` Terraform output, `piishield` by default):
+Two queries, both run against the workspace and returning what is described. A default Terraform deployment names the API app `piishield` and the deployment that was checked had `pii-shield`; `endswith "shield"` fits both, so change it if your app is called something else:
 
 ```kusto
 // latency per step, from the step spans
 dependencies
-| where timestamp > ago(1h) and cloud_RoleName endswith "pii-shield" and type == "InProc"
+| where timestamp > ago(1h) and cloud_RoleName endswith "shield" and type == "InProc"
 | where isnotempty(tostring(customDimensions["pii.step"]))
 | summarize calls = count(), avg_ms = avg(duration), p50 = percentile(duration, 50), p95 = percentile(duration, 95), max_ms = max(duration)
     by step = tostring(customDimensions["pii.step"])
