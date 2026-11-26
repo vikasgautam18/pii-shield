@@ -515,7 +515,9 @@ version of this change without the performance fixes); what was not checked is s
   and the waterfall query below returns a request with its step spans. The exporter rounds a duration to whole
   milliseconds, so a step shorter than half a millisecond reads 0 there.
 - `cloud_RoleName` on Container Apps is `<environment>.<app>` (for example `pii-shield-env.pii-shield`), not the
-  `OTEL_SERVICE_NAME`, so the queries and the Azure dashboard select it with `endswith "pii-shield"`.
+  `OTEL_SERVICE_NAME`. The app is named after your `api_app_name` (the Terraform default is `piishield`, a
+  `pii-shield` app was the one checked), so the queries and the Azure dashboard select it with `endswith "shield"`,
+  which fits both names; change it if your app is called something else.
   `cloud_RoleInstance` is `pii-shield-1` for requests, dependencies and traces, and `<replica>-<pid>` for the metrics
   (one per worker).
 - The histograms (`pii.step.duration`, `pii.detect.duration`, `pii.detect.queue_wait`) reach `customMetrics` as sum,
@@ -534,7 +536,7 @@ version of this change without the performance fixes); what was not checked is s
   ```kusto
   // latency per step, from the step spans
   dependencies
-  | where timestamp > ago(1h) and cloud_RoleName endswith "pii-shield" and type == "InProc"
+  | where timestamp > ago(1h) and cloud_RoleName endswith "shield" and type == "InProc"
   | where isnotempty(tostring(customDimensions["pii.step"]))
   | summarize calls = count(), avg_ms = avg(duration), p50 = percentile(duration, 50), p95 = percentile(duration, 95), max_ms = max(duration)
       by step = tostring(customDimensions["pii.step"])

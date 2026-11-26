@@ -1342,7 +1342,7 @@ The Playground (`app/streamlit_app.py`, with the parsing in `app/timing_view.py`
 
 **Limits to keep in mind.**
 
-- Local Prometheus and Tempo give percentiles per step (histogram buckets; span metrics and TraceQL, both coarse because their buckets are powers of two). On Azure only averages and maxima come from the histogram, percentiles have to come from the step spans (whose durations the exporter rounds to whole milliseconds), and the per-step and waterfall queries were run on a real deployment (Container Apps, Application Insights; `cloud_RoleName` there is `<environment>.<app>`, so the queries use `endswith "pii-shield"`).
+- Local Prometheus and Tempo give percentiles per step (histogram buckets; span metrics and TraceQL, both coarse because their buckets are powers of two). On Azure only averages and maxima come from the histogram, percentiles have to come from the step spans (whose durations the exporter rounds to whole milliseconds), and the per-step and waterfall queries were run on a real deployment (Container Apps, Application Insights; `cloud_RoleName` there is `<environment>.<app>`, so the queries use `endswith "shield"`, which fits the `pii-shield` and `piishield` app names).
 - Sampling (`OTEL_TRACES_SAMPLER`) thins the spans and everything derived from them (Tempo span metrics, a query on `dependencies`), not the histograms, the log line or the header.
 - Per-recognizer and per-function timings are not recorded on every request; `scripts/profile_detection.py` produces them offline.
 - The measurements behind the design come from one 2.7 KB text on an aarch64 Docker VM with two vCPUs; Azure x86 replicas were not measured.
