@@ -13,8 +13,16 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.trace import StatusCode
 
 from app.nlp_pool import DetectionPool
+from app.request_timing import RequestTimingMiddleware
 from app.telemetry import BOUNDS_MS, init_telemetry
-from app.timing import PoolTiming, RequestClock, finish_anonymize, finish_deanonymize, steps_for_log
+from app.timing import (
+    PoolTiming,
+    RequestClock,
+    finish_anonymize,
+    finish_deanonymize,
+    steps_for_log,
+    total_for_log,
+)
 from pii_shield.engine import PiiShieldEngine
 from pii_shield.models import EntityConfig
 from pii_shield.nlp_engine import get_nlp_engine_name
@@ -231,7 +239,13 @@ app = FastAPI(
     # unless its endpoint is explicitly marked @public. A no-op when auth is off.
     dependencies=[Depends(authenticate)],
 )
-# Without this every request carries three more spans (one receive, two send) that last about 0 ms and tell nothing.
+# With the pinned instrumentation (0.61b0) the order of the next two statements does not matter: instrument_app wraps
+# the whole middleware stack, so the request-timing middleware always runs inside the server span and its log line
+# carries the trace id (tests/test_request_timing.py::TestInsideTheServerSpan guards that). It is added first all the
+# same, which is also the order that holds where an instrumentation registers its middleware with add_middleware.
+# Without exclude_spans every request carries three more spans (one receive, two send) that last about 0 ms and tell
+# nothing.
+app.add_middleware(RequestTimingMiddleware)
 FastAPIInstrumentor.instrument_app(app, exclude_spans=["receive", "send"])
 
 
@@ -491,7 +505,7 @@ async def anonymize_unique_text(
         )
         logger.info(
             "Unique anonymization complete: %d entities, id=%s, chars=%d, queue_ms=%.0f, detect_ms=%.0f "
-            "(nlp_ms=%.0f, recovery_pass=%s, recovery_ms=%.0f) ner_windows=%d steps=%s",
+            "(nlp_ms=%.0f, recovery_pass=%s, recovery_ms=%.0f)%s ner_windows=%d steps=%s",
             len(anon_result.entities),
             record_id,
             len(request.text),
@@ -500,6 +514,7 @@ async def anonymize_unique_text(
             stats.nlp_ms,
             stats.recovery_pass,
             stats.recovery_ms,
+            total_for_log(report),
             stats.ner_windows,
             steps_for_log(report),
         )
@@ -564,8 +579,8 @@ async def deanonymize_text(
                 )
 
         deanonymize_request_counter.add(1, {"app_id": x_app_id or "", "app_name": app_name})
-        finish_deanonymize(clock, response)
-        logger.info("De-anonymization complete: id=%s", request.id)
+        report = finish_deanonymize(clock, response)
+        logger.info("De-anonymization complete: id=%s%s", request.id, total_for_log(report))
 
         return DeanonymizeResponse(text=restored_text, id=request.id)
     except HTTPException as exc:

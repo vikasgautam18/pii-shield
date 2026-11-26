@@ -155,12 +155,15 @@ PROMETHEUS_METRICS = {
 PROMETHEUS_LABELS = {"le", "step", "size", "recovery_pass", "span_name", "service", "service_name", "http_target"}
 DETAIL_MATCHER = '.*\\\\..*'  # as written in PromQL: .*\\..*  (the regex .*\..*, a name that contains a dot)
 
-# The lines the dashboards parse, before and after the per-step timing added its two fields.
+# The lines the dashboards parse: before the per-step timing, after it added its two fields, and with total_ms.
 LOG_LINES = [
     "Unique anonymization complete: 4 entities, id=a5554b53-8a90-4df7-8427-5bcdff4734df, chars=109, queue_ms=0, "
     "detect_ms=17 (nlp_ms=16, recovery_pass=False, recovery_ms=0)",
     "Unique anonymization complete: 95 entities, id=1b63dd0d-8690-4c24-a71a-4c57b5c607b1, chars=2694, queue_ms=3, "
     "detect_ms=785 (nlp_ms=388, recovery_pass=True, recovery_ms=377) ner_windows=10 steps=queue_wait:3.0,"
+    "nlp_pass1:388.1,analyze:15.8,recovery_pass2:377.0,post_processing:1.0,handling:0.1,store_save:2.4,other:3.2",
+    "Unique anonymization complete: 95 entities, id=1b63dd0d-8690-4c24-a71a-4c57b5c607b1, chars=2694, queue_ms=3, "
+    "detect_ms=785 (nlp_ms=388, recovery_pass=True, recovery_ms=377) total_ms=806.4 ner_windows=10 steps=queue_wait:3.0,"
     "nlp_pass1:388.1,analyze:15.8,recovery_pass2:377.0,post_processing:1.0,handling:0.1,store_save:2.4,other:3.2",
 ]
 
@@ -325,7 +328,7 @@ class TestLatencyDashboard:
         compared = set(re.findall(r"(\w+) > \$\{slow_ms\}", loki["expr"]))
         regex = pattern_regex(pattern)
         assert compared == {"detect_ms", "queue_ms"}
-        for line, want in zip(LOG_LINES, [("109", "0", "17"), ("2694", "3", "785")]):
+        for line, want in zip(LOG_LINES, [("109", "0", "17"), ("2694", "3", "785"), ("2694", "3", "785")]):
             match = regex.search(line)
             assert match, f"the pattern does not match: {line}"
             assert (match["chars"], match["queue_ms"], match["detect_ms"]) == want

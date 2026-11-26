@@ -387,12 +387,19 @@ Everything below about spans, histograms and the log line is about `/anonymize_u
 
 **Reading the breakdown.** The same numbers reach five places:
 
-1. **The log line.** Every `/anonymize_unique` logs one line. The fields that were always there stay; `ner_windows`
-   and `steps` (the steps that ran in execution order, then `other`, in milliseconds with one decimal) are new:
+1. **The log lines.** Every `/anonymize_unique` logs one line. The fields that were always there stay; `total_ms`
+   (the `total` of the header), `ner_windows` and `steps` (the steps that ran in execution order, then `other`, in
+   milliseconds with one decimal) are new, and so are the second and third lines below:
 
    ```
-   Unique anonymization complete: 2 entities, id=..., chars=49, queue_ms=0, detect_ms=14 (nlp_ms=13, recovery_pass=False, recovery_ms=0) ner_windows=1 steps=queue_wait:0.1,nlp_pass1:13.1,analyze:0.8,post_processing:0.0,handling:0.0,store_save:0.4,other:0.3
+   Unique anonymization complete: 4 entities, id=..., chars=99, queue_ms=1, detect_ms=44 (nlp_ms=37, recovery_pass=False, recovery_ms=0) total_ms=48.4 ner_windows=1 steps=queue_wait:0.9,nlp_pass1:36.7,analyze:6.8,post_processing:0.1,handling:0.0,store_save:2.8,other:1.2
+   De-anonymization complete: id=... total_ms=0.4
+   POST /anonymize_unique -> 200 in 54.4 ms
    ```
+
+   The first two lines are written on success only. The last is logged for every HTTP request, errors included (they
+   carry no `Server-Timing`) and `/health` excluded, by a middleware (`app/request_timing.py`); it runs until the last
+   response byte was handed to the server, so it is a little more than `total_ms` (54.4 ms against 48.4 ms here).
 
    Locally: `docker compose logs app | grep "Unique anonymization complete"`. In Grafana, Explore the Loki data source
    with `{service_name="pii-shield"} |= "Unique anonymization complete"`; each line carries the trace id of its

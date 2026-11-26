@@ -216,6 +216,12 @@ def steps_for_log(report: StepReport | None) -> str:
     return ",".join(parts)
 
 
+def total_for_log(report: StepReport | None) -> str:
+    """`` total_ms=<ms>`` for the ``/anonymize_unique`` and ``/deanonymize`` log lines: the ``total`` of the
+    ``Server-Timing`` header. Empty without a report (reporting failed), and the line is then the one it was before."""
+    return "" if report is None else f" total_ms={report.total_ms:.1f}"
+
+
 def create_step_histogram(meter: metrics.Meter) -> metrics.Histogram:
     """The ``pii.step.duration`` instrument; ``BOUNDS_MS`` keeps a step of tens of seconds out of the last bucket."""
     return meter.create_histogram(

@@ -759,12 +759,31 @@ class TestLogLine:
         line = next(r.getMessage() for r in caplog.records if "Unique anonymization complete" in r.getMessage())
         for field in ("chars=", "queue_ms=", "detect_ms=", "nlp_ms=", "recovery_pass=True", "recovery_ms="):
             assert field in line
-        match = re.search(r"\(nlp_ms=\d+, recovery_pass=True, recovery_ms=\d+\) ner_windows=3 steps=(\S+)$", line)
+        match = re.search(
+            r"\(nlp_ms=\d+, recovery_pass=True, recovery_ms=\d+\) total_ms=\d+\.\d ner_windows=3 steps=(\S+)$", line
+        )
         assert match, line
         pairs = [item.split(":") for item in match[1].split(",")]
         assert [name for name, _ in pairs] == ["queue_wait", *LIB_STEPS, "store_save", "other"]
         assert all(re.fullmatch(r"\d+\.\d", ms) for _, ms in pairs)
         assert dict(pairs)["nlp_pass1"] == "6.0" and dict(pairs)["handling"] == "0.5"
+
+    def test_total_ms_is_the_total_of_the_header(self, client, fake_library, caplog):
+        caplog.set_level(logging.INFO, logger="pii-shield")
+        response = anonymize(client)
+        line = next(r.getMessage() for r in caplog.records if "Unique anonymization complete" in r.getMessage())
+        total = dict(parse_server_timing(response.headers["Server-Timing"]))["total"]
+        assert float(re.search(r" total_ms=(\d+\.\d) ", line)[1]) == pytest.approx(total, abs=0.05)
+
+    def test_the_deanonymize_line_carries_total_ms_too(self, client, fake_library, caplog):
+        body = anonymize(client).json()
+        caplog.set_level(logging.INFO, logger="pii-shield")
+        response = client.post("/deanonymize", json={"id": body["id"], "text": body["anonymized_text"]})
+        line = next(r.getMessage() for r in caplog.records if "De-anonymization complete" in r.getMessage())
+        total = dict(parse_server_timing(response.headers["Server-Timing"]))["total"]
+        assert float(re.fullmatch(rf"De-anonymization complete: id={body['id']} total_ms=(\d+\.\d)", line)[1]) == (
+            pytest.approx(total, abs=0.05)
+        )
 
 
 class TestReport:

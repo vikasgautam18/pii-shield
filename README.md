@@ -561,7 +561,7 @@ See [`examples/anonymize_request.py`](examples/anonymize_request.py) for the ful
 
 ## Where a request spends its time
 
-Every `POST /anonymize_unique` is timed in steps that do not overlap (waiting for a detection thread, the first NLP pass, the recognizers, the second NER pass for ALL-CAPS or uncased names, post-processing, applying the strategies, saving the session). The numbers reach the `Server-Timing` response header, the Playground, one span per step in the trace, the `pii.step.duration` histogram (and the "PII Shield — Latency" Grafana dashboard) and the request's log line. [DEPLOYMENT.md](DEPLOYMENT.md#requests-take-several-seconds) explains how to read them and what to do about each step; the design is in [docs/design.md](docs/design.md) (section 6.7 and decisions D15-D17).
+Every `POST /anonymize_unique` is timed in steps that do not overlap (waiting for a detection thread, the first NLP pass, the recognizers, the second NER pass for ALL-CAPS or uncased names, post-processing, applying the strategies, saving the session). The numbers reach the `Server-Timing` response header, the Playground, one span per step in the trace, the `pii.step.duration` histogram (and the "PII Shield — Latency" Grafana dashboard) and the request's log lines (one more per HTTP request, errors included, with its total time). [DEPLOYMENT.md](DEPLOYMENT.md#requests-take-several-seconds) explains how to read them and what to do about each step; the design is in [docs/design.md](docs/design.md) (section 6.7 and decisions D15-D17).
 
 ### Playground timing panel
 
